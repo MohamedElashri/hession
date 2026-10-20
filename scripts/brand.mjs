@@ -33,7 +33,15 @@ lock.name = brand.slug;
 if (lock.packages?.['']) lock.packages[''].name = brand.slug;
 write('package-lock.json', JSON.stringify(lock, null, 2) + '\n');
 
+// The binary is named after the slug in dev too (not just in bundles, via
+// mainBinaryName): GTK uses it as the Wayland app_id / X11 WM_CLASS, which the
+// desktop entry's StartupWMClass must match for the dock to show our icon.
 const cargoPath = 'src-tauri/Cargo.toml';
-write(cargoPath, read(cargoPath)
+const bin = `[[bin]]\nname = ${JSON.stringify(brand.slug)}\npath = "src/main.rs"\n`;
+let cargo = read(cargoPath)
   .replace(/^description = ".*"$/m, `description = ${JSON.stringify(brand.tagline)}`)
-  .replace(/^authors = \[.*\]$/m, `authors = [${JSON.stringify(brand.author)}]`));
+  .replace(/^authors = \[.*\]$/m, `authors = [${JSON.stringify(brand.author)}]`);
+cargo = /^\[\[bin\]\]\nname = ".*"\npath = "src\/main\.rs"\n/m.test(cargo)
+  ? cargo.replace(/^\[\[bin\]\]\nname = ".*"\npath = "src\/main\.rs"\n/m, bin)
+  : cargo.replace(/^\[build-dependencies\]$/m, `${bin}\n[build-dependencies]`);
+write(cargoPath, cargo);

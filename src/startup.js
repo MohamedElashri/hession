@@ -29,7 +29,12 @@ function ready() {
 }
 window.addEventListener(READY_EVENT, ready);
 
-import('./main.jsx').catch(error => {
+// Browser preview (`make preview`): mock the Tauri runtime. Removed from production builds.
+const preview = import.meta.env.DEV && new URLSearchParams(window.location.search).has('mock')
+  ? import('./dev/mock-ipc.js')
+  : Promise.resolve();
+
+preview.then(() => import('./main.jsx')).catch(error => {
   ready();
   console.error(`[boot] Could not load ${BRAND.name}:`, error);
   if (!loading.isConnected) return;

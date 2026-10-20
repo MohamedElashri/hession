@@ -3,11 +3,10 @@ import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  ArrowRight, ArrowUpDown, Bot, Check, ChevronDown, Copy, CircleHelp, Code2,
-  Command, FileCode2, Filter, Folder, GitBranch, Layers3, LoaderCircle, Menu,
-  MessageSquareText, MoreHorizontal, RefreshCw, Search, Sparkles, Sun, Moon,
-  Terminal, X, ChevronLeft, ChevronRight, TrendingUp, User, Star, Download,
-  Square, Database, Server, Laptop,
+  Bot, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Code2,
+  Copy, Database, Download, FileCode2, Folder, GitBranch, Laptop, Layers3,
+  LoaderCircle, Menu, MessageSquareText, Moon, Plus, RefreshCw, Search,
+  Server, Sparkles, Square, Star, Sun, Tag, Terminal, TrendingUp, User, X,
 } from 'lucide-react';
 import { api, hasTauriRuntime } from './api.js';
 import { save } from '@tauri-apps/plugin-dialog';
@@ -25,7 +24,13 @@ import DateFilter from './components/DateFilter.jsx';
 import ModelFilter from './components/ModelFilter.jsx';
 import BranchFilter from './components/BranchFilter.jsx';
 import ToolFilter from './components/ToolFilter.jsx';
-import './style.css';
+import '@fontsource-variable/geist';
+import '@fontsource-variable/geist-mono';
+import './styles/tokens.css';
+import './styles/base.css';
+import './styles/app.css';
+import './styles/components.css';
+import './styles/analytics.css';
 import { hasToolActivity, isSessionEvent, transcriptParts } from './transcript.js';
 
 import { parseDate, filterSince, calendarDayDifference } from './dates.js';
@@ -48,6 +53,8 @@ const relativeAgo=(value,now=Date.now())=>{if(!value)return 'never';const d=pars
 const formatSyncTime=(value,now)=>{if(!value)return 'Never';const d=parseDate(value);if(!d||isNaN(d.getTime()))return 'Never';return `${d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})} (${relativeAgo(d,now)})`;};
 const relativeDate=(s)=>{if(!s)return 'Date unavailable';const d=parseDate(s),now=new Date();if(!d)return 'Date unavailable';const days=calendarDayDifference(d,now);if(days===0)return `Today · ${d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}`;if(days===1)return 'Yesterday';if(days>=0&&days<7)return d.toLocaleDateString([],{weekday:'long'});return d.toLocaleDateString([],{month:'short',day:'numeric',year:d.getFullYear()!==now.getFullYear()?'numeric':undefined});};
 const familyLabel=(f)=>agentNames[f]||f||'Agent';
+// A user-role entry with text, as opposed to a tool result logged under the user role.
+const isTypedPrompt=e=>e.role==='user'&&(e.parts||[]).some(p=>p.kind==='text'&&p.text);
 
 function App(){
   useEffect(()=>{window.dispatchEvent(new Event(READY_EVENT));},[]);
@@ -73,7 +80,7 @@ function App(){
   const [includeStats,setIncludeStats]=useState(()=>localStorage.getItem(storageKey('export-stats'))==='true');
   const [sortOrder,setSortOrder]=useState('recent'),[page,setPage]=useState(0);
   const [sortOpen,setSortOpen]=useState(false),[facets,setFacets]=useState({models:[],branches:[],tools:[]});
-  const [allWorkspaces,setAllWorkspaces]=useState(false),[workspaceQuery,setWorkspaceQuery]=useState(''),[workspaceMenuOpen,setWorkspaceMenuOpen]=useState(false);
+  const [allWorkspaces,setAllWorkspaces]=useState(false),[workspaceQuery,setWorkspaceQuery]=useState('');
   const [timeFilter,setTimeFilter]=useState(''),[modelFilters,setModelFilters]=useState([]),[branchFilter,setBranchFilter]=useState(''),[toolFilters,setToolFilters]=useState([]);
   const [sync,setSync]=useState({running:false}),[syncError,setSyncError]=useState('');
   const [syncStarting,setSyncStarting]=useState(false),[syncStopping,setSyncStopping]=useState(false);
@@ -421,17 +428,22 @@ function App(){
     let user=0,assistant=0,tool=0,event=0;
     for(const e of entries){
       if(hasToolActivity(e))tool++;
-      if(e.role==='user')user++;
+      if(isTypedPrompt(e))user++;
       else if(e.role==='assistant')assistant++;
       if(isSessionEvent(e))event++;
     }
     return{all:entries.length,user,assistant,tool,event};
   },[detail]);
-  const entryCountLabel=(type)=>`${entryCounts[type].toLocaleString()}/${(detail?.entryCounts?.[type]??entryCounts[type]).toLocaleString()}`;
   const detailEntries=useMemo(()=>{
     const entries=detail?.entries||[];
+    // Tool results are already shown inside their call's card; hide the
+    // standalone result entry when its call (with output) is on this page.
+    const shownResults=new Set(entries.flatMap(e=>(e.tools||[]).filter(t=>t.call_id&&t.result_text).map(t=>t.call_id)));
+    const resultId=p=>{try{const d=JSON.parse(p.data_json||'{}');return d.tool_use_id||d.call_id;}catch{return null;}};
+    const duplicateResult=e=>e.parts?.length>0&&e.parts.every(p=>p.kind==='tool_result'&&shownResults.has(resultId(p)));
     return entries.filter(e=>{
-      if(entryFilter==='user')return e.role==='user';
+      if(duplicateResult(e))return false;
+      if(entryFilter==='user')return isTypedPrompt(e);
       if(entryFilter==='assistant')return e.role==='assistant';
       if(entryFilter==='tool')return hasToolActivity(e);
       if(entryFilter==='event')return isSessionEvent(e);
@@ -459,43 +471,80 @@ function App(){
   },null);
   const checkpointFor=family=>syncCheckpoints.find(item=>item.family===family)?.completed_at;
 
+  const syncLabel=syncStarting?'Starting…':syncStopping||sync.phase==='stopping'?'Stopping…':sync.running?`Syncing ${sync.filesDone||0}/${sync.filesTotal||0}`:'Sync';
+  const lastSyncText=metadataState['sync/checkpoints']==='loading'?'Loading…':metadataState['sync/checkpoints']==='error'?'Unavailable':latestSync?relativeAgo(latestSync,currentTime):'Never';
+  const filterDefaults=!(timeFilter||modelFilters.length||branchFilter||toolFilters.length||starredOnly||tagFilters.length||hostFilter||agentFilter||projectFilter);
+  const clearAllFilters=()=>{setTimeFilter('');setModelFilters([]);setBranchFilter('');setToolFilters([]);setStarredOnly(false);setTagFilters([]);setHostFilter('');setAgentFilter('');setProjectFilter('');};
+  const showSessions=()=>navigate({view:'sessions',selectionExplicit:false});
+  const hostName=h=>h==='@local'?'This computer':h;
+  const activeChips=[
+    hostFilter&&{key:'host',icon:hostFilter==='@local'?<Laptop size={12}/>:<Server size={12}/>,label:hostName(hostFilter),clear:()=>setHostFilter('')},
+    agentFilter&&{key:'agent',icon:<span className={`agent-dot ${agentColors[agentFilter]||'gray'}`}/>,label:familyLabel(agentFilter),clear:()=>setAgentFilter('')},
+    projectFilter&&{key:'project',icon:<Folder size={12}/>,label:shortPath(projectFilter),title:projectFilter,clear:()=>setProjectFilter('')},
+    ...tagFilters.map(tag=>({key:`tag-${tag}`,icon:<Tag size={12}/>,label:tag,clear:()=>setTagFilters(tags=>tags.filter(t=>t!==tag))})),
+  ].filter(Boolean);
+  const navCount=n=><span className="nav-count">{Number(n||0).toLocaleString()}</span>;
+
   return <div className="app-shell" data-theme={theme}>
     {remoteHostsOpen&&<RemoteHosts onClose={()=>{setRemoteHostsOpen(false);loadMeta({silent:true});}} onSyncNow={()=>startSync()} syncRunning={sync.running||syncStarting}/>}
     {dataManagementOpen&&<DataManagement onClose={()=>setDataManagementOpen(false)} onChanged={refreshManagedData} syncRunning={sync.running||syncStarting}/>}
+    {mobileNav&&<div className="sidebar-scrim" onClick={()=>setMobileNav(false)}/>}
     <aside className={`sidebar ${mobileNav?'sidebar-open':''}`}>
-      <div className="sidebar-brand"><div className="brand-row"><div className="brand-mark"><BrandMark size={19}/></div><span>{BRAND.wordmark[0]}<span className="brand-muted">{BRAND.wordmark[1]}</span></span><button className="icon-button sidebar-mobile-close" onClick={()=>setMobileNav(false)}><X size={17}/></button></div><span className="sidebar-publisher">{BRAND.tagline}</span></div>
+      <div className="brand-row">
+        <span className="brand-mark"><BrandMark size={18}/></span>
+        <span className="brand-name">{BRAND.wordmark[0]}<span className="brand-muted">{BRAND.wordmark[1]}</span></span>
+        <button className="icon-button sidebar-mobile-close" onClick={()=>setMobileNav(false)} aria-label="Close navigation"><X size={16}/></button>
+      </div>
+      <nav className="nav-primary" aria-label="Views">
+        <button className={`nav-item ${view!=='analytics'?'nav-active':''}`} aria-current={view!=='analytics'?'page':undefined} onClick={showSessions}><MessageSquareText size={16}/><span>Sessions</span>{metadataState.stats==='ready'&&navCount(stats.sessions)}</button>
+        <button className={`nav-item ${view==='analytics'?'nav-active':''}`} aria-current={view==='analytics'?'page':undefined} onClick={()=>setView('analytics')}><TrendingUp size={16}/><span>Analytics</span></button>
+      </nav>
       <div className="sidebar-scroll">
-        <div className="nav-section agent-section"><div className="section-heading"><div className="section-label">AGENTS</div></div>
-          <button className={`nav-item agent-nav ${view==='sessions'&&!agentFilter&&!projectFilter?'nav-active':''}`} onClick={()=>{navigate({view:'sessions',selectionExplicit:false});setAgentFilter('');setProjectFilter('');}}><span className="agent-mark gray"><Layers3 size={11}/></span><span>All</span><span className="nav-count">{metadataState.stats==='ready'?stats.sessions.toLocaleString():'—'}</span></button>
-          {agents.map(a=><button key={a.family} className={`nav-item agent-nav ${view==='sessions'&&agentFilter===a.family?'nav-active':''}`} onClick={()=>{navigate({view:'sessions',selectionExplicit:false});setAgentFilter(agentFilter===a.family?'':a.family);setProjectFilter('');}}><span className={`agent-mark ${agentColors[a.family]||'gray'}`}>{agentMark[a.family]||a.product?.[0]}</span><span>{a.product}</span><span className="nav-count">{a.sessions.toLocaleString()}</span></button>)}
+        <section className="nav-section">
+          <div className="section-heading"><span className="section-label">Hosts</span><button className="tiny-icon" title="Manage remote hosts" aria-label="Manage remote hosts" onClick={()=>setRemoteHostsOpen(true)}><Plus size={14}/></button></div>
+          <button className={`nav-item ${hostFilter==='@local'?'nav-active':''}`} aria-pressed={hostFilter==='@local'} onClick={()=>{showSessions();setHostFilter(hostFilter==='@local'?'':'@local');}}><Laptop size={15}/><span>This computer</span></button>
+          {(facets.hosts||[]).map(h=><button key={h.value} title={`Sessions from ${h.value}`} aria-pressed={hostFilter===h.value} className={`nav-item ${hostFilter===h.value?'nav-active':''}`} onClick={()=>{showSessions();setHostFilter(hostFilter===h.value?'':h.value);}}><Server size={15}/><span className="ellipsis">{h.value}</span>{navCount(h.sessions)}</button>)}
+          {!(facets.hosts||[]).length&&<button className="nav-item nav-hint" onClick={()=>setRemoteHostsOpen(true)}><Plus size={15}/><span>Add an SSH host</span></button>}
+        </section>
+        <section className="nav-section">
+          <div className="section-heading"><span className="section-label">Agents</span></div>
+          {agents.map(a=><button key={a.family} aria-pressed={agentFilter===a.family} className={`nav-item ${agentFilter===a.family?'nav-active':''}`} onClick={()=>{showSessions();setAgentFilter(agentFilter===a.family?'':a.family);}}><span className={`agent-dot ${agentColors[a.family]||'gray'}`}/><span className="ellipsis">{a.product}</span>{navCount(a.sessions)}</button>)}
           {metadataStatus('agents','Loading agents…')}
           {metadataState.agents==='ready'&&!agents.length&&<div className="nav-empty">Sync to discover agents</div>}
-        </div>
-        <div className="nav-section host-section"><div className="section-heading"><div className="section-label">HOSTS</div><button className="tiny-icon" title="Manage remote hosts" aria-label="Manage remote hosts" onClick={()=>setRemoteHostsOpen(true)}><Server size={14}/></button></div>
-          {(facets.hosts||[]).length>0?<>
-            <button className={`nav-item agent-nav ${view==='sessions'&&hostFilter==='@local'?'nav-active':''}`} onClick={()=>{navigate({view:'sessions',selectionExplicit:false});setHostFilter(hostFilter==='@local'?'':'@local');setProjectFilter('');}}><Laptop size={15}/><span>This computer</span></button>
-            {facets.hosts.map(h=><button key={h.value} title={`Sessions from ${h.value}`} className={`nav-item agent-nav ${view==='sessions'&&hostFilter===h.value?'nav-active':''}`} onClick={()=>{navigate({view:'sessions',selectionExplicit:false});setHostFilter(hostFilter===h.value?'':h.value);setProjectFilter('');}}><Server size={15}/><span className="ellipsis">{h.value}</span><span className="nav-count">{h.sessions.toLocaleString()}</span></button>)}
-          </>:<button className="nav-item show-more" onClick={()=>setRemoteHostsOpen(true)}>Add SSH hosts <ArrowRight size={13}/></button>}
-        </div>
-        <div className="nav-section project-section"><div className="section-heading"><div className="section-label">WORKSPACES</div><div className="workspace-menu-anchor"><button className={`tiny-icon ${workspaceMenuOpen?'workspace-menu-active':''}`} title="Workspace options" aria-label="Workspace options" onClick={()=>setWorkspaceMenuOpen(!workspaceMenuOpen)}><MoreHorizontal size={16}/></button>{workspaceMenuOpen&&<div className="workspace-menu"><button onClick={()=>{setAllWorkspaces(!allWorkspaces);setWorkspaceMenuOpen(false);}}>{allWorkspaces?'Show fewer workspaces':'Show all workspaces'}</button><button disabled={!projectFilter} onClick={()=>{setProjectFilter('');setWorkspaceMenuOpen(false);}}>Clear selected workspace</button><button disabled={!workspaceQuery} onClick={()=>{setWorkspaceQuery('');setWorkspaceMenuOpen(false);}}>Clear workspace search</button></div>}</div></div>
-          <label className="workspace-search"><Search size={13}/><input value={workspaceQuery} onChange={e=>setWorkspaceQuery(e.target.value)} disabled={metadataState.projects==='loading'&&!projects.length} placeholder={metadataState.projects==='loading'&&!projects.length?'Loading workspaces…':'Find a workspace…'} aria-label="Search workspaces"/>{workspaceQuery&&<button type="button" title="Clear workspace search" onClick={()=>setWorkspaceQuery('')}><X size={12}/></button>}</label>
-          {shownProjects.map(p=><button key={p.path} title={p.path} className={`nav-item project-nav ${view==='sessions'&&projectFilter===p.path?'nav-active':''}`} onClick={()=>{navigate({view:'sessions',selectionExplicit:false});setProjectFilter(projectFilter===p.path?'':p.path);setAgentFilter('');}}><Folder size={15}/><span className="ellipsis">{p.display_name||shortPath(p.path)}</span><span className="nav-count">{p.sessions}</span></button>)}
+        </section>
+        <section className="nav-section">
+          <div className="section-heading"><span className="section-label">Workspaces</span>{matchingProjects.length>9&&!workspaceQuery&&<button className="section-link" onClick={()=>setAllWorkspaces(!allWorkspaces)}>{allWorkspaces?'Fewer':`All ${matchingProjects.length}`}</button>}</div>
+          {projects.length>6&&<label className="workspace-search"><Search size={13}/><input value={workspaceQuery} onChange={e=>setWorkspaceQuery(e.target.value)} placeholder="Find a workspace" aria-label="Search workspaces"/>{workspaceQuery&&<button type="button" aria-label="Clear workspace search" onClick={()=>setWorkspaceQuery('')}><X size={12}/></button>}</label>}
+          {shownProjects.map(p=><button key={p.path} title={p.path} aria-pressed={projectFilter===p.path} className={`nav-item ${projectFilter===p.path?'nav-active':''}`} onClick={()=>{showSessions();setProjectFilter(projectFilter===p.path?'':p.path);}}><Folder size={15}/><span className="ellipsis">{p.display_name||shortPath(p.path)}</span>{p.path.includes(':/')&&<span className="nav-host">{p.path.split(':')[0]}</span>}{navCount(p.sessions)}</button>)}
           {metadataStatus('projects','Loading workspaces…')}
           {metadataState.projects==='ready'&&!shownProjects.length&&<div className="nav-empty">{workspaceQuery?'No matching workspaces':'No workspaces yet'}</div>}
-          {matchingProjects.length>9&&!workspaceQuery&&<button className="nav-item show-more" onClick={()=>setAllWorkspaces(!allWorkspaces)}>{allWorkspaces?'Show fewer workspaces':'Show all workspaces'} <ArrowRight size={13}/></button>}
+        </section>
+      </div>
+      <div className="sidebar-foot">
+        <div className="sync-card">
+          <div className="sync-card-text"><span className={`sync-dot ${sync.running?'running':''}`}/><span>{sync.running?(sync.filesTotal?`Syncing ${sync.filesDone||0} of ${sync.filesTotal}`:'Checking sources…'):`Synced ${lastSyncText}`}</span></div>
+          <div className="sync-action">
+            <button type="button" className={`sync-button ${sync.running?'sync-stop':''}`} onClick={sync.running?stopSync:()=>startSync()} disabled={syncStarting||syncStopping||(sync.running&&sync.phase==='stopping')} title={sync.running?'Stop sync':'Sync updates'} aria-label={sync.running?'Stop sync':'Sync updates'}>{sync.running?<Square size={13}/>:<RefreshCw size={14}/>}<span>{sync.running?'Stop sync':syncLabel==='Sync'?'Sync now':syncLabel}</span></button>
+            <button type="button" className="sync-options-button" onClick={()=>setSyncMenuOpen(!syncMenuOpen)} aria-label="Sync options" title="Sync options" aria-haspopup="dialog" aria-expanded={syncMenuOpen}><ChevronDown size={14}/></button>
+            {syncMenuOpen&&<SyncMenu
+              agents={agents} disabled={sync.running||syncStarting} autoSync={autoSync}
+              toggleAutoSync={toggleAutoSync} startSync={startSync} onClose={()=>setSyncMenuOpen(false)}
+              agentStatus={metadataStatus('agents','Loading agents…')}
+              checkpointStatus={metadataStatus('sync/checkpoints','Loading sync history…')}
+              agentDescription={family=>metadataState['sync/checkpoints']==='loading'?'Loading sync history…':metadataState['sync/checkpoints']==='error'?'Sync history unavailable':checkpointFor(family)?`Since ${formatSyncTime(checkpointFor(family),currentTime)}`:'First sync · scans all history'}
+            />}
+          </div>
+          {sync.running&&<div className="sync-progress"><span style={{width:`${sync.filesTotal?Math.min(100,sync.filesDone/sync.filesTotal*100):4}%`}}/></div>}
+        </div>
+        <div className="sidebar-tools">
+          <button type="button" className="icon-button" onClick={()=>setRemoteHostsOpen(true)} title="Remote hosts" aria-label="Remote hosts"><Server size={16}/></button>
+          <button type="button" className="icon-button" onClick={()=>{setSyncMenuOpen(false);setDataManagementOpen(true);}} title="Manage saved data" aria-label="Manage saved data" aria-haspopup="dialog"><Database size={16}/></button>
+          <button type="button" className="icon-button" onClick={toggleTheme} title={`Switch to ${theme==='dark'?'light':'dark'} theme`} aria-label={`Switch to ${theme==='dark'?'light':'dark'} theme`}>{theme==='dark'?<Sun size={16}/>:<Moon size={16}/>}</button>
         </div>
       </div>
     </aside>
 
     <main className="main-panel">
-      <header className="topbar"><div className="top-left"><button className="icon-button mobile-menu" onClick={()=>setMobileNav(true)}><Menu size={19}/></button><div className="breadcrumbs"><span>Library</span><span className="crumb-slash">/</span><strong>{view==='analytics'?'Analytics':agentFilter?familyLabel(agentFilter):projectFilter?shortPath(projectFilter):'All sessions'}</strong></div><span className="last-sync-label">Last sync: {metadataState['sync/checkpoints']==='loading'?<><LoaderCircle className="spin" size={11}/> Loading…</>:metadataState['sync/checkpoints']==='error'?'Unavailable':latestSync?formatSyncTime(latestSync,currentTime):'Never'}</span></div><div className="top-actions"><button className={`analytics-btn ${view!=='analytics'?'active':''}`} onClick={()=>setView('sessions')} title="View sessions" aria-label="View sessions" aria-pressed={view!=='analytics'}><MessageSquareText size={15}/><span>Sessions</span></button><button className={`analytics-btn ${view==='analytics'?'active':''}`} onClick={()=>setView('analytics')} title="View analytics" aria-label="View analytics" aria-pressed={view==='analytics'}><TrendingUp size={15}/><span>Analytics</span></button><div className="sync-action"><div className="sync-action-row"><button type="button" className={`sync-button ${sync.running?'sync-stop':''}`} onClick={sync.running?stopSync:()=>{setSyncMenuOpen(!syncMenuOpen);}} disabled={syncStarting||syncStopping||(sync.running&&sync.phase==='stopping')} aria-label={sync.running?'Stop session sync':'Sync options'} aria-haspopup={sync.running?undefined:'dialog'} aria-expanded={sync.running?undefined:syncMenuOpen} title={sync.running?'Stop session sync':'Sync options'}>{sync.running?<Square size={14}/>:<RefreshCw size={15}/>}<span>{syncStarting?'Starting…':syncStopping||sync.phase==='stopping'?'Stopping…':sync.running?'Stop sync':'Sync updates'}</span>{sync.running&&<span className="button-count">{sync.filesDone||0}/{sync.filesTotal||0}</span>}{!sync.running&&<ChevronDown size={14}/>}</button>{sync.running&&<button type="button" className="sync-options-button" onClick={()=>setSyncMenuOpen(!syncMenuOpen)} aria-label="Sync options" title="Sync options" aria-haspopup="dialog" aria-expanded={syncMenuOpen}><ChevronDown size={14}/></button>}</div>{syncMenuOpen&&<SyncMenu
-          agents={agents} disabled={sync.running||syncStarting} autoSync={autoSync}
-          toggleAutoSync={toggleAutoSync} startSync={startSync} onClose={()=>setSyncMenuOpen(false)}
-          agentStatus={metadataStatus('agents','Loading agents…')}
-          checkpointStatus={metadataStatus('sync/checkpoints','Loading sync history…')}
-          agentDescription={family=>metadataState['sync/checkpoints']==='loading'?'Loading sync history…':metadataState['sync/checkpoints']==='error'?'Sync history unavailable':checkpointFor(family)?`Since ${formatSyncTime(checkpointFor(family),currentTime)}`:'First sync · scans all history'}
-        />}</div><button type="button" className="theme-toggle" onClick={()=>{setSyncMenuOpen(false);setDataManagementOpen(true);}} title="Manage saved data" aria-label="Manage saved data" aria-haspopup="dialog"><Database size={16}/></button><button className="theme-toggle" onClick={toggleTheme} title={`Switch to ${theme==='dark'?'light':'dark'} theme`} aria-label={`Switch to ${theme==='dark'?'light':'dark'} theme`} aria-pressed={theme==='light'}>{theme==='dark'?<Sun size={16}/>:<Moon size={16}/>}</button></div></header>
-      {sync.running&&<div className="sync-progress"><span style={{width:`${sync.filesTotal?Math.min(100,sync.filesDone/sync.filesTotal*100):2}%`}}/></div>}
       {view === 'analytics' ? (
         <AnalyticsView
           theme={theme}
@@ -508,101 +557,112 @@ function App(){
           onNavigationChange={updateAnalyticsNavigation}
           onSelectSession={selectSession}
           onClose={() => setView('sessions')}
+          onOpenNav={() => setMobileNav(true)}
         />
       ) : (
         <div className="content-area">
-          <div className="page-intro"><div><h1>{agentFilter?familyLabel(agentFilter):projectFilter?shortPath(projectFilter):'Sessions'}</h1></div><div className="intro-stats"><div><strong>{metadataState.stats==='ready'?stats.sessions.toLocaleString():'—'}</strong><span>sessions</span></div><i/><div><strong>{metadataState.stats==='ready'?(stats.agents||0):'—'}</strong><span>agents</span></div><i/><div><strong>{metadataState.stats==='ready'?stats.files.toLocaleString():'—'}</strong><span>files seen</span></div></div></div>
-
-          {notice&&<div className="notice"><Check size={15}/>{notice}<button onClick={()=>setNotice('')}><X size={14}/></button></div>}
-          <div className="toolbar"><div className="search-wrap"><Search size={16}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search sessions…" aria-label="Search sessions"/>{query&&<button className="clear-search" onClick={()=>setQuery('')}><X size={14}/></button>}</div><div className="toolbar-actions"><button type="button" className={`sort-button ${starredOnly?'annotation-active':''}`} onClick={()=>setStarredOnly(v=>!v)} aria-pressed={starredOnly} title="Show starred sessions"><Star size={14} fill={starredOnly?'currentColor':'none'}/><span>Starred</span></button><DateFilter value={timeFilter} onChange={setTimeFilter}/><ModelFilter loading={metadataState.facets==='loading'} error={metadataState.facets==='error'} onRetry={loadMeta} models={facets.models} selected={modelFilters} onChange={setModelFilters}/><BranchFilter loading={metadataState.facets==='loading'} error={metadataState.facets==='error'} onRetry={loadMeta} branches={facets.branches} selected={branchFilter} onChange={setBranchFilter}/><ToolFilter loading={metadataState.facets==='loading'} error={metadataState.facets==='error'} onRetry={loadMeta} tools={facets.tools} selected={toolFilters} onChange={setToolFilters}/>{(timeFilter||modelFilters.length>0||branchFilter||toolFilters.length>0||starredOnly||tagFilters.length>0)&&<button type="button" className="clear-all-filters-btn" onClick={()=>{setTimeFilter('');setModelFilters([]);setBranchFilter('');setToolFilters([]);setStarredOnly(false);setTagFilters([]);}} title="Clear all active filters"><X size={12}/><span>Clear</span></button>}<div className="sort-anchor" ref={sortAnchorRef}><button className={`sort-button ${sortOpen?'sort-open':''}`} onClick={()=>setSortOpen(!sortOpen)} title="Sort sessions" aria-label="Sort sessions" aria-expanded={sortOpen}><ArrowUpDown size={14}/><span>Sort</span><ChevronDown size={13}/></button>{sortOpen&&<div className="sort-menu">{[{value:'recent',label:'Most recent'},{value:'oldest',label:'Oldest'},{value:'longest',label:'Longest'},{value:'messages',label:'Most messages'}].map(opt=><button key={opt.value} className={`sort-menu-item ${sortOrder===opt.value?'sort-menu-active':''}`} onClick={()=>{setSortOrder(opt.value);setSortOpen(false);}}><span>{opt.label}</span>{sortOrder===opt.value&&<Check size={13}/>}</button>)}</div>}</div></div></div>
-          <div className="metadata-indicators">{metadataStatus('stats','Loading library counts…')}{metadataStatus('facets','Loading filters…')}</div>
-          {syncError&&<div className="error-strip"><CircleHelp size={15}/><span>{syncError}</span><button onClick={()=>setSyncError('')}><X size={14}/></button></div>}
+          <header className="toolbar">
+            <button className="icon-button mobile-menu" onClick={()=>setMobileNav(true)} aria-label="Open navigation"><Menu size={18}/></button>
+            <div className="search-wrap"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search titles, prompts, and transcripts" aria-label="Search sessions"/>{query&&<button className="clear-search" onClick={()=>setQuery('')} aria-label="Clear search"><X size={14}/></button>}</div>
+            <div className="toolbar-actions">
+              <button type="button" className={`filter-button ${starredOnly?'filter-has-value':''}`} onClick={()=>setStarredOnly(v=>!v)} aria-pressed={starredOnly} title="Show starred sessions"><Star size={14} fill={starredOnly?'currentColor':'none'}/><span>Starred</span></button>
+              <DateFilter value={timeFilter} onChange={setTimeFilter}/>
+              <ModelFilter loading={metadataState.facets==='loading'} error={metadataState.facets==='error'} onRetry={loadMeta} models={facets.models} selected={modelFilters} onChange={setModelFilters}/>
+              <BranchFilter loading={metadataState.facets==='loading'} error={metadataState.facets==='error'} onRetry={loadMeta} branches={facets.branches} selected={branchFilter} onChange={setBranchFilter}/>
+              <ToolFilter loading={metadataState.facets==='loading'} error={metadataState.facets==='error'} onRetry={loadMeta} tools={facets.tools} selected={toolFilters} onChange={setToolFilters}/>
+            </div>
+          </header>
+          {(activeChips.length>0||!filterDefaults)&&<div className="active-filters" aria-label="Active filters">
+            {activeChips.map(c=><span className="active-chip" key={c.key} title={c.title}>{c.icon}<span>{c.label}</span><button type="button" onClick={c.clear} aria-label={`Remove filter ${c.label}`}><X size={12}/></button></span>)}
+            {!filterDefaults&&<button type="button" className="text-button" onClick={clearAllFilters}>Clear all</button>}
+          </div>}
+          {notice&&<div className="notice" role="status"><Check size={15}/><span>{notice}</span><button onClick={()=>setNotice('')} aria-label="Dismiss"><X size={14}/></button></div>}
+          {syncError&&<div className="error-strip" role="alert"><CircleHelp size={15}/><span>{syncError}</span><button onClick={()=>setSyncError('')} aria-label="Dismiss"><X size={14}/></button></div>}
+          <div className="metadata-indicators">{metadataStatus('facets','Loading filters…')}</div>
 
           <div className="browser-grid">
-            <section className="session-column"><div className="list-head"><div><strong>{query?`${total} results`:`${total.toLocaleString()} sessions`}</strong><span>{query?'matching your search':`sorted by ${{recent:'most recent',oldest:'oldest',longest:'longest',messages:'most messages'}[sortOrder]}`}</span></div><button type="button" className="sort-button" title="Export sessions" aria-label="Export sessions" onClick={()=>setExportOpen(true)}><Download size={14}/><span>Export</span></button></div>
-              <div className="session-list">
-                {loading&&<div className="session-loading" role="status" aria-live="polite"><div className="loading-label"><LoaderCircle className="spin" size={15}/><span>Loading {agentFilter?`${familyLabel(agentFilter)} sessions`:'sessions'}</span></div>{[0,1,2].map(item=><div className="session-skeleton" key={item}><span className="skeleton-line skeleton-agent"/><span className="skeleton-line skeleton-title"/><span className="skeleton-line skeleton-copy"/><span className="skeleton-line skeleton-meta"/></div>)}</div>}
-                {!loading&&groups.map(g=><div className="date-group" key={g.label}><div className="date-label">{g.label}</div>{g.items.map(s=><div key={s.id} className="session-card-wrap"><button type="button" className={`session-card ${String(selected)===String(s.id)?'session-selected':''}`} onClick={()=>selectSession(s.id)}>
-                  <div className="card-top"><span className={`agent-mark ${agentColors[s.agent]||'gray'}`}>{agentMark[s.agent]||s.product?.[0]}</span><span className="card-agent">{s.product||familyLabel(s.agent)}</span><span className="card-time">{parseDate(s.last_event_at||s.started_at)?.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})||'—'}</span></div>
-                  <strong className="session-title">{s.title||'Untitled session'}</strong>{s.tags?.length>0&&<div className="card-tags">{s.tags.map(tag=><span className="tag-chip" key={tag}>{tag}</span>)}</div>}<p className="session-preview">{(s.preview||'No text preview available').replace(/\s+/g,' ').slice(0,145)}</p>
-                  <div className="card-meta">{s.host&&<span className="host-chip" title={`Recorded on ${s.host}`}><Server size={11}/>{s.host}</span>}<span><Folder size={12}/>{shortPath(s.project||s.cwd)}</span>{s.branch&&<span><GitBranch size={12}/>{s.branch}</span>}</div>
-                </button><button type="button" className={`card-star ${s.starred?'is-starred':''}`} aria-label={`${s.starred?'Unstar':'Star'} ${s.title||'session'}`} aria-pressed={Boolean(s.starred)} title={s.starred?'Unstar session':'Star session'} disabled={starPending.has(s.id)} onClick={e=>{e.stopPropagation();toggleSessionStar(s);}}><Star size={15} fill={s.starred?'currentColor':'none'}/></button>                </div>)}</div>)}
-                {!loading&&!sessions.length&&<div className="empty-list"><div className="empty-orb"><MessageSquareText size={20}/></div><strong>{query?'No matching sessions':'Your session library is waiting'}</strong><p>{query?'Try a different phrase or clear a filter.':'Sync local agent history to bring your conversations together.'}</p>{!query&&<button className={`sync-button ${sync.running?'sync-stop':''}`} disabled={syncStarting||syncStopping||(sync.running&&sync.phase==='stopping')} onClick={sync.running?stopSync:()=>startSync()}>{sync.running?<Square size={14}/>:<RefreshCw size={14}/>}<span>{syncStarting?'Starting…':syncStopping||sync.phase==='stopping'?'Stopping…':sync.running?'Stop sync':'Sync your sessions'}</span></button>}</div>}
+            <section className="session-column" aria-label="Sessions">
+              <div className="list-head">
+                <span className="list-count">{loading&&!sessions.length?'Loading…':`${total.toLocaleString()} ${query?'results':total===1?'session':'sessions'}`}</span>
+                <div className="sort-anchor" ref={sortAnchorRef}><button className="text-button" onClick={()=>setSortOpen(!sortOpen)} aria-expanded={sortOpen} aria-label="Sort sessions">{{recent:'Most recent',oldest:'Oldest',longest:'Longest',messages:'Most messages'}[sortOrder]}<ChevronDown size={13}/></button>{sortOpen&&<div className="sort-menu">{[{value:'recent',label:'Most recent'},{value:'oldest',label:'Oldest'},{value:'longest',label:'Longest'},{value:'messages',label:'Most messages'}].map(opt=><button key={opt.value} className={`sort-menu-item ${sortOrder===opt.value?'sort-menu-active':''}`} onClick={()=>{setSortOrder(opt.value);setSortOpen(false);}}><span>{opt.label}</span>{sortOrder===opt.value&&<Check size={13}/>}</button>)}</div>}</div>
+                <button type="button" className="icon-button" title="Export sessions" aria-label="Export sessions" onClick={()=>setExportOpen(true)}><Download size={15}/></button>
               </div>
-              <div className="list-footer"><span>Showing {total?`${(page*PAGE_SIZE)+1}–${(page*PAGE_SIZE)+sessions.length} of ${total.toLocaleString()}`:'0 of 0'}</span><div className="pagination-controls"><button title="Previous page" aria-label="Previous page" disabled={page===0||loading} onClick={()=>setPage(current=>Math.max(0,current-1))}><ChevronLeft size={13}/></button><span>{total?`${page+1} / ${Math.ceil(total/PAGE_SIZE)}`:'0 / 0'}</span><button title="Next page" aria-label="Next page" disabled={(page+1)*PAGE_SIZE>=total||loading} onClick={()=>setPage(current=>current+1)}><ChevronRight size={13}/></button></div><button title="Refresh" aria-label="Refresh sessions" onClick={loadSessions}><RefreshCw size={13}/></button></div>
+              <div className="session-list">
+                {loading&&<div className="session-loading" role="status" aria-live="polite">{[0,1,2,3].map(item=><div className="session-skeleton" key={item}><span className="skeleton-line skeleton-agent"/><span className="skeleton-line skeleton-title"/><span className="skeleton-line skeleton-meta"/></div>)}</div>}
+                {!loading&&groups.map(g=><div className="date-group" key={g.label}><div className="date-label">{g.label}</div>{g.items.map(s=><div key={s.id} className="session-card-wrap"><button type="button" className={`session-card ${String(selected)===String(s.id)?'session-selected':''}`} aria-current={String(selected)===String(s.id)?'true':undefined} onClick={()=>selectSession(s.id)}>
+                  <div className="card-top"><span className={`agent-dot ${agentColors[s.agent]||'gray'}`}/><span className="card-agent">{s.product||familyLabel(s.agent)}</span>{s.host&&<span className="host-chip" title={`Recorded on ${s.host}`}><Server size={10}/>{s.host}</span>}<span className="card-time">{parseDate(s.last_event_at||s.started_at)?.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})||'—'}</span></div>
+                  <strong className="session-title">{s.title||'Untitled session'}</strong>
+                  <div className="card-meta"><span title={s.project||s.cwd}><Folder size={12}/>{shortPath(s.project||s.cwd)}</span>{s.branch&&<span><GitBranch size={12}/>{s.branch}</span>}{s.tags?.map(tag=><span className="tag-chip" key={tag}>{tag}</span>)}</div>
+                </button><button type="button" className={`card-star ${s.starred?'is-starred':''}`} aria-label={`${s.starred?'Unstar':'Star'} ${s.title||'session'}`} aria-pressed={Boolean(s.starred)} title={s.starred?'Unstar':'Star'} disabled={starPending.has(s.id)} onClick={e=>{e.stopPropagation();toggleSessionStar(s);}}><Star size={14} fill={s.starred?'currentColor':'none'}/></button></div>)}</div>)}
+                {!loading&&!sessions.length&&<div className="empty-list"><div className="empty-orb"><MessageSquareText size={20}/></div><strong>{query||!filterDefaults?'No matching sessions':'Your library is empty'}</strong><p>{query||!filterDefaults?'Try another search or clear a filter.':'Sync to import agent history from this computer and your SSH hosts.'}</p>{!filterDefaults?<button className="btn" onClick={clearAllFilters}>Clear filters</button>:!query&&<button className="btn primary" disabled={sync.running||syncStarting} onClick={()=>startSync()}><RefreshCw size={14}/>Sync now</button>}</div>}
+              </div>
+              {total>PAGE_SIZE&&<div className="list-footer"><span>{`${(page*PAGE_SIZE)+1}–${(page*PAGE_SIZE)+sessions.length} of ${total.toLocaleString()}`}</span><div className="pagination-controls"><button aria-label="Previous page" disabled={page===0||loading} onClick={()=>setPage(current=>Math.max(0,current-1))}><ChevronLeft size={14}/></button><button aria-label="Next page" disabled={(page+1)*PAGE_SIZE>=total||loading} onClick={()=>setPage(current=>current+1)}><ChevronRight size={14}/></button></div></div>}
             </section>
 
-            <section className="detail-column">
+            <section className="detail-column" aria-label="Session">
               {detail&&!isDetailLoading?<>
-                <div className="detail-header"><div className="detail-title-wrap"><div className="detail-agent-line"><span className={`agent-mark ${agentColors[detail.session.agent]||'gray'}`}>{agentMark[detail.session.agent]||detail.session.product?.[0]}</span><span>{detail.session.product||familyLabel(detail.session.agent)}</span><span className="detail-sep">·</span><span>{relativeDate(detail.session.last_event_at||detail.session.started_at)}</span></div><h2>{detail.session.title||'Untitled session'}</h2><div className="detail-subline">{detail.session.host&&<span className="host-chip"><Server size={12}/>{detail.session.host}</span>}<span><Folder size={13}/>{detail.session.project?shortPath(detail.session.project):shortPath(detail.session.cwd)}</span>{detail.session.branch&&<span><GitBranch size={13}/>{detail.session.branch}</span>}{detail.session.model&&<span><Sparkles size={13}/>{detail.session.model}</span>}</div></div><div className="detail-header-actions"><button type="button" className="resume-button" title={detail.session.host?`Open the workspace on ${detail.session.host} with VS Code Remote-SSH`:'Open the workspace in VS Code'} aria-label="Open workspace in VS Code" onClick={openInEditor}><Code2 size={14}/><span>VS Code</span></button><button type="button" className="resume-button" title="Resume this session in its native agent CLI" aria-label="Resume this session" onClick={openResume}><Terminal size={14}/><span>Resume</span></button></div></div>
-                <div className="session-annotations">{(detail.session.tags||[]).map(tag=><button type="button" className="tag-chip" key={tag} disabled={annotationBusy} title={`Remove tag ${tag}`} aria-label={`Remove tag ${tag}`} onClick={()=>updateAnnotations({tags:detail.session.tags.filter(t=>t!==tag)})}>{tag}<X size={11}/></button>)}<form className="tag-form" onSubmit={e=>{e.preventDefault();if(tagDraft.trim())updateAnnotations({tags:[...(detail.session.tags||[]),tagDraft.trim()]});}}><input value={tagDraft} onChange={e=>setTagDraft(e.target.value)} maxLength={80} placeholder="Add a tag…" aria-label="New session tag" disabled={annotationBusy}/><button type="submit" disabled={annotationBusy||!tagDraft.trim()}>Add</button></form><button type="button" className="icon-button" title="Export this session" aria-label="Export this session" onClick={()=>{setExportScope('session');setExportOpen(true);}}><Download size={15}/></button></div>
-                <div className="transcript-toolbar">
-                  <nav className="transcript-pagination" aria-label="Transcript pages">
-                    <div className="pagination-controls">
-                      <button title="First page" aria-label="First transcript page" disabled={detailSafePage<=1||isDetailLoading} onClick={()=>gotoDetailPage(1)}><ChevronLeft size={13}/><ChevronLeft size={13} style={{marginLeft:-10}} /></button>
-                      <button title="Previous page" aria-label="Previous transcript page" disabled={detailSafePage<=1||isDetailLoading} onClick={()=>gotoDetailPage(detailSafePage-1)}><ChevronLeft size={13}/></button>
-                      <form className="pagination-jump" onSubmit={submitDetailJump}>
-                        <span aria-live="polite">{detailTotal?`${detailRangeStart}–${detailRangeEnd} of ${detailTotal.toLocaleString()}`:'0 of 0'} · Page <input value={detailJump} onChange={e=>setDetailJump(e.target.value.replace(/[^0-9]/g,''))} placeholder={String(detailSafePage)} aria-label={`Go to transcript page, current page ${detailSafePage} of ${detailTotalPages}`} title="Enter a page number and press Enter" inputMode="numeric" disabled={isDetailLoading} /> / {detailTotalPages}</span>
-                      </form>
-                      <button title="Next page" aria-label="Next transcript page" disabled={detailSafePage>=detailTotalPages||isDetailLoading} onClick={()=>gotoDetailPage(detailSafePage+1)}><ChevronRight size={13}/></button>
-                      <button title="Last page" aria-label="Last transcript page" disabled={detailSafePage>=detailTotalPages||isDetailLoading} onClick={()=>gotoDetailPage(detailTotalPages)}><ChevronRight size={13}/><ChevronRight size={13} style={{marginLeft:-10}} /></button>
-                    </div>
-                  </nav>
-                  <div className="transcript-filter-actions">
-                    <div className="transcript-filters" role="group" aria-label="Filter transcript entries">
-                      <button className={`transcript-toggle ${entryFilter==='all'?'active':''}`} onClick={()=>setEntryFilter('all')} title="Show all entries">All<b>{entryCountLabel('all')}</b></button>
-                      <button className={`transcript-toggle ${entryFilter==='user'?'active':''}`} onClick={()=>setEntryFilter(c=>c==='user'?'all':'user')} title="Filter by user messages"><User size={12}/>User<b>{entryCountLabel('user')}</b></button>
-                      <button className={`transcript-toggle ${entryFilter==='assistant'?'active':''}`} onClick={()=>setEntryFilter(c=>c==='assistant'?'all':'assistant')} title="Filter by agent responses"><Bot size={12}/>Agent<b>{entryCountLabel('assistant')}</b></button>
-                      <button className={`transcript-toggle ${entryFilter==='tool'?'active':''}`} onClick={()=>setEntryFilter(c=>c==='tool'?'all':'tool')} title="Filter by tool calls and results"><Terminal size={12}/>Tools<b>{entryCountLabel('tool')}</b></button>
-                      <button className={`transcript-toggle ${entryFilter==='event'?'active':''}`} onClick={()=>setEntryFilter(c=>c==='event'?'all':'event')} title="Filter by session events"><Layers3 size={12}/>Events<b>{entryCountLabel('event')}</b></button>
+                <div className="detail-header">
+                  <div className="detail-agent-line"><span className={`agent-dot ${agentColors[detail.session.agent]||'gray'}`}/><span>{detail.session.product||familyLabel(detail.session.agent)}</span>{detail.session.host&&<span className="host-chip"><Server size={11}/>{detail.session.host}</span>}<span className="detail-sep">·</span><span>{relativeDate(detail.session.last_event_at||detail.session.started_at)}</span></div>
+                  <div className="detail-title-row">
+                    <h2>{detail.session.title||'Untitled session'}</h2>
+                    <div className="detail-header-actions">
+                      <button type="button" className={`icon-button ${detail.session.starred?'is-starred':''}`} aria-pressed={Boolean(detail.session.starred)} title={detail.session.starred?'Unstar':'Star'} aria-label={detail.session.starred?'Unstar session':'Star session'} onClick={()=>toggleSessionStar(detail.session)}><Star size={15} fill={detail.session.starred?'currentColor':'none'}/></button>
+                      <button type="button" className="icon-button" title="Export this session" aria-label="Export this session" onClick={()=>{setExportScope('session');setExportOpen(true);}}><Download size={15}/></button>
+                      <button type="button" className="btn" title={detail.session.host?`Open the workspace on ${detail.session.host} with VS Code Remote-SSH`:'Open the workspace in VS Code'} onClick={openInEditor}><Code2 size={14}/><span>VS Code</span></button>
+                      <button type="button" className="btn primary" title="Resume this session in its agent CLI" onClick={openResume}><Terminal size={14}/><span>Resume</span></button>
                     </div>
                   </div>
+                  <div className="detail-subline"><span className="mono" title={detail.session.cwd||detail.session.project}><Folder size={13}/>{detail.session.cwd||shortPath(detail.session.project)}</span>{detail.session.branch&&<span><GitBranch size={13}/>{detail.session.branch}</span>}{detail.session.model&&<span><Sparkles size={13}/>{detail.session.model}</span>}</div>
+                  <div className="session-annotations">{(detail.session.tags||[]).map(tag=><button type="button" className="tag-chip removable" key={tag} disabled={annotationBusy} title={`Remove tag ${tag}`} aria-label={`Remove tag ${tag}`} onClick={()=>updateAnnotations({tags:detail.session.tags.filter(t=>t!==tag)})}>{tag}<X size={11}/></button>)}<form className="tag-form" onSubmit={e=>{e.preventDefault();if(tagDraft.trim())updateAnnotations({tags:[...(detail.session.tags||[]),tagDraft.trim()]});}}><Tag size={12}/><input value={tagDraft} onChange={e=>setTagDraft(e.target.value)} maxLength={80} placeholder="Add tag" aria-label="New session tag" disabled={annotationBusy}/></form></div>
+                </div>
+                <div className="transcript-toolbar">
+                  <div className="transcript-filters segmented" role="group" aria-label="Filter transcript entries">
+                    {[['all','All',null],['user','You',<User size={12} key="u"/>],['assistant','Agent',<Bot size={12} key="a"/>],['tool','Tools',<Terminal size={12} key="t"/>],['event','Events',<Layers3 size={12} key="e"/>]].map(([key,label,icon])=><button key={key} className={`transcript-toggle ${entryFilter===key?'active':''}`} aria-pressed={entryFilter===key} onClick={()=>setEntryFilter(c=>key==='all'||c===key?'all':key)}>{icon}{label}<b>{entryCounts[key]}</b></button>)}
+                  </div>
+                  {detailTotalPages>1&&<nav className="transcript-pagination pagination-controls" aria-label="Transcript pages">
+                    <button aria-label="Previous transcript page" disabled={detailSafePage<=1||isDetailLoading} onClick={()=>gotoDetailPage(detailSafePage-1)}><ChevronLeft size={14}/></button>
+                    <form className="pagination-jump" onSubmit={submitDetailJump}><span aria-live="polite">{detailRangeStart}–{detailRangeEnd} of {detailTotal.toLocaleString()} · page <input value={detailJump} onChange={e=>setDetailJump(e.target.value.replace(/[^0-9]/g,''))} placeholder={String(detailSafePage)} aria-label={`Go to transcript page, current page ${detailSafePage} of ${detailTotalPages}`} inputMode="numeric" disabled={isDetailLoading}/> of {detailTotalPages}</span></form>
+                    <button aria-label="Next transcript page" disabled={detailSafePage>=detailTotalPages||isDetailLoading} onClick={()=>gotoDetailPage(detailSafePage+1)}><ChevronRight size={14}/></button>
+                  </nav>}
                 </div>
                 <div className="transcript-scroll">
-                  {detailEntries.map((e,i)=>{
+                  {detailEntries.map(e=>{
                     const role=e.role||'event';const isAssistant=role==='assistant';const isUser=role==='user';
                     const {tools:toolsVisible,text:textParts,special}=transcriptParts(e);
                     const isCollapsed=collapsedEntries.has(e.id);
                     const firstText=textParts[0]?.text?.replace(/\s+/g,' ').trim();
-                    return <article className={`transcript-entry ${isUser?'user-entry':isAssistant?'assistant-entry':'system-entry'}`} key={e.id}>
-                      <div className="message-avatar">{isUser?<span>Y</span>:isAssistant?<Bot size={15}/>:<Code2 size={14}/>}</div>
-                      <div className="message-content">
-                        <div
-                          className={`message-head ${isCollapsed?'is-collapsed':''}`}
-                          onClick={()=>toggleCollapse(e.id)}
-                          role="button"
-                          tabIndex={0}
-                          aria-expanded={!isCollapsed}
-                          title={isCollapsed?'Click to expand message':'Click to collapse message'}
-                          onKeyDown={ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();toggleCollapse(e.id);}}}
-                        >
-                          <ChevronDown size={12} className={`message-collapse-chevron ${isCollapsed?'collapsed':''}`}/>
-                          <strong>{isUser?'You':isAssistant?(detail.session.product||'Assistant'):role==='tool'?'Tool':'Session event'}</strong>
-                          <span>{e.occurred_at?parseDate(e.occurred_at)?.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):e.kind?.replaceAll('_',' ')}</span>
-                          {!isUser&&!isAssistant&&<span className="event-kind">{e.kind?.replaceAll('_',' ')}</span>}
-                          {isCollapsed&&<span className="collapsed-preview">{firstText?(firstText.length>55?`${firstText.slice(0,52)}…`:firstText):special[0]?.text||toolsVisible[0]?.tool_name||'Collapsed'}</span>}
-                          <button className="copy-entry" onClick={ev=>{ev.stopPropagation();copyEntry(e);}} title="Copy message as Markdown" aria-label="Copy message as Markdown">{copiedEntry===e.id?<Check size={13}/>:<Copy size={13}/>}<span>{copiedEntry===e.id?'Copied':'Copy MD'}</span></button>
-                        </div>
-                        {!isCollapsed&&<>
-                          {textParts.map((p,j)=><div className="message-text markdown-body" key={p.id||j}><ReactMarkdown remarkPlugins={[remarkGfm]}>{p.text}</ReactMarkdown></div>)}
-                          {special.map((p,j)=><div className="tool-block" key={p.id||j}><div className="tool-block-head"><Terminal size={13}/><strong>{p.kind==='tool_result'?'Tool result':p.text||p.kind.replaceAll('_',' ')}</strong><ChevronDown size={13}/></div><pre>{p.kind==='tool_result'&&p.text?p.text:p.data_json?formatData(p.data_json):p.text||'Tool activity recorded'}</pre></div>)}
-                          {toolsVisible.map(t=><div className="tool-block" key={t.id}><div className="tool-block-head"><Terminal size={13}/><strong>{t.tool_name}</strong><span className="tool-status">{t.status||'invoked'}</span><ChevronDown size={13}/></div>{t.command_text&&<pre className="command-pre">$ {t.command_text}</pre>}{t.arguments_json&&<pre>{formatData(t.arguments_json)}</pre>}{t.result_text&&<pre>{t.result_text.slice(0,6000)}</pre>}</div>)}
-                          {!textParts.length&&!special.length&&!toolsVisible.length&&role==='event'&&<div className="event-note">{e.kind?.replaceAll('_',' ')}<span>{e.payload_json&&formatData(e.payload_json)}</span></div>}
-                        </>}
+                    // Agents log tool results under the user role; show them as tool output.
+                    const toolOnly=!textParts.length&&(toolsVisible.length>0||special.length>0);
+                    const kind=toolOnly?'tool':isUser?'user':isAssistant?'assistant':'system';
+                    return <article className={`transcript-entry ${kind}-entry`} key={e.id}>
+                      <div className="message-head" onClick={()=>toggleCollapse(e.id)} role="button" tabIndex={0} aria-expanded={!isCollapsed} title={isCollapsed?'Expand':'Collapse'} onKeyDown={ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();toggleCollapse(e.id);}}}>
+                        <span className="message-avatar">{kind==='user'?<User size={13}/>:kind==='assistant'?<Bot size={13}/>:<Terminal size={12}/>}</span>
+                        <strong>{kind==='user'?'You':kind==='assistant'?(detail.session.product||'Agent'):kind==='tool'?'Tool output':'Event'}</strong>
+                        {kind==='system'&&e.kind&&<span className="event-kind">{e.kind.replaceAll('_',' ')}</span>}
+                        <span className="message-time">{e.occurred_at?parseDate(e.occurred_at)?.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):''}</span>
+                        {isCollapsed&&<span className="collapsed-preview">{firstText||special[0]?.text||toolsVisible[0]?.tool_name||''}</span>}
+                        <button className="copy-entry" onClick={ev=>{ev.stopPropagation();copyEntry(e);}} title="Copy as Markdown" aria-label="Copy message as Markdown">{copiedEntry===e.id?<Check size={13}/>:<Copy size={13}/>}</button>
+                        <ChevronDown size={14} className={`message-collapse-chevron ${isCollapsed?'collapsed':''}`}/>
                       </div>
+                      {!isCollapsed&&<div className="message-content">
+                        {textParts.map((p,j)=><div className="message-text markdown-body" key={p.id||j}><ReactMarkdown remarkPlugins={[remarkGfm]}>{p.text}</ReactMarkdown></div>)}
+                        {special.map((p,j)=><details className="tool-block" key={p.id||j} open><summary className="tool-block-head"><Terminal size={13}/><strong>{p.kind==='tool_result'?'Result':p.text||p.kind.replaceAll('_',' ')}</strong></summary><pre>{p.kind==='tool_result'&&p.text?p.text:p.data_json?formatData(p.data_json):p.text||'Tool activity recorded'}</pre></details>)}
+                        {toolsVisible.map(t=><details className="tool-block" key={t.id} open><summary className="tool-block-head"><Terminal size={13}/><strong>{t.tool_name}</strong><span className={`tool-status status-${t.status||'invoked'}`}>{t.status||'invoked'}</span></summary>{t.command_text&&<pre className="command-pre">$ {t.command_text}</pre>}{t.arguments_json&&!t.command_text&&<pre>{formatData(t.arguments_json)}</pre>}{t.result_text&&<pre>{t.result_text.slice(0,6000)}</pre>}</details>)}
+                        {!textParts.length&&!special.length&&!toolsVisible.length&&role==='event'&&<div className="event-note"><span>{e.payload_json&&formatData(e.payload_json)}</span></div>}
+                      </div>}
                     </article>;
                   })}
-                  {!detailEntries.length&&<div className="transcript-empty"><div className="empty-orb"><FileCode2 size={20}/></div><strong>No {entryFilter==='all'?'displayable':entryFilter==='assistant'?'agent response':entryFilter} entries on this page</strong><span>{entryFilter!=='all'?'Try clearing the filter or selecting All.':'Session metadata is still available above.'}</span></div>}
-                  <div className="transcript-end"><span/>{detailSafePage>=detailTotalPages?'END OF SESSION':`PAGE ${detailSafePage} OF ${detailTotalPages}`}<span/></div>
+                  {!detailEntries.length&&<div className="transcript-empty"><div className="empty-orb"><FileCode2 size={20}/></div><strong>No {entryFilter==='all'?'displayable':entryFilter==='assistant'?'agent':entryFilter} entries on this page</strong><span>{entryFilter!=='all'?'Show all entries to see the rest.':'Session details are still shown above.'}</span></div>}
+                  <div className="transcript-end">{detailSafePage>=detailTotalPages?'End of session':`Page ${detailSafePage} of ${detailTotalPages}`}</div>
                 </div>
-              </>:isDetailLoading?<div className="detail-loading" role="status" aria-live="polite"><div className="loading-label"><LoaderCircle className="spin" size={16}/><span>Loading session…</span></div></div>:<div className="detail-placeholder"><div className="placeholder-art"><div className="art-ring ring-a"/><div className="art-ring ring-b"/><div className="art-center"><MessageSquareText size={25}/></div><span className="art-star star-one">✦</span><span className="art-star star-two">✧</span></div><h2>{detailError?'Could not load this session':'No session selected'}</h2><p>{detailError||'Select a session to explore the full conversation.'}</p></div>}
+              </>:isDetailLoading?<div className="detail-loading" role="status" aria-live="polite"><LoaderCircle className="spin" size={18}/><span>Loading session…</span></div>:<div className="detail-placeholder"><div className="empty-orb"><MessageSquareText size={22}/></div><h2>{detailError?'Could not load this session':'No session selected'}</h2><p>{detailError||'Pick a session from the list to read the full conversation.'}</p></div>}
             </section>
           </div>
         </div>
       )}
     </main>
-    {exportOpen&&<div className="export-backdrop" onClick={e=>{if(e.target===e.currentTarget&&!exportBusy)setExportOpen(false);}}><div ref={exportDialogRef} className="export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-title" onKeyDown={e=>{if(e.key==='Escape'&&!exportBusy)setExportOpen(false);if(e.key==='Tab'){const controls=Array.from(e.currentTarget.querySelectorAll('button:not(:disabled),input:not(:disabled)'));const first=controls[0],last=controls.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus();}}}}><div className="export-heading"><h2 id="export-title">Export sessions</h2><button type="button" className="icon-button" aria-label="Close export" disabled={exportBusy} onClick={()=>setExportOpen(false)}><X size={17}/></button></div><ExportSelect label="Export scope" value={exportScope} disabled={exportBusy} onChange={setExportScope} options={[{value:'session',label:'Selected session',disabled:!detail||isDetailLoading},{value:'filtered',label:`Filtered view (all ${total.toLocaleString()} matches)`},{value:'library',label:'Whole library'}]}/><ExportSelect label="Format" value={exportFormat} disabled={exportBusy} onChange={setExportFormat} options={[{value:'markdown',label:'Markdown (.md)'},{value:'json',label:'JSON (.json)'}]}/><label className="export-stats"><input type="checkbox" checked={includeStats} disabled={exportBusy} onChange={e=>{setIncludeStats(e.target.checked);localStorage.setItem(storageKey('export-stats'),String(e.target.checked));}}/>Include session stats (tokens, estimated cost, duration, turns, tools)</label><p>Exports include full transcripts, bookmarks, and tags. The stats preference is saved for future exports.</p>{exportBusy&&<div className="export-progress-status" role="status" aria-live="polite"><LoaderCircle className="spin" size={16}/><span>{exportStopping?'Stopping export…':exportProgress.phase}{!exportStopping&&exportProgress.total>0?` · ${exportProgress.done} / ${exportProgress.total}`:''}</span></div>}{exportBusy&&exportProgress.total>0&&<progress className="export-progress-bar" value={exportProgress.done} max={exportProgress.total} aria-label="Export progress"/>}<div className="export-actions">{exportBusy&&<button type="button" className="sort-button export-stop" disabled={exportStopping} onClick={stopExport}><X size={14}/>{exportStopping?'Stopping…':'Stop export'}</button>}<button type="button" className="sync-button" disabled={exportBusy||(exportScope==='session'&&(!detail||isDetailLoading))} onClick={runExport}>{exportBusy?<LoaderCircle className="spin" size={14}/>:<Download size={14}/>} {exportBusy?'Exporting…':'Save export'}</button></div></div></div>}
-    {resumeOpen&&<div className="export-backdrop" onClick={e=>{if(e.target===e.currentTarget&&!resumeBusy)setResumeOpen(false);}}><div ref={resumeDialogRef} className="export-dialog resume-dialog" role="dialog" aria-modal="true" aria-labelledby="resume-title" onKeyDown={e=>{if(e.key==='Escape'&&!resumeBusy)setResumeOpen(false);}}><div className="export-heading"><h2 id="resume-title">Resume session</h2><button type="button" className="icon-button" aria-label="Close resume" disabled={resumeBusy} onClick={()=>setResumeOpen(false)}><X size={17}/></button></div>{detail&&<p className="resume-sub">{familyLabel(detail.session.agent)} · {detail.session.title||'Untitled session'}</p>}{resumeTerminals.length>0&&<ExportSelect label="Terminal" value={resumeTerminal} disabled={resumeBusy} onChange={changeResumeTerminal} options={resumeTerminals.map(t=>({value:t.id,label:t.available?t.label:`${t.label} — not installed`,disabled:!t.available}))}/>}<p className="resume-meta">Your choice is saved automatically and reused next time.</p>{resumeBusy&&!resumeInfo&&<div className="export-progress-status" role="status" aria-live="polite"><LoaderCircle className="spin" size={16}/><span>Preparing resume command…</span></div>}{resumeInfo?.displayCommand&&<pre className="resume-command">{resumeInfo.displayCommand}</pre>}{resumeInfo?.host?<p className="resume-meta">Runs on {resumeInfo.host} over SSH, in {detail?.session.cwd||'the home directory'}.</p>:resumeInfo?.cwd&&<p className="resume-meta">Working directory: {resumeInfo.cwd}{resumeInfo.cwdFallback?' (fallback)':''}</p>}{resumeInfo?.terminal&&<p className="resume-meta">Terminal: {resumeInfo.terminal}</p>}{resumeInfo?.cliFound===false&&<p className="resume-meta resume-warn">Agent CLI not found. Install it or copy the command above into a terminal.</p>}{resumeInfo?.sourceExists===false&&<p className="resume-meta resume-warn">Original session file is missing; the agent may report it as not found.</p>}{(resumeInfo?.warnings||[]).map(w=><p key={w} className="resume-meta resume-warn">{w}</p>)}{resumeError&&<div className="error-strip"><CircleHelp size={15}/><span>{resumeError}</span><button onClick={()=>setResumeError('')}><X size={14}/></button></div>}<div className="export-actions"><button type="button" className="sort-button" disabled={resumeBusy||!(resumeInfo?.displayCommand)} onClick={copyResumeCommand}>{resumeCopied?<Check size={14}/>:<Copy size={14}/>}{resumeCopied?'Copied':'Copy command'}</button><button type="button" className="sync-button" disabled={resumeBusy||!resumeInfo} onClick={launchResume}>{resumeBusy?<LoaderCircle className="spin" size={14}/>:<Terminal size={14}/>}{resumeBusy?'Working…':'Resume in terminal'}</button></div></div></div>}
+    {exportOpen&&<div className="export-backdrop" onClick={e=>{if(e.target===e.currentTarget&&!exportBusy)setExportOpen(false);}}><div ref={exportDialogRef} className="export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-title" onKeyDown={e=>{if(e.key==='Escape'&&!exportBusy)setExportOpen(false);if(e.key==='Tab'){const controls=Array.from(e.currentTarget.querySelectorAll('button:not(:disabled),input:not(:disabled)'));const first=controls[0],last=controls.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus();}}}}><div className="export-heading"><h2 id="export-title">Export sessions</h2><button type="button" className="icon-button" aria-label="Close export" disabled={exportBusy} onClick={()=>setExportOpen(false)}><X size={17}/></button></div><ExportSelect label="Export scope" value={exportScope} disabled={exportBusy} onChange={setExportScope} options={[{value:'session',label:'Selected session',disabled:!detail||isDetailLoading},{value:'filtered',label:`Filtered view (all ${total.toLocaleString()} matches)`},{value:'library',label:'Whole library'}]}/><ExportSelect label="Format" value={exportFormat} disabled={exportBusy} onChange={setExportFormat} options={[{value:'markdown',label:'Markdown (.md)'},{value:'json',label:'JSON (.json)'}]}/><label className="export-stats"><input type="checkbox" checked={includeStats} disabled={exportBusy} onChange={e=>{setIncludeStats(e.target.checked);localStorage.setItem(storageKey('export-stats'),String(e.target.checked));}}/>Include session stats (tokens, estimated cost, duration, turns, tools)</label><p>Exports include full transcripts, bookmarks, and tags.</p>{exportBusy&&<div className="export-progress-status" role="status" aria-live="polite"><LoaderCircle className="spin" size={16}/><span>{exportStopping?'Stopping export…':exportProgress.phase}{!exportStopping&&exportProgress.total>0?` · ${exportProgress.done} / ${exportProgress.total}`:''}</span></div>}{exportBusy&&exportProgress.total>0&&<progress className="export-progress-bar" value={exportProgress.done} max={exportProgress.total} aria-label="Export progress"/>}<div className="export-actions">{exportBusy&&<button type="button" className="btn" disabled={exportStopping} onClick={stopExport}><X size={14}/>{exportStopping?'Stopping…':'Stop export'}</button>}<button type="button" className="btn primary" disabled={exportBusy||(exportScope==='session'&&(!detail||isDetailLoading))} onClick={runExport}>{exportBusy?<LoaderCircle className="spin" size={14}/>:<Download size={14}/>} {exportBusy?'Exporting…':'Save export'}</button></div></div></div>}
+    {resumeOpen&&<div className="export-backdrop" onClick={e=>{if(e.target===e.currentTarget&&!resumeBusy)setResumeOpen(false);}}><div ref={resumeDialogRef} className="export-dialog resume-dialog" role="dialog" aria-modal="true" aria-labelledby="resume-title" onKeyDown={e=>{if(e.key==='Escape'&&!resumeBusy)setResumeOpen(false);}}><div className="export-heading"><h2 id="resume-title">Resume session</h2><button type="button" className="icon-button" aria-label="Close resume" disabled={resumeBusy} onClick={()=>setResumeOpen(false)}><X size={17}/></button></div>{detail&&<p className="resume-sub">{familyLabel(detail.session.agent)} · {detail.session.title||'Untitled session'}</p>}{resumeTerminals.length>0&&<ExportSelect label="Terminal" value={resumeTerminal} disabled={resumeBusy} onChange={changeResumeTerminal} options={resumeTerminals.map(t=>({value:t.id,label:t.available?t.label:`${t.label} — not installed`,disabled:!t.available}))}/>}{resumeBusy&&!resumeInfo&&<div className="export-progress-status" role="status" aria-live="polite"><LoaderCircle className="spin" size={16}/><span>Preparing resume command…</span></div>}{resumeInfo?.displayCommand&&<pre className="resume-command">{resumeInfo.displayCommand}</pre>}{resumeInfo?.host?<p className="resume-meta">Runs on <strong>{resumeInfo.host}</strong> over SSH, in {detail?.session.cwd||'the home directory'}.</p>:resumeInfo?.cwd&&<p className="resume-meta">Working directory: {resumeInfo.cwd}{resumeInfo.cwdFallback?' (fallback)':''}</p>}{resumeInfo?.cliFound===false&&<p className="resume-meta resume-warn">Agent CLI not found. Install it or copy the command above into a terminal.</p>}{resumeInfo?.sourceExists===false&&<p className="resume-meta resume-warn">Original session file is missing; the agent may report it as not found.</p>}{(resumeInfo?.warnings||[]).map(w=><p key={w} className="resume-meta resume-warn">{w}</p>)}{resumeError&&<div className="error-strip"><CircleHelp size={15}/><span>{resumeError}</span><button onClick={()=>setResumeError('')} aria-label="Dismiss"><X size={14}/></button></div>}<div className="export-actions"><button type="button" className="btn" disabled={resumeBusy||!(resumeInfo?.displayCommand)} onClick={copyResumeCommand}>{resumeCopied?<Check size={14}/>:<Copy size={14}/>}{resumeCopied?'Copied':'Copy command'}</button><button type="button" className="btn primary" disabled={resumeBusy||!resumeInfo} onClick={launchResume}>{resumeBusy?<LoaderCircle className="spin" size={14}/>:<Terminal size={14}/>}{resumeBusy?'Working…':'Resume in terminal'}</button></div></div></div>}
   </div>;
 }
 

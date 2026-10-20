@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   TrendingUp, Coins, Terminal, Activity, Flame, AlertTriangle, CheckCircle2,
   Clock, ArrowUpRight, RefreshCw, SlidersHorizontal, DollarSign, Copy, Check,
-  ExternalLink, Info, X, LoaderCircle,
+  ExternalLink, Info, X, LoaderCircle, Menu,
 } from 'lucide-react';
 
 import { parseDate, filterSince } from './dates.js';
@@ -49,6 +49,7 @@ export default function AnalyticsView({
   onNavigationChange,
   onSelectSession,
   onClose,
+  onOpenNav,
   refreshKey = 0,
   syncRunning = false
 }) {
@@ -246,10 +247,8 @@ export default function AnalyticsView({
       {/* Top Header & Global Filters */}
       <header className="analytics-header">
         <div className="analytics-title-group">
-          <div className="analytics-eyebrow">
-            <span className="eyebrow-dot" /> TOKEN, COST & PERFORMANCE PULSE
-          </div>
-          <h2>Analytics Dashboard</h2>
+          {onOpenNav && <button className="icon-button mobile-menu" onClick={onOpenNav} aria-label="Open navigation"><Menu size={18} /></button>}
+          <h2>Analytics</h2>
         </div>
 
         <div className="analytics-filter-bar">

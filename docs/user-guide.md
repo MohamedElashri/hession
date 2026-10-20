@@ -2,14 +2,15 @@
 
 ## Syncing
 
-**Sync updates** imports new and changed sessions. It also runs at startup;
-you can turn that off in the sync menu. Unchanged files are skipped by size and
-modification time. Use **Full rescan** in the same menu to re-read everything.
+**Sync now** (bottom of the sidebar) imports new and changed sessions. It also
+runs at startup. The arrow next to it opens sync options: turn off startup sync,
+sync one agent, or **Full rescan** to re-read everything. Unchanged files are
+skipped by size and modification time.
 Stopping a sync keeps everything that was already imported.
 
 ## Remote hosts
 
-Click the server icon next to **Hosts** in the sidebar.
+Click **+** next to **Hosts** in the sidebar (or the server icon at the bottom).
 
 - **Add** a host from the suggestions (folders you opened with VS Code
   Remote-SSH, or entries in `~/.ssh/config`), or type an SSH alias or
@@ -32,7 +33,8 @@ stay even after an agent deletes old history on the host.
 A host that can't be reached (off VPN, expired ticket) is reported after the
 sync, and its previously copied sessions stay available.
 
-In the library, filter by **This computer** or a host name. Remote sessions
+Click **This computer** or a host name in the sidebar to filter by machine.
+Active filters appear as chips above the list; click × to remove one. Remote sessions
 show a host label, and their workspaces appear as `host:/path`.
 
 ## Resume and VS Code
@@ -91,7 +93,7 @@ Everything lives in `~/.hession/` (set `HESSION_DATA_DIR` to change this):
 | `remotes/<host>/` | Files copied from each host |
 | `terminal-preference.json` | Terminal chosen for Resume |
 
-Open the **database icon** (next to the theme toggle) to back up the database,
+Open the **database icon** at the bottom of the sidebar to back up the database,
 restore a backup, or delete sessions matching a filter. Deleted sessions come
 back on the next sync while their source files still exist. Backups and copies
 contain your prompts and code, so treat them as private.

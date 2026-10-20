@@ -25,6 +25,9 @@ directly, set `PKG_CONFIG=/usr/bin/pkg-config` yourself.
 | Target | What it does |
 | --- | --- |
 | `make dev` | Run the app with hot reload |
+| `make preview` | The UI in a browser with sample data, without building Rust |
+| `make preview-fixtures` | Regenerate that sample data from the real backend |
+| `make desktop-entry` | Per-user launcher and dock icon for `make dev` (Linux) |
 | `make test` | Frontend build and Rust tests |
 | `make docker-test` | The same tests in a container, with no system libraries needed |
 | `make check` / `make lint` | Frontend build + `cargo check` / clippy |
@@ -34,6 +37,17 @@ directly, set `PKG_CONFIG=/usr/bin/pkg-config` yourself.
 | `make brand` | Apply `brand.json` to the Tauri, npm, and Cargo manifests |
 | `make release-check VERSION=x.y.z` | Check that versions agree before tagging |
 | `make clean` | Remove build outputs |
+
+On Linux the dock icon comes from the `.desktop` entry whose `StartupWMClass`
+matches the window's app_id: the binary name, which `brand.mjs` sets to the
+slug in dev too. The `.deb`/`.rpm` install one; for `make dev`, run
+`make desktop-entry` once (`make desktop-entry-remove` undoes it).
+
+`make preview` replaces the Tauri runtime with a mock (`src/dev/mock-ipc.js`)
+serving `src/dev/fixtures.json`: synthetic Claude Code and Codex sessions on
+this machine and two SSH hosts, imported by the real backend and dumped through
+the real commands. It's the fastest way to work on the UI; the mock is excluded
+from production builds.
 
 To develop against a scratch library, set
 `HESSION_DATA_DIR=/tmp/hession-dev make dev`.
@@ -45,6 +59,8 @@ brand.json              product identity (the only place the name is defined)
 branding/               logo sources (mark, icon, favicon) and generated assets
 scripts/                brand.mjs, icons.mjs, check.Dockerfile
 src/                    React UI: main.jsx, Analytics.jsx, components/, api.js (IPC)
+  styles/               tokens.css (both themes), base, app, components, analytics
+  dev/                  browser preview: mock IPC and fixtures
 src-tauri/src/
   importer.rs           source discovery, incremental import (+ import_*.rs formats)
   remote.rs             SSH hosts: probe, rsync mirror, host suggestions, ssh commands
@@ -79,8 +95,11 @@ and tagline. The code reads them through `src/brand.js` (frontend) and
 `%BRAND_NAME%`. To rename the app, edit `brand.json`, then run `make brand icons`.
 
 The mark is drawn on a 24-unit grid in `branding/mark.svg`; `icon.svg` and
-`favicon.svg` use the same geometry. Colours: accent `#b8f58e` (dark) /
-`#497933` (light), tile `#202226` → `#0f1012`.
+`favicon.svg` use the same geometry.
+
+UI colours come only from `src/styles/tokens.css` (one block per theme); fonts
+are Geist and Geist Mono, bundled via `@fontsource-variable`. Use the tokens
+(`--surface`, `--text-2`, `--accent`, …) instead of hex values in styles.
 
 ## Tests
 

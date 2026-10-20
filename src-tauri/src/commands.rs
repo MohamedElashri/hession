@@ -1343,3 +1343,7 @@ pub async fn save_export(state: State<'_, ExportState>, job_id: String, path: St
         result
     }).await.map_err(|e| e.to_string())?
 }
+
+#[cfg(test)]
+#[path = "preview_fixtures.rs"]
+mod preview_fixtures;
