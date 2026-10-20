@@ -333,44 +333,95 @@ fn save_probe(probe: &Probe) -> Result<(), String> {
 // Mirroring
 // ---------------------------------------------------------------------------
 
-/// Remote paths to transfer for one store: only what the importer reads.
-/// Paths are absolute so `rsync -R` recreates them under the mirror root;
-/// missing ones are skipped (`--ignore-missing-args`).
-fn transfer_paths(root: &RemoteRoot) -> Vec<String> {
+/// Something to copy from a store: a directory (only transcript formats inside
+/// it) or a single file (a SQLite database or one of its sidecars).
+#[derive(Debug, PartialEq)]
+enum Transfer {
+    Dir(String),
+    File(String),
+}
+
+/// What to copy for one store: only what the importer reads.
+fn transfers(root: &RemoteRoot) -> Vec<Transfer> {
     let r = &root.root;
     let with_sidecars = |db: String| {
         ["", "-wal", "-shm", "-journal"]
-            .map(|s| format!("{db}{s}"))
-            .to_vec()
+            .map(|s| Transfer::File(format!("{db}{s}")))
+            .into_iter()
     };
     match root.kind.as_str() {
-        "opencode" => with_sidecars(format!("{r}/opencode.db")),
-        "hermes" => {
-            let mut paths = with_sidecars(format!("{r}/state.db"));
-            paths.extend([format!("{r}/profiles"), format!("{r}/sessions")]);
-            paths
-        }
-        "antigravity" => {
-            let mut paths = with_sidecars(format!("{r}/conversation_summaries.db"));
-            paths.push(format!("{r}/brain"));
-            paths
-        }
-        _ if root.sub.is_empty() => vec![r.clone()],
-        _ => vec![format!("{r}/{}", root.sub)],
+        "opencode" => with_sidecars(format!("{r}/opencode.db")).collect(),
+        "hermes" => with_sidecars(format!("{r}/state.db"))
+            .chain([
+                Transfer::Dir(format!("{r}/profiles")),
+                Transfer::Dir(format!("{r}/sessions")),
+            ])
+            .collect(),
+        "antigravity" => with_sidecars(format!("{r}/conversation_summaries.db"))
+            .chain([Transfer::Dir(format!("{r}/brain"))])
+            .collect(),
+        _ if root.sub.is_empty() => vec![Transfer::Dir(r.clone())],
+        _ => vec![Transfer::Dir(format!("{r}/{}", root.sub))],
     }
 }
 
-/// Only transcript and metadata formats; skips caches, binaries, and logs.
-const RSYNC_FILTERS: &[&str] = &[
-    "--include=*/",
-    "--include=*.jsonl",
-    "--include=*.json",
-    "--include=*.db",
-    "--include=*.db-wal",
-    "--include=*.db-shm",
-    "--include=*.db-journal",
-    "--exclude=*",
-];
+/// File types copied from transfer directories: transcripts and metadata.
+const TRANSCRIPT_TYPES: &[&str] = &["jsonl", "json", "db", "db-wal", "db-shm", "db-journal"];
+
+/// Escape rsync wildcard characters in a literal path.
+fn pattern_literal(path: &str) -> String {
+    path.chars()
+        .flat_map(|c| {
+            if "*?[\\".contains(c) {
+                vec!['\\', c]
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
+}
+
+/// Filter rules for `rsync host:/ mirror/`: include each transfer and its parent
+/// directories, exclude everything else, so rsync only walks the agent stores.
+/// Missing paths match nothing. Only rules that both GNU rsync and macOS's
+/// openrsync support are used.
+fn filter_rules(transfers: &[Transfer]) -> Vec<String> {
+    let mut parents = BTreeSet::new();
+    let mut contents = Vec::new();
+    for transfer in transfers {
+        let (path, is_dir) = match transfer {
+            Transfer::Dir(p) => (p, true),
+            Transfer::File(p) => (p, false),
+        };
+        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let ancestors = if is_dir {
+            parts.len()
+        } else {
+            parts.len().saturating_sub(1)
+        };
+        for n in 1..=ancestors {
+            parents.insert(format!("/{}/", parts[..n].join("/")));
+        }
+        let literal = pattern_literal(&format!("/{}", parts.join("/")));
+        if is_dir {
+            contents.push(format!("--include={literal}/**/"));
+            contents.extend(
+                TRANSCRIPT_TYPES
+                    .iter()
+                    .map(|ext| format!("--include={literal}/**.{ext}")),
+            );
+        } else {
+            contents.push(format!("--include={literal}"));
+        }
+    }
+    let mut rules: Vec<String> = parents
+        .iter()
+        .map(|p| format!("--include={}", pattern_literal(p)))
+        .collect();
+    rules.extend(contents);
+    rules.push("--exclude=*".into());
+    rules
+}
 
 fn mirror_host(host: &str) -> Result<Probe, String> {
     validate_host(host)?;
@@ -380,30 +431,16 @@ fn mirror_host(host: &str) -> Result<Probe, String> {
     }
     let dest = mirror_root(host);
     fs::create_dir_all(&dest).map_err(|e| format!("Could not create mirror directory: {e}"))?;
-    let paths: BTreeSet<String> = probe.roots.iter().flat_map(transfer_paths).collect();
-    if !paths.is_empty() {
+    let wanted: Vec<Transfer> = probe.roots.iter().flat_map(transfers).collect();
+    if !wanted.is_empty() {
+        // One source (`host:/`) keeps absolute paths in the mirror. Compression
+        // is SSH's, since macOS's openrsync has no -z.
         let mut cmd = Command::new("rsync");
-        cmd.args([
-            "-a",
-            "-R",
-            "-z",
-            "-s",
-            "--prune-empty-dirs",
-            "--ignore-missing-args",
-            "--timeout=120",
-        ])
-        .args(RSYNC_FILTERS)
-        .arg("-e")
-        .arg(format!("ssh {}", SSH_OPTS.join(" ")));
-        for (i, path) in paths.iter().enumerate() {
-            // `host:/a :/b` pulls several paths over one connection.
-            cmd.arg(if i == 0 {
-                format!("{host}:{path}")
-            } else {
-                format!(":{path}")
-            });
-        }
-        cmd.arg(format!("{}/", dest.display()));
+        cmd.args(["-a", "--timeout=120", "-e"])
+            .arg(format!("ssh -C {}", SSH_OPTS.join(" ")))
+            .args(filter_rules(&wanted))
+            .arg(format!("{host}:/"))
+            .arg(format!("{}/", dest.display()));
         if let Err(error) = run_bounded(cmd, None, MIRROR_TIMEOUT, "rsync") {
             // 24 = files vanished during transfer (agents writing); the
             // transferred set is still consistent per file.
@@ -836,9 +873,31 @@ mod tests {
         assert_eq!(probe.roots[1].root, "/home/u/.hermes");
         assert_eq!(probe.roots[1].sub, "");
         assert_eq!(
-            transfer_paths(&probe.roots[0]),
-            vec!["/home/u/.claude/projects"]
+            transfers(&probe.roots[0]),
+            vec![Transfer::Dir("/home/u/.claude/projects".into())]
         );
+    }
+
+    #[test]
+    fn filters_include_only_stores_and_their_parents() {
+        let rules = filter_rules(&[
+            Transfer::Dir("/home/u/.claude/projects".into()),
+            Transfer::File("/home/u/.hermes/state.db".into()),
+        ]);
+        assert_eq!(
+            rules[..4],
+            [
+                "--include=/home/",
+                "--include=/home/u/",
+                "--include=/home/u/.claude/",
+                "--include=/home/u/.claude/projects/"
+            ]
+        );
+        assert!(rules.contains(&"--include=/home/u/.hermes/".to_string()));
+        assert!(rules.contains(&"--include=/home/u/.claude/projects/**.jsonl".to_string()));
+        assert!(rules.contains(&"--include=/home/u/.hermes/state.db".to_string()));
+        assert_eq!(rules.last().unwrap(), "--exclude=*");
+        assert_eq!(pattern_literal("/a [b]/c*"), r"/a \[b]/c\*");
     }
 
     #[test]
