@@ -107,25 +107,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS Intel
-            runner: macos-15-intel
+          # One universal (Apple silicon + Intel) build on the newest macOS image.
+          - name: macOS universal
+            runner: macos-26
             os: macos
-            rust_target: x86_64-apple-darwin
-            bundles: dmg
-          - name: macOS Apple silicon
-            runner: macos-14
-            os: macos
-            rust_target: aarch64-apple-darwin
+            rust_target: universal-apple-darwin
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
             bundles: dmg
           - name: Linux x64
             runner: ubuntu-22.04
             os: linux
             rust_target: x86_64-unknown-linux-gnu
+            rust_targets: x86_64-unknown-linux-gnu
             bundles: appimage,deb,rpm
           - name: Linux ARM64
             runner: ubuntu-22.04-arm
             os: linux
             rust_target: aarch64-unknown-linux-gnu
+            rust_targets: aarch64-unknown-linux-gnu
             bundles: appimage,deb,rpm
     steps:
       - name: Check out the validated source commit
@@ -143,7 +142,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.rust_target }}
+          targets: ${{ matrix.rust_targets }}
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
@@ -186,7 +185,7 @@ jobs:
           args: --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }} -- --locked
 
   verify-release:
-    name: Verify all eight draft installers
+    name: Verify all seven draft installers
     needs: [prepare, build]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -241,6 +240,6 @@ jobs:
           {
             echo "### ${{ needs.prepare.outputs.brand_name }} ${RELEASE_TAG} published"
             echo "Source commit: ${SOURCE_SHA}"
-            echo 'All four native builds succeeded and all eight installers are present.'
+            echo 'All three native builds succeeded and all seven installers are present.'
             echo "Release: ${release_url}"
           } >> "$GITHUB_STEP_SUMMARY"

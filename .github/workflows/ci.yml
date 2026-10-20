@@ -1,0 +1,61 @@
+name: CI
+
+# Runs the same Makefile targets used locally, on every push to main and on
+# pull requests. Releases are built separately by release.yml on version tags.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Same Ubuntu as the Linux release builds.
+          - name: Linux
+            runner: ubuntu-22.04
+            targets: fmt-check lint unused test release-check
+          # The only place the macOS-specific Rust code is compiled before a release.
+          - name: macOS
+            runner: macos-26
+            targets: lint test
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install Linux system libraries
+        if: runner.os == 'Linux'
+        run: make deps
+
+      - name: Make ${{ matrix.targets }}
+        run: make ${{ matrix.targets }}

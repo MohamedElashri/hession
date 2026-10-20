@@ -117,6 +117,7 @@ has no unit tests; the Vite build is its check.
 1. Run `python3 bump_version.py` to set the version in every manifest.
 2. Run `make release-check VERSION=x.y.z`.
 3. Commit, then push a `vX.Y.Z` tag. The workflow in
-   `.github/workflows/release.yml` builds installers for macOS (Intel and
-   Apple silicon) and Linux (x64 and ARM64) into a draft release, checks
-   them, and publishes it.
+   `.github/workflows/release.yml` builds a universal macOS DMG (Apple silicon
+   and Intel, on the newest macOS runner) and Linux AppImage/deb/rpm for x64
+   and ARM64 into a draft release, checks all seven installers, and
+   publishes it.

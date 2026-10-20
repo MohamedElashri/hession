@@ -6,10 +6,16 @@ CARGO_DIR := src-tauri
 CARGO     := cargo --locked
 BUNDLE    := $(CARGO_DIR)/target/release/bundle
 
-# Homebrew/Linuxbrew pkg-config cannot see the system GTK/WebKit packages.
+# Homebrew/Linuxbrew pkg-config cannot see the system GTK/WebKit packages, and
+# tools such as linuxdeploy's GTK plugin call pkgconf/pkg-config from PATH
+# rather than $PKG_CONFIG. On Linux, put the system ones first via a shim.
 ifeq ($(shell uname -s),Linux)
   ifneq ($(wildcard /usr/bin/pkg-config),)
+    PKG_SHIM := $(CURDIR)/$(CARGO_DIR)/target/pkg-config-shim
+    SYSTEM_PKGCONF := $(or $(wildcard /usr/bin/pkgconf),/usr/bin/pkg-config)
+    $(shell mkdir -p $(PKG_SHIM) && ln -sf /usr/bin/pkg-config $(PKG_SHIM)/pkg-config && ln -sf $(SYSTEM_PKGCONF) $(PKG_SHIM)/pkgconf)
     export PKG_CONFIG := /usr/bin/pkg-config
+    export PATH := $(PKG_SHIM):$(PATH)
   endif
 endif
 

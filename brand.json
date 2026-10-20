@@ -1,8 +1,11 @@
 {
   "name": "Hession",
   "slug": "hession",
-  "wordmark": ["hes", "sion"],
-  "identifier": "com.hession.app",
+  "wordmark": [
+    "hes",
+    "sion"
+  ],
+  "identifier": "io.github.mohamedelashri.hession",
   "envPrefix": "HESSION",
   "tagline": "A local-first home for your coding agent sessions, local and remote.",
   "author": "Mohamed Elashri"

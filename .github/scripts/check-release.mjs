@@ -36,8 +36,7 @@ if (tag !== undefined) {
 
 // Per-bundle architecture names follow tauri-action.
 const suffixes = [
-  'darwin-aarch64-dmg.dmg',
-  'darwin-x64-dmg.dmg',
+  'darwin-universal-dmg.dmg',
   'linux-amd64-appimage.AppImage',
   'linux-amd64-deb.deb',
   'linux-x86_64-rpm.rpm',
@@ -59,7 +58,7 @@ if (assetsPath) {
       `Release is missing a complete installer: ${name}`,
     );
   }
-  console.log('All eight release installers are uploaded and nonempty.');
+  console.log('All seven release installers are uploaded and nonempty.');
 }
 
 console.log(`Release metadata matches v${version}.`);
