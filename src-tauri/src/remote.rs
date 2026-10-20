@@ -160,7 +160,9 @@ pub struct Probe {
 /// local defaults and environment overrides; prints only stores that exist.
 const PROBE_SCRIPT: &str = r#"
 h=$HOME; x=${XDG_DATA_HOME:-$h/.local/share}
-e() { [ -e "$3/$4" ] && printf 'R\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4"; return 0; }
+# Roots are printed as physical paths: rsync starting at / copies symlinks
+# (macOS /var, Silverblue /home) instead of descending into them.
+e() { [ -e "$3/$4" ] && r=$(cd "$3" && pwd -P) && printf 'R\t%s\t%s\t%s\t%s\n' "$1" "$2" "$r" "$4"; return 0; }
 printf 'H\t%s\n' "$h"
 e codex jsonl "${CODEX_HOME:-$h/.codex}" sessions
 e claude jsonl "${CLAUDE_CONFIG_DIR:-$h/.claude}" projects
@@ -978,11 +980,13 @@ mod tests {
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
+        // Physical path: on macOS the temp dir is under the /var symlink.
+        let root = fs::canonicalize(tmp.path()).unwrap();
         let (bin, local_home, remote_home, data) = (
-            tmp.path().join("bin"),
-            tmp.path().join("local"),
-            tmp.path().join("remote"),
-            tmp.path().join("data"),
+            root.join("bin"),
+            root.join("local"),
+            root.join("remote"),
+            root.join("data"),
         );
         for dir in [&bin, &local_home, &data] {
             fs::create_dir_all(dir).unwrap();
@@ -1014,7 +1018,10 @@ mod tests {
         );
         std::env::set_var("PATH", path);
         std::env::set_var("HOME", &local_home);
-        std::env::set_var("FAKE_REMOTE_HOME", &remote_home);
+        // The host's HOME is reached through a symlink (like macOS /var or
+        // Silverblue /home); the mirror must still find the stores.
+        std::os::unix::fs::symlink(&root, root.join("link")).unwrap();
+        std::env::set_var("FAKE_REMOTE_HOME", root.join("link/remote"));
         std::env::set_var(crate::brand::env_var("DATA_DIR"), &data);
 
         set_remote_hosts(vec![HostConfig {
