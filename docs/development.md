@@ -27,7 +27,7 @@ directly, set `PKG_CONFIG=/usr/bin/pkg-config` yourself.
 | `make dev` | Run the app with hot reload |
 | `make test` | Frontend build and Rust tests |
 | `make docker-test` | The same tests in a container, with no system libraries needed |
-| `make check` / `make lint` | Type-check / clippy |
+| `make check` / `make lint` | Frontend build + `cargo check` / clippy |
 | `make build` | Installers for this OS; `make deb`, `appimage`, `rpm` for one format |
 | `make run` | Run the release binary |
 | `make icons` | Regenerate icons and brand assets from `branding/` |
@@ -44,7 +44,7 @@ To develop against a scratch library, set
 brand.json              product identity (the only place the name is defined)
 branding/               logo sources (mark, icon, favicon) and generated assets
 scripts/                brand.mjs, icons.mjs, check.Dockerfile
-src/                    React UI: main.jsx, Analytics.jsx, components/
+src/                    React UI: main.jsx, Analytics.jsx, components/, api.js (IPC)
 src-tauri/src/
   importer.rs           source discovery, incremental import (+ import_*.rs formats)
   remote.rs             SSH hosts: probe, rsync mirror, host suggestions, ssh commands
@@ -88,7 +88,7 @@ The mark is drawn on a 24-unit grid in `branding/mark.svg`; `icon.svg` and
 that puts a stand-in `ssh` on `PATH`, then exercises the real probe, rsync,
 and import against a fake remote home. Another test runs the generated
 resume command through `sh` with awkward paths and arguments. The frontend
-has no unit tests; `npm run build` is its check.
+has no unit tests; the Vite build is its check.
 
 ## Releases
 

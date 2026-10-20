@@ -3,13 +3,13 @@ import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  Activity, ArrowRight, ArrowUpDown, Bot, Check, ChevronDown, Copy,
-  CircleHelp, Code2, Command, FileCode2, Filter, Folder, GitBranch,
-  Layers3, LoaderCircle, Menu, MessageSquareText, MoreHorizontal, PanelLeftClose, RefreshCw,
-  Search, Sparkles, Sun, Moon, Terminal, X, ChevronLeft, ChevronRight,
-  TrendingUp, User, Star, Download, Square, Database, Server, Laptop,
+  ArrowRight, ArrowUpDown, Bot, Check, ChevronDown, Copy, CircleHelp, Code2,
+  Command, FileCode2, Filter, Folder, GitBranch, Layers3, LoaderCircle, Menu,
+  MessageSquareText, MoreHorizontal, RefreshCw, Search, Sparkles, Sun, Moon,
+  Terminal, X, ChevronLeft, ChevronRight, TrendingUp, User, Star, Download,
+  Square, Database, Server, Laptop,
 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { api, hasTauriRuntime } from './api.js';
 import { save } from '@tauri-apps/plugin-dialog';
 import { exportFilename } from './export.js';
 import { BRAND, READY_EVENT, storageKey } from './brand.js';
@@ -30,27 +30,8 @@ import { hasToolActivity, isSessionEvent, transcriptParts } from './transcript.j
 
 import { parseDate, filterSince, calendarDayDifference } from './dates.js';
 
-const API='/api';
 const PAGE_SIZE=20;
-const DETAIL_PAGE_SIZE=100; // H6: transcript pagination default
-const req=async(url,opts={})=>{const r=await fetch(url,opts);const d=await r.json();if(!r.ok)throw new Error(d.error||r.statusText);return d;};
-// Tauri-first API layer: try `invoke` first (desktop app); fall back to the
-// HTTP dev API when the Tauri runtime is absent (vite dev outside Tauri).
-// Command names follow the frontend<->backend contract:
-// GET /api/health->get_health, /api/sessions->search_sessions,
-// /api/sessions/:id->get_session, /api/agents->get_agents,
-// /api/projects->get_projects, /api/facets->get_facets, /api/stats->get_stats,
-// /api/sync/status->get_sync_status, /api/sync/checkpoints->get_sync_checkpoints,
-// POST /api/sync->start_sync. Same query params are passed as invoke args.
-const hasTauriRuntime=()=>typeof window!=='undefined'&&!!window.__TAURI_INTERNALS__?.invoke;
-const tauriError=(e)=>e instanceof Error?e:new Error(typeof e==='string'?e:(e?.message||JSON.stringify(e??'Unknown error')));
-const apiCall=async(cmd,args,url,opts={})=>{
-  try{return await invoke(cmd,args);}
-  catch(e){
-    if(url==null||hasTauriRuntime())throw tauriError(e);
-    return req(url,opts);
-  }
-};
+const DETAIL_PAGE_SIZE=100; // transcript entries per page
 // Maps the metadata endpoint suffix used by loadMeta to its Tauri command.
 const META_COMMANDS={
   agents:'get_agents',
@@ -111,7 +92,7 @@ function App(){
   const [loading,setLoading]=useState(true),[detailLoading,setDetailLoading]=useState(false),[metaLoaded,setMetaLoaded]=useState(false),[notice,setNotice]=useState('');
   const [detailError,setDetailError]=useState('');
   const [entryFilter,setEntryFilter]=useState('all'); // 'all' | 'user' | 'assistant' | 'tool' | 'event'
-  const [detailPage,setDetailPage]=useState(1); // H6: 1-based transcript page
+  const [detailPage,setDetailPage]=useState(1); // 1-based transcript page
   const [detailJump,setDetailJump]=useState('');
   const [collapsedEntries,setCollapsedEntries]=useState(()=>new Set());
   const [copiedEntry,setCopiedEntry]=useState(null);
@@ -183,8 +164,8 @@ function App(){
     setResumeOpen(true);setResumeBusy(true);setResumeError('');setResumeInfo(null);setResumeCopied(false);
     try{
       const [terms,info]=await Promise.all([
-        apiCall('list_terminals',{},null).catch(()=>null),
-        apiCall('get_resume_info',{id:String(detail.session.id)},null),
+        api('list_terminals').catch(()=>null),
+        api('get_resume_info',{id:String(detail.session.id)}),
       ]);
       const list=terms?.terminals||[];
       setResumeTerminals(list);
@@ -196,12 +177,12 @@ function App(){
   const changeResumeTerminal=async(value)=>{
     if(!value||value===resumeTerminal)return;
     setResumeTerminal(value);
-    try{await apiCall('set_terminal_preference',{terminal:value},null);}
+    try{await api('set_terminal_preference',{terminal:value});}
     catch(e){setNotice(e.message);}
     if(!detail)return;
     setResumeBusy(true);setResumeError('');
     try{
-      const info=await apiCall('get_resume_info',{id:String(detail.session.id),terminal:value},null);
+      const info=await api('get_resume_info',{id:String(detail.session.id),terminal:value});
       setResumeInfo(info);
     }catch(e){setResumeError(e.message||'Could not prepare resume command.');}
     finally{setResumeBusy(false);}
@@ -210,7 +191,7 @@ function App(){
     if(!detail||resumeBusy)return;
     setResumeBusy(true);setResumeError('');
     try{
-      const result=await apiCall('resume_session',{id:String(detail.session.id),terminal:resumeTerminal||null},null);
+      const result=await api('resume_session',{id:String(detail.session.id),terminal:resumeTerminal||null});
       if(result?.ok){
         setResumeOpen(false);setResumeInfo(null);
         setNotice(`Resumed in ${result.terminal||'terminal'}.`);
@@ -223,7 +204,7 @@ function App(){
   };
   const openInEditor=async()=>{
     if(!detail)return;
-    try{await apiCall('open_in_editor',{id:String(detail.session.id)},null);setNotice(detail.session.host?`Opening in VS Code on ${detail.session.host}…`:'Opening in VS Code…');}
+    try{await api('open_in_editor',{id:String(detail.session.id)});setNotice(detail.session.host?`Opening in VS Code on ${detail.session.host}…`:'Opening in VS Code…');}
     catch(e){setNotice(e.message||'Could not open VS Code.');}
   };
   const copyResumeCommand=async()=>{
@@ -244,7 +225,7 @@ function App(){
     const id=++metadataRequest.current;
     if(!silent)setMetadataState({agents:'loading',projects:'loading',stats:'loading',facets:'loading','sync/checkpoints':'loading'});
     const update=async(endpoint,setter)=>{
-      try{const data=await apiCall(META_COMMANDS[endpoint],{},`${API}/${endpoint}`);if(id===metadataRequest.current){setter(data);setMetadataState(current=>({...current,[endpoint]:'ready'}));}}
+      try{const data=await api(META_COMMANDS[endpoint]);if(id===metadataRequest.current){setter(data);setMetadataState(current=>({...current,[endpoint]:'ready'}));}}
       catch(e){if(id===metadataRequest.current){if(syncActiveRef.current&&isSyncLockError(e))return;setNotice(e.message);setMetadataState(current=>({...current,[endpoint]:'error'}));}}
     };
     await Promise.all([
@@ -257,7 +238,7 @@ function App(){
     if(!silent)setLoading(true);
     try{
       const sessionParams={q:query,host:hostFilter,agent:agentFilter,project:projectFilter,model:modelFilters.join(','),branch:branchFilter,tool:toolFilters.join(','),since:filterSince(timeFilter),sort:sortOrder,starred:String(starredOnly),tags:tagFilters,limit:String(PAGE_SIZE),offset:String(page*PAGE_SIZE)};
-      const result=await apiCall('search_sessions',sessionParams,`${API}/sessions?${new URLSearchParams(sessionParams)}`);
+      const result=await api('search_sessions',sessionParams);
       if(requestId!==sessionRequest.current)return;
       setSessions(result.sessions||[]);setTotal(result.total??result.sessions?.length??0);setLibraryReady(true);
       const current=navigationRef.current;
@@ -282,7 +263,7 @@ function App(){
     if(!silent){setDetailLoading(true);setDetailError('');}
     try{
       const detailParams={id:String(selected),limit:String(DETAIL_PAGE_SIZE),page:String(page)};
-      const data=await apiCall('get_session',detailParams,`${API}/sessions/${selected}?${new URLSearchParams({limit:detailParams.limit,page:detailParams.page})}`);
+      const data=await api('get_session',detailParams);
       if(id===detailRequest.current){setDetail(data);setDetailError('');}
     }
     catch(e){if(id===detailRequest.current&&!silent){setDetail(null);setDetailError(e.message||'Could not load this session.');}}
@@ -290,14 +271,14 @@ function App(){
   },[selected,detailPage,view]);
   useEffect(()=>{loadDetail();return()=>{detailRequest.current++;};},[loadDetail]);
   useEffect(()=>{setCollapsedEntries(new Set());setDetailPage(1);setDetailJump('');setTagDraft('');},[selected]);
-  useEffect(()=>{let cancelled=false;apiCall('get_sync_status',{},`${API}/sync/status`).then(data=>{if(!cancelled){if(!syncLaunchPending.current)setSync(data);setSyncStatusReady(true);}}).catch(()=>{});return()=>{cancelled=true;};},[]);
+  useEffect(()=>{let cancelled=false;api('get_sync_status').then(data=>{if(!cancelled){if(!syncLaunchPending.current)setSync(data);setSyncStatusReady(true);}}).catch(()=>{});return()=>{cancelled=true;};},[]);
   useEffect(()=>{
     if(!sync.running)return;
     let active=true,busy=false,lastRefresh=0,lastMeta=0;
     const timer=setInterval(async()=>{
       if(busy)return;busy=true;
       try{
-        const s=await apiCall('get_sync_status',{},`${API}/sync/status`);if(!active)return;setSync(s);
+        const s=await api('get_sync_status');if(!active)return;setSync(s);
         const now=Date.now();
         if(!s.running){
           setSyncStopping(false);clearInterval(timer);setReportRevision(value=>value+1);loadMeta({silent:true});loadSessions({silent:true});loadDetail({silent:true});
@@ -326,7 +307,7 @@ function App(){
     const id=detail.session.id;
     setAnnotationBusy(true);
     try{
-      const updated=await apiCall('update_session_annotations',{id,...patch},null);
+      const updated=await api('update_session_annotations',{id,...patch});
       setDetail(current=>current?.session.id===id?{...current,session:{...current.session,...updated}}:current);
       setTagDraft('');
       await Promise.all([loadSessions({silent:true}),loadMeta({silent:true})]);
@@ -337,7 +318,7 @@ function App(){
     if(starPendingRef.current.has(id))return;
     starPendingRef.current.add(id);setStarPending(new Set(starPendingRef.current));
     try{
-      const updated=await apiCall('update_session_annotations',{id,starred:!session.starred},null);
+      const updated=await api('update_session_annotations',{id,starred:!session.starred});
       setSessions(current=>current.map(item=>item.id===id?{...item,...updated}:item));
       setDetail(current=>current?.session.id===id?{...current,session:{...current.session,...updated}}:current);
       if(starredOnly)await loadSessions({silent:true});
@@ -351,7 +332,7 @@ function App(){
     if(!job.saving){job.cancelled=true;job.worker?.terminate();job.reject?.(new Error('Export stopped'));}
     job.stopPromise=(async()=>{
       try{
-        if(job.registered){const stopped=await apiCall('cancel_export',{jobId:job.id},null);if(stopped)job.cancelled=true;}
+        if(job.registered){const stopped=await api('cancel_export',{jobId:job.id});if(stopped)job.cancelled=true;}
       }catch(e){if(!job.saved)setNotice(e.message);}
     })();
     await job.stopPromise;
@@ -364,15 +345,15 @@ function App(){
     let unlisten;
     try{
       const extension=exportFormat==='json'?'json':'md';
-      await apiCall('begin_export',{jobId:job.id},null);job.registered=true;
-      if(job.cancelled){await apiCall('cancel_export',{jobId:job.id},null);return;}
+      await api('begin_export',{jobId:job.id});job.registered=true;
+      if(job.cancelled){await api('cancel_export',{jobId:job.id});return;}
       unlisten=await listen('export-progress',({payload})=>{if(payload.jobId===job.id&&!job.cancelled)setExportProgress({phase:'Reading sessions',done:payload.done,total:payload.total});});
       if(job.cancelled)return;
       setExportProgress({phase:'Reading sessions',done:0,total:exportScope==='session'?1:total});
-      const data=await apiCall('export_sessions',{
+      const data=await api('export_sessions',{
         jobId:job.id,scope:exportScope,id:exportScope==='session'?detail?.session.id:null,includeStats,
         filters:{q:query,host:hostFilter,agent:agentFilter,project:projectFilter,models:modelFilters,branch:branchFilter,tools:toolFilters,since:filterSince(timeFilter),sort:sortOrder,starred:starredOnly,tags:tagFilters},
-      },null);
+      });
       if(job.cancelled)return;
       setExportProgress({phase:'Formatting export',done:0,total:0});
       const contents=await new Promise((resolve,reject)=>{
@@ -389,14 +370,14 @@ function App(){
       if(!path||job.cancelled)return;
       setExportProgress({phase:'Saving file',done:0,total:0});
       job.saving=true;
-      await apiCall('save_export',{jobId:job.id,path,contents},null);
+      await api('save_export',{jobId:job.id,path,contents});
       job.saved=true;
       await job.stopPromise;
       setExportOpen(false);setNotice(`Exported ${data.sessions.length} session${data.sessions.length===1?'':'s'}.`);
     }catch(e){await job.stopPromise;setNotice(job.cancelled?'Export stopped.':e.message);}finally{
       await job.stopPromise;
       job.worker?.terminate();unlisten?.();
-      try{await apiCall('finish_export',{jobId:job.id},null);}catch{}
+      try{await api('finish_export',{jobId:job.id});}catch{}
       if(job.cancelled&&!job.saved)setNotice('Export stopped.');
       exportJobRef.current=null;setExportBusy(false);setExportStopping(false);
     }
@@ -407,7 +388,7 @@ function App(){
     startupSyncHandled.current=true;syncLaunchPending.current=true;
     setSyncStarting(true);setSyncStopping(false);setSyncMenuOpen(false);setSyncError('');
     setSync({running:true,startedAt:new Date().toISOString(),filesDone:0,filesTotal:0,mode,family:agent||null});
-    try{const params=new URLSearchParams({mode});if(agent)params.set('agent',agent);const s=await apiCall('start_sync',{agent:agent||'',mode},`${API}/sync?${params}`,{method:'POST'});setSync({...s,startedAt:new Date().toISOString(),mode,family:agent||null});}
+    try{const s=await api('start_sync',{agent:agent||'',mode});setSync({...s,startedAt:new Date().toISOString(),mode,family:agent||null});}
     catch(e){setSync({running:false});setSyncError(e.message);}
     finally{syncLaunchPending.current=false;setSyncStarting(false);}
   },[sync.running]);
@@ -428,7 +409,7 @@ function App(){
   const stopSync=async()=>{
     if(!sync.running||syncStarting||syncStopping||sync.phase==='stopping')return;
     setSyncStopping(true);setSyncMenuOpen(false);setSyncError('');
-    try{await apiCall('stop_sync',{},`${API}/sync/stop`,{method:'POST'});}
+    try{await api('stop_sync');}
     catch(e){setSyncStopping(false);setSyncError(e.message);}
   };
 
@@ -457,7 +438,7 @@ function App(){
       return true;
     });
   },[detail,entryFilter]);
-  // H6: transcript pagination derived from server total/limit/offset.
+  // Transcript pagination derived from the backend's total/limit/offset.
   const detailTotal=detail?.total??detail?.entries?.length??0;
   const detailLimit=detail?.limit||DETAIL_PAGE_SIZE;
   const detailTotalPages=Math.max(1,Math.ceil(detailTotal/detailLimit));
@@ -657,7 +638,6 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-console.log('[boot] hasTauriRuntime=',hasTauriRuntime());
 window.onerror=function(message,source,lineno,colno,error){
   console.error('[boot] window.onerror:',message,source,lineno,colno,error);
   let el=document.getElementById('boot-error-overlay');

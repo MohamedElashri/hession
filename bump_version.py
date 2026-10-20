@@ -14,7 +14,6 @@ JSON_FILES = [
 CARGO_TOML = Path("src-tauri/Cargo.toml")
 PACKAGE_LOCK = Path("package-lock.json")
 CARGO_LOCK = Path("src-tauri/Cargo.lock")
-TEXT_FILES = []
 
 
 def read(p):
@@ -48,7 +47,6 @@ def main():
     distinct = {v for v in versions.values() if v}
     if len(distinct) > 1:
         print(f"WARNING: versions differ across files: {sorted(distinct)}")
-    old = next(iter(distinct)) if distinct else None
 
     new = input("Enter new version (e.g. 0.3.0): ").strip()
     if not re.fullmatch(r"\d+\.\d+\.\d+", new):
@@ -87,14 +85,6 @@ def main():
     )
     write(CARGO_LOCK, clog)
     print(f"updated {CARGO_LOCK}")
-
-    if old:
-        for p in TEXT_FILES:
-            text = read(p)
-            updated = text.replace(f"v{old}", f"v{new}").replace(old, new)
-            if updated != text:
-                write(p, updated)
-                print(f"updated {p}")
 
     print("\nRunning npm install --package-lock-only ...")
     subprocess.run(["npm", "install", "--package-lock-only"], cwd=ROOT, check=False)

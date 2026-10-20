@@ -1,5 +1,4 @@
-//! Simplified port of `server/sync-controller.js` + `server/sync-worker.js`:
-//! single-flight guard plus the progress-shaped status snapshot.
+//! Background sync: a single-flight guard plus a progress status snapshot.
 //!
 //! The worker thread is a plain `std::thread` (no async runtime needed):
 //! [`start_sync`] returns `false` immediately when a run is already active,
@@ -14,7 +13,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
-/// Progress snapshot (mirrors the controller `status` shape, simplified).
+/// Progress snapshot of the current or last sync run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncState {
     pub running: bool,
@@ -74,14 +73,13 @@ pub fn is_managing_data() -> bool {
     MANAGING_DATA.load(Ordering::SeqCst)
 }
 
-/// Clone of the current status (mirrors `getSyncStatus`).
+/// Clone of the current status.
 pub fn get_status() -> SyncState {
     lock_state().clone()
 }
 
 /// Start a background sync. Returns `false` when a run is already active
-/// (single-flight guard, mirrors `sync-controller.js` returning the pending
-/// promise); `true` when a new run was launched.
+/// (single-flight guard); `true` when a new run was launched.
 pub fn start_sync(agent_filter: Option<String>, mode: &str) -> bool {
     {
         let mut state = lock_state();

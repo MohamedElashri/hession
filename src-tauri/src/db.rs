@@ -1,6 +1,5 @@
-//! Local-first storage: `db.js` tables plus the schemas from
-//! `server/analytics.js` (`initAnalyticsSchema`) and `server/model-pricing.js`
-//! (`initPricingSchema`).
+//! Local-first SQLite storage: core session tables plus the analytics and
+//! pricing schemas.
 //!
 //! WAL readers use independent snapshots; short writes share a priority gate.
 //! Permission hardening: data dir `0700`, db file `0600` (unix, best-effort).
@@ -15,14 +14,11 @@
 //! provides FTS5 + `unicode61 remove_diacritics`), `serde` with `derive`,
 //! `thiserror = "2"`.
 //!
-//! - `get_or_create_*` upserts are verbatim `ON CONFLICT` statements from
-//!   `getAgent/getWorkspace/getModel`. JS object-coercion for provider/key
-//!   (objects with `.providerID`/`.id`/…) has no Rust equivalent: callers pass
+//! - `get_or_create_*` upserts use `ON CONFLICT` statements; callers pass
 //!   pre-stringified `&str` (empty provider becomes `""`, empty key returns
 //!   `None`, empty cwd returns `None`).
 
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -65,7 +61,7 @@ fn sqlite_err(context: impl Into<String>, source: rusqlite::Error) -> DbError {
 // Paths & permissions
 // ---------------------------------------------------------------------------
 
-/// Milliseconds for `busy_timeout` (mirrors `db.pragma('busy_timeout = 5000')`).
+/// Milliseconds for `busy_timeout`.
 pub const BUSY_TIMEOUT_MS: u64 = 5000;
 
 #[derive(Default)]
@@ -173,18 +169,6 @@ fn ensure_file_permissions(file: &Path) -> Result<()> {
     chmod_path(file, 0o600)?;
     #[cfg(not(unix))]
     let _ = file;
-    Ok(())
-}
-
-/// Enforce `0700` on the data dir and `0600` on the db file (if it exists).
-/// Mirrors the `mkdirSync(..., 0o700)` + `chmodSync(0700/0600)` hardening in
-/// `db.js` (H5 comment). Unix-only modes; no-op elsewhere.
-pub fn ensure_permissions() -> Result<()> {
-    ensure_dir_permissions(&data_dir())?;
-    let file = db_path();
-    if file.exists() {
-        ensure_file_permissions(&file)?;
-    }
     Ok(())
 }
 
@@ -331,7 +315,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     }
     drop(initialized);
 
-    // Harden the file itself (mirrors `chmodSync(dbPath, 0o600)` right after open).
+    // Harden the file itself (0600) right after open.
     if path.exists() {
         ensure_file_permissions(path)?;
     }
@@ -339,10 +323,10 @@ pub fn open_db(path: &Path) -> Result<Connection> {
 }
 
 // ---------------------------------------------------------------------------
-// Schema (verbatim from db.js / analytics.js / model-pricing.js)
+// Schema
 // ---------------------------------------------------------------------------
 
-/// Core tables + indexes + FTS + triggers, verbatim from `db.js`.
+/// Core tables + indexes + FTS + triggers.
 const BASE_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS agent (
   id INTEGER PRIMARY KEY,
@@ -508,7 +492,7 @@ CREATE TRIGGER IF NOT EXISTS entry_au AFTER UPDATE OF search_text ON entry BEGIN
 END;
 "#;
 
-/// Analytics schema, verbatim from `initAnalyticsSchema` in `analytics.js`.
+/// Analytics schema.
 const ANALYTICS_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS session_analytics (
   session_id INTEGER PRIMARY KEY REFERENCES session(id) ON DELETE CASCADE,
@@ -545,8 +529,7 @@ CREATE INDEX IF NOT EXISTS tool_failures_idx ON tool_invocation(session_id,tool_
   WHERE status='error' OR (exit_code IS NOT NULL AND exit_code!=0);
 "#;
 
-/// Pricing schema, verbatim from `initPricingSchema` in `model-pricing.js`.
-/// (`source_url` default is the interpolated `${PRICING_SOURCE_URL}`.)
+/// Pricing schema. (`source_url` default is `PRICING_SOURCE_URL`.)
 const PRICING_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS model_pricing_cache (
   id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -610,14 +593,13 @@ fn add_session_host(conn: &Connection) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Upserts (verbatim from getAgent / getWorkspace / getModel)
+// Upserts
 // ---------------------------------------------------------------------------
 
 /// Insert-or-update an agent row, returning its id.
 ///
-/// Mirrors `getAgent`: `ON CONFLICT(family, install_root) DO UPDATE
-/// SET product=excluded.product`. `None` install root becomes `""`
-/// (mirrors `installRoot || ''`).
+/// `ON CONFLICT(family, install_root) DO UPDATE SET product=excluded.product`.
+/// `None` install root becomes `""`.
 pub fn get_or_create_agent(
     conn: &Connection,
     family: &str,
@@ -641,7 +623,7 @@ pub fn get_or_create_agent(
 
 /// Insert-or-ignore a workspace row, returning its id (`None` for empty cwd).
 ///
-/// Mirrors `getWorkspace`: `display_name` is the path basename (fallback cwd),
+/// `display_name` is the path basename (fallback cwd),
 /// `ON CONFLICT(path) DO NOTHING`.
 pub fn get_or_create_workspace(conn: &Connection, cwd: &str) -> Result<Option<i64>> {
     if cwd.is_empty() {
@@ -669,9 +651,8 @@ pub fn get_or_create_workspace(conn: &Connection, cwd: &str) -> Result<Option<i6
 
 /// Insert-or-ignore a model row, returning its id (`None` for empty key).
 ///
-/// Mirrors `getModel`: `ON CONFLICT(provider, model_key) DO NOTHING`,
-/// `display_name` defaults to the key. The JS object-coercion for
-/// provider/key has no Rust equivalent — callers pass pre-stringified values.
+/// `ON CONFLICT(provider, model_key) DO NOTHING`; `display_name` defaults
+/// to the key.
 pub fn get_or_create_model(
     conn: &Connection,
     provider: &str,
@@ -704,136 +685,4 @@ pub fn get_or_create_model(
     )
     .map_err(|e| sqlite_err("read model id", e))
     .map(Some)
-}
-
-// ---------------------------------------------------------------------------
-// Row structs (serde, for importer / analytics / commands layers)
-// ---------------------------------------------------------------------------
-
-/// One `agent` row.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentRow {
-    pub id: i64,
-    pub family: String,
-    pub product: String,
-    pub install_root: Option<String>,
-}
-
-/// One `workspace` row.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkspaceRow {
-    pub id: i64,
-    pub path: String,
-    pub display_name: Option<String>,
-}
-
-/// One `repository` row.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RepositoryRow {
-    pub id: i64,
-    pub common_dir: Option<String>,
-    pub remote_url: Option<String>,
-}
-
-/// One `model` row.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelRow {
-    pub id: i64,
-    pub provider: Option<String>,
-    pub model_key: String,
-    pub display_name: Option<String>,
-}
-
-/// One `session` row (nullable columns stay `Option`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionRow {
-    pub id: i64,
-    pub agent_id: i64,
-    pub workspace_id: Option<i64>,
-    pub external_id: Option<String>,
-    pub source_uri: String,
-    pub source_format: Option<String>,
-    pub source_version: Option<String>,
-    pub agent_version: Option<String>,
-    pub cwd: Option<String>,
-    pub title: Option<String>,
-    pub started_at: Option<String>,
-    pub last_event_at: Option<String>,
-    pub imported_at: String,
-    pub source_size: Option<i64>,
-    pub source_mtime: Option<f64>,
-    pub raw_metadata_json: Option<String>,
-    pub token_usage_json: Option<String>,
-    pub metrics_json: Option<String>,
-}
-
-/// One `entry` row.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EntryRow {
-    pub id: i64,
-    pub session_id: i64,
-    pub ordinal: i64,
-    pub external_entry_id: Option<String>,
-    pub parent_entry_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub occurred_at: Option<String>,
-    pub kind: String,
-    pub role: Option<String>,
-    pub search_text: String,
-    pub payload_json: Option<String>,
-}
-
-/// Read helpers used by later layers (importer/analytics/commands).
-
-/// Fetch an agent row by id.
-pub fn get_agent(conn: &Connection, id: i64) -> Result<Option<AgentRow>> {
-    conn.query_row(
-        "SELECT id, family, product, install_root FROM agent WHERE id=?1",
-        params![id],
-        |row| {
-            Ok(AgentRow {
-                id: row.get(0)?,
-                family: row.get(1)?,
-                product: row.get(2)?,
-                install_root: row.get::<_, Option<String>>(3)?.filter(|s| !s.is_empty()),
-            })
-        },
-    )
-    .optional()
-    .map_err(|e| sqlite_err("read agent", e))
-}
-
-/// Fetch a workspace row by id.
-pub fn get_workspace(conn: &Connection, id: i64) -> Result<Option<WorkspaceRow>> {
-    conn.query_row(
-        "SELECT id, path, display_name FROM workspace WHERE id=?1",
-        params![id],
-        |row| {
-            Ok(WorkspaceRow {
-                id: row.get(0)?,
-                path: row.get(1)?,
-                display_name: row.get(2)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(|e| sqlite_err("read workspace", e))
-}
-
-/// Fetch a model row by id.
-pub fn get_model(conn: &Connection, id: i64) -> Result<Option<ModelRow>> {
-    conn.query_row(
-        "SELECT id, provider, model_key, display_name FROM model WHERE id=?1",
-        params![id],
-        |row| {
-            Ok(ModelRow {
-                id: row.get(0)?,
-                provider: row.get(1)?,
-                model_key: row.get(2)?,
-                display_name: row.get(3)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(|e| sqlite_err("read model", e))
 }

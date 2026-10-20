@@ -5,9 +5,8 @@
 //! `spawn_blocking` runs the SQLite work; `Result<Value, String>` everywhere,
 //! never `panic!`).
 //!
-//! Read-only contract sources (do NOT modify): the Node Express routes
-//! (`server/index.js`, `/api/*`) for SQL semantics and response shapes, and
-//! the frontend invoke args in `src/main.jsx` + `src/Analytics.jsx`.
+//! Argument names and response shapes match the frontend invoke calls in
+//! `src/main.jsx` + `src/Analytics.jsx`.
 //!
 //! Backend wiring: [`crate::db`] for open/path, [`crate::analytics`] for the
 //! analytics payload, [`crate::pricing`] for pricing + overrides,
@@ -27,7 +26,7 @@ use std::io::Write;
 use super::AppState;
 use crate::{analytics, db, importer, pricing, sync};
 
-/// Agent families accepted by `POST /api/sync` (`start_sync`).
+/// Agent families accepted by `start_sync`.
 const ALLOWED_FAMILIES: &[&str] = &[
     "cline",
     "codex",
@@ -114,9 +113,7 @@ fn escape_like(value: &str) -> String {
 }
 
 /// Simplified FTS5 `MATCH` expression: deduped lowercase word prefixes joined
-/// with `OR`. (Node additionally expands near-miss vocabulary terms via
-/// `entry_fts_vocab`; skipped here — plain prefix search still satisfies the
-/// frontend contract.)
+/// with `OR`.
 fn fts_expression(query: &str) -> Option<String> {
     let mut terms: Vec<String> = Vec::new();
     for word in query.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
@@ -150,7 +147,7 @@ fn clamp_limit(value: Option<&str>, default: i64, min: i64, max: i64) -> i64 {
     parsed.clamp(min, max)
 }
 
-/// `since` filter for `/api/sessions`: `day/week/month/year` presets or an
+/// `since` filter for `search_sessions`: `day/week/month/year` presets or an
 /// ISO date. Returns the UTC cutoff ISO string, or `None` for no filter.
 fn sessions_since_cutoff(since: &str) -> Option<String> {
     let trimmed = since.trim();
@@ -194,7 +191,7 @@ pub async fn ping(_state: State<'_, AppState>) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
-// get_health  (GET /api/health)
+// get_health
 // ---------------------------------------------------------------------------
 
 fn get_health_inner(db_path: &Path) -> Result<Value, String> {
@@ -219,7 +216,7 @@ pub async fn get_health(state: State<'_, AppState>) -> Result<Value, String> {
 }
 
 // ---------------------------------------------------------------------------
-// search_sessions  (GET /api/sessions)
+// search_sessions
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
@@ -319,7 +316,7 @@ fn search_sessions_from_conn(conn: &Connection, q: &str, agent: &str, project: &
         params.push(SqlValue::Text(cutoff));
     }
 
-    // Full-text search join (H3: no LIKE fallback over entry.search_text).
+    // Full-text search join (no LIKE fallback over entry.search_text).
     let mut search_join = String::new();
     if !q.trim().is_empty() {
         if let Some(expression) = fts_expression(q) {
@@ -427,7 +424,7 @@ pub async fn search_sessions(
 }
 
 // ---------------------------------------------------------------------------
-// get_session  (GET /api/sessions/:id, H6 paginated transcript)
+// get_session  (paginated transcript)
 // ---------------------------------------------------------------------------
 
 fn get_session_inner(db_path: &Path, id: &str, limit: i64, page: i64) -> Result<Value, String> {
@@ -579,7 +576,7 @@ pub async fn get_session(
 }
 
 // ---------------------------------------------------------------------------
-// get_agents  (GET /api/agents)
+// get_agents
 // ---------------------------------------------------------------------------
 
 fn get_agents_inner(db_path: &Path) -> Result<Value, String> {
@@ -594,8 +591,7 @@ fn get_agents_inner(db_path: &Path) -> Result<Value, String> {
         ),
         &[],
     )?;
-    // Union with filesystem-discovered agents (mirrors the Node `/api/agents`
-    // union): families whose sources exist on disk appear with `sessions: 0`
+    // Union with filesystem-discovered agents: families whose sources exist on disk appear with `sessions: 0`
     // even before their first import.
     let mut seen: HashSet<String> = agents
         .iter()
@@ -634,7 +630,7 @@ pub async fn get_agents(state: State<'_, AppState>) -> Result<Value, String> {
 }
 
 // ---------------------------------------------------------------------------
-// get_projects  (GET /api/projects)
+// get_projects
 // ---------------------------------------------------------------------------
 
 fn get_projects_inner(db_path: &Path) -> Result<Value, String> {
@@ -661,7 +657,7 @@ pub async fn get_projects(state: State<'_, AppState>) -> Result<Value, String> {
 }
 
 // ---------------------------------------------------------------------------
-// get_facets  (GET /api/facets)
+// get_facets
 // ---------------------------------------------------------------------------
 
 fn get_facets_inner(db_path: &Path) -> Result<Value, String> {
@@ -718,7 +714,7 @@ pub async fn get_facets(state: State<'_, AppState>) -> Result<Value, String> {
 }
 
 // ---------------------------------------------------------------------------
-// get_stats  (GET /api/stats)
+// get_stats
 // ---------------------------------------------------------------------------
 
 fn get_stats_inner(db_path: &Path) -> Result<Value, String> {
@@ -747,7 +743,7 @@ pub async fn get_stats(state: State<'_, AppState>) -> Result<Value, String> {
 }
 
 // ---------------------------------------------------------------------------
-// get_analytics  (GET /api/analytics)
+// get_analytics
 // ---------------------------------------------------------------------------
 
 fn get_analytics_inner(
@@ -811,7 +807,7 @@ pub async fn get_analytics(
 }
 
 // ---------------------------------------------------------------------------
-// refresh_analytics  (POST /api/analytics/refresh)
+// refresh_analytics
 // ---------------------------------------------------------------------------
 
 fn refresh_analytics_inner(db_path: &Path) -> Result<Value, String> {
@@ -828,7 +824,7 @@ pub async fn refresh_analytics(state: State<'_, AppState>) -> Result<Value, Stri
 }
 
 // ---------------------------------------------------------------------------
-// get_pricing_status  (GET /api/analytics/pricing)
+// get_pricing_status
 // ---------------------------------------------------------------------------
 
 fn get_pricing_status_inner(db_path: &Path) -> Result<Value, String> {
@@ -847,7 +843,7 @@ pub async fn get_pricing_status(state: State<'_, AppState>) -> Result<Value, Str
 }
 
 // ---------------------------------------------------------------------------
-// sync_pricing  (POST /api/analytics/pricing/sync)
+// sync_pricing
 // ---------------------------------------------------------------------------
 
 fn sync_pricing_inner(db_path: &Path, raw: &Value, updated_at: &str) -> Result<Value, String> {
@@ -873,7 +869,7 @@ fn sync_pricing_inner(db_path: &Path, raw: &Value, updated_at: &str) -> Result<V
 }
 
 /// Explicit user sync: fetch models.dev (network), then cache + recalculate.
-/// Throws on network/parse errors like the Node route (no silent fallback).
+/// Returns an error on network/parse failures (no silent fallback).
 #[tauri::command]
 pub async fn sync_pricing(state: State<'_, AppState>) -> Result<Value, String> {
     let db_path = db_path_of(&state)?;
@@ -885,7 +881,7 @@ pub async fn sync_pricing(state: State<'_, AppState>) -> Result<Value, String> {
 }
 
 // ---------------------------------------------------------------------------
-// get_pricing_overrides  (GET /api/analytics/pricing/overrides)
+// get_pricing_overrides
 // ---------------------------------------------------------------------------
 
 fn get_pricing_overrides_inner(db_path: &Path) -> Result<Value, String> {
@@ -906,7 +902,7 @@ pub async fn get_pricing_overrides(state: State<'_, AppState>) -> Result<Value, 
 }
 
 // ---------------------------------------------------------------------------
-// save_pricing_override  (POST /api/analytics/pricing/overrides)
+// save_pricing_override
 // ---------------------------------------------------------------------------
 
 #[allow(non_snake_case)]
@@ -957,7 +953,7 @@ fn save_pricing_override_inner(
 
 /// Flat args `{ provider, modelId, displayName, inPer1M, outPer1M,
 /// cachePer1M }`. Validation failures surface as `Err("Invalid override:
-/// …")`, matching the Node 400s.
+/// …")`.
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn save_pricing_override(
@@ -988,7 +984,7 @@ pub async fn save_pricing_override(
 }
 
 // ---------------------------------------------------------------------------
-// delete_pricing_override  (DELETE /api/analytics/pricing/overrides)
+// delete_pricing_override
 // ---------------------------------------------------------------------------
 
 #[allow(non_snake_case)]
@@ -1113,10 +1109,10 @@ pub async fn get_sync_checkpoints(state: State<'_, AppState>) -> Result<Value, S
         .map_err(|e| format!("get_sync_checkpoints failed: {e}"))?
 }
 
-/// Validates `agent`/`mode` like `POST /api/sync`, then launches the
+/// Validates `agent`/`mode`, then launches the
 /// single-flight background worker. Returns `{ started: true, ...status }`
 /// on a fresh launch, or `{ started: false, running: true, ...status }` when
-/// a run is already active (the Tauri equivalent of the Node 202 response).
+/// a run is already active.
 /// The frontend forces `running: true` on its copy and polls
 /// `get_sync_status` either way.
 #[tauri::command]

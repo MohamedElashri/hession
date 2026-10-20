@@ -468,7 +468,7 @@ fn reported_usage(family: &str, values: &[Value]) -> Option<Value> {
         // commandcode (`inputTokens`) and muse (`input_tokens`); adding the
         // cache subset again would double count. Claude (`input_tokens`) and
         // pi (`input`) report the non-cached slice, so the total is
-        // input + cache-read + cache-write (mirrors the JS importer).
+        // input + cache-read + cache-write.
         let input_is_total = family == "codex"
             || family == "commandcode"
             || family == "muse"

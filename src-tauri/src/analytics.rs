@@ -1,26 +1,22 @@
-//! Port of `server/analytics.js` (645 lines).
-//!
 //! Incremental session analytics with timezone-aware calendar bucketing,
 //! cache-efficiency math, tool metrics, and productivity pulse.
 //!
-//! Wire compatibility: the assembled JSON uses the original snake_case keys
-//! (`session_leaderboards`, `by_model`, `daily_trend`, …) so existing UI code
-//! keeps working. New typed structs below derive `Serialize` with camelCase
-//! for the pricing-shaped sub-objects, matching the original JSON API where
-//! it used camelCase (`pricingSource`, `inPer1M`, …).
+//! Wire format: the assembled JSON uses snake_case keys
+//! (`session_leaderboards`, `by_model`, `daily_trend`, …) expected by the UI;
+//! the pricing-shaped sub-objects serialize as camelCase (`pricingSource`,
+//! `inPer1M`, …).
 //!
-//! Approximations vs Node:
-//! - `parseDate` is re-implemented with chrono (RFC3339 + `YYYY-MM-DD HH:MM:SS`
-//!   + date-only); behaviour matches for the stored `started_at` formats.
+//! Implementation notes:
+//! - Dates are parsed with chrono (RFC3339 + `YYYY-MM-DD HH:MM:SS` +
+//!   date-only), covering the stored `started_at` formats.
 //! - Calendar bucketing uses IANA timezone rules, with fixed UTC/GMT offsets
 //!   supported for older callers.
 //! - 10s in-memory cache is a `Mutex<HashMap<String, (Instant, Value)>>`
-//!   keyed by the JSON-encoded filters (same 10s TTL as JS).
-//! - `syncAnalytics` batches 20 sessions per `BEGIN IMMEDIATE`/`COMMIT`
-//!   instead of `db.transaction()` (same fsync avoidance, works with
-//!   `&Connection`).
-//! - Query params use `&[&dyn ToSql]` (owned `String`/`f64`) instead of
-//!   `serde_json::Value` as params, which rusqlite does not implement.
+//!   keyed by the JSON-encoded filters.
+//! - Analytics sync batches 20 sessions per `BEGIN IMMEDIATE`/`COMMIT` to
+//!   limit fsyncs.
+//! - Query params use `&[&dyn ToSql]` (owned `String`/`f64`), since rusqlite
+//!   does not implement `ToSql` for `serde_json::Value`.
 
 use crate::pricing::{
     calculate_cost, estimate_tokens_from_chars, get_model_pricing, get_pricing_reference,
@@ -46,54 +42,7 @@ fn check_cancelled(cancelled: &AtomicBool) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
-// Schema
-// ---------------------------------------------------------------------------
-
-pub const ANALYTICS_SCHEMA_SQL: &str = "
-CREATE TABLE IF NOT EXISTS session_analytics (
-  session_id INTEGER PRIMARY KEY REFERENCES session(id) ON DELETE CASCADE,
-  agent_id INTEGER NOT NULL REFERENCES agent(id),
-  workspace_id INTEGER REFERENCES workspace(id),
-  started_at TEXT,
-  last_event_at TEXT,
-  duration_seconds REAL DEFAULT 0,
-  model_name TEXT,
-  input_tokens INTEGER NOT NULL DEFAULT 0,
-  output_tokens INTEGER NOT NULL DEFAULT 0,
-  cached_tokens INTEGER NOT NULL DEFAULT 0,
-  total_tokens INTEGER NOT NULL DEFAULT 0,
-  estimated_cost REAL NOT NULL DEFAULT 0,
-  user_turns INTEGER NOT NULL DEFAULT 0,
-  assistant_turns INTEGER NOT NULL DEFAULT 0,
-  total_turns INTEGER NOT NULL DEFAULT 0,
-  tool_count INTEGER NOT NULL DEFAULT 0,
-  tool_error_count INTEGER NOT NULL DEFAULT 0,
-  calculated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS analytics_refresh_queue (
-  session_id INTEGER PRIMARY KEY REFERENCES session(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS sa_time_idx ON session_analytics(started_at DESC);
-CREATE INDEX IF NOT EXISTS sa_agent_idx ON session_analytics(agent_id, started_at DESC);
-CREATE INDEX IF NOT EXISTS sa_ws_idx ON session_analytics(workspace_id, started_at DESC);
-CREATE INDEX IF NOT EXISTS sa_model_idx ON session_analytics(model_name);
-CREATE INDEX IF NOT EXISTS tool_duration_idx ON tool_invocation(duration_ms DESC);
-CREATE INDEX IF NOT EXISTS tool_status_idx ON tool_invocation(status);
-CREATE INDEX IF NOT EXISTS tool_metrics_name_idx ON tool_invocation(tool_name,session_id,status,exit_code,duration_ms);
-CREATE INDEX IF NOT EXISTS tool_metrics_status_idx ON tool_invocation(status,session_id);
-CREATE INDEX IF NOT EXISTS tool_failures_idx ON tool_invocation(session_id,tool_name,exit_code,started_at)
-  WHERE status='error' OR (exit_code IS NOT NULL AND exit_code!=0);
-";
-
-/// Create analytics tables/indexes if missing.
-pub fn init_analytics_schema(db: &Connection) -> Result<(), String> {
-    db.execute_batch(ANALYTICS_SCHEMA_SQL)
-        .map_err(|e| format!("Could not create the analytics schema: {e}"))?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Serialize structs (camelCase to match original JSON API)
+// Serialize structs (camelCase wire format)
 // ---------------------------------------------------------------------------
 
 /// Query filters: `agent/model/workspace/timezone/since`.
@@ -124,40 +73,6 @@ pub struct Methodology {
     pub pricing_model_count: usize,
     pub custom_override_count: usize,
     pub token_note: String,
-}
-
-/// One daily-trend day with 7d moving average.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DailyTrendDay {
-    pub date: String,
-    pub sessions: i64,
-    pub input_tokens: i64,
-    pub output_tokens: i64,
-    pub total_tokens: i64,
-    pub estimated_cost: f64,
-    pub turns: i64,
-    pub user_turns: i64,
-    pub assistant_turns: i64,
-    pub tool_calls: i64,
-    pub tool_errors: i64,
-    pub moving_average: HashMap<String, f64>,
-    pub user_assistant_ratio: Option<f64>,
-}
-
-/// Spend outlook (week-over-week deltas + month forecast).
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpendOutlook {
-    pub weekly_deltas: Map<String, Value>,
-    pub recent_start: String,
-    pub recent_end: String,
-    pub prior_start: String,
-    pub prior_end: String,
-    pub daily_average_cost: f64,
-    pub month_to_date_cost: f64,
-    pub forecast_month_end_cost: f64,
-    pub month_end: String,
 }
 
 /// Bounded report cache; each calculation loads pricing from its own snapshot.
@@ -505,7 +420,7 @@ pub(crate) fn calculate_session(db: &Connection, pricing: &Arc<Mutex<PricingStat
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?)),
         )
         .map_err(|e| sqlite_error("Could not read the analytics session", e))?;
-    // Node fallback is `session.duration_seconds || 0`: NULL/missing/NaN -> 0.
+    // NULL/missing/NaN duration -> 0.
     let duration_seconds: f64 = duration_seconds_opt.filter(|v| v.is_finite()).unwrap_or(0.0);
 
     // Use cached metrics only when every required count is present. Older
@@ -886,7 +801,7 @@ fn month_end(today: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Full analytics payload (KPIs, breakdowns, trends, tool metrics, pulse).
-/// Returns `serde_json::Value` with the original snake_case keys.
+/// Returns `serde_json::Value` with snake_case keys.
 pub fn get_full_analytics(
     db: &Connection,
     filters: &AnalyticsFilters,
@@ -1436,9 +1351,4 @@ pub fn get_full_analytics(
         }
     }
     Ok(result)
-}
-
-/// Clear the 10s analytics cache (call after sync/override changes).
-pub fn clear_analytics_cache(state: &AnalyticsState) {
-    state.clear_cache();
 }

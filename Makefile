@@ -55,7 +55,7 @@ test: setup ## Run Rust tests and the frontend build
 	npm run build
 	cd $(CARGO_DIR) && $(CARGO) test --lib
 
-check: setup ## Type-check frontend and Rust (no tests)
+check: setup ## Build the frontend and cargo check the backend (no tests)
 	npm run check
 
 lint: setup ## Clippy on the Rust code

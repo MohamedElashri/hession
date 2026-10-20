@@ -1,20 +1,17 @@
-//! Port of `server/model-pricing.js` (537 lines) + `tests/model-pricing.test.js`.
-//!
 //! Live model pricing from `https://models.dev/api.json`, cached locally for
 //! 24h, with fuzzy model-key matching and user-defined price overrides.
 //!
-//! Approximations vs Node:
-//! - `FAMILY_DEFS` regex tests are hand-rolled string matchers (no
-//!   `fancy-regex` dependency) preserving the original semantics including
-//!   word boundaries and the `gpt-4o(?!-mini)` negative lookahead.
-//! - In-memory index lives in [`PricingState`] (per-process, like the JS
-//!   module globals) instead of module-level `let` bindings.
+//! Implementation notes:
+//! - `FAMILY_DEFS` tests are hand-rolled string matchers (no regex
+//!   dependency), including word boundaries and the `gpt-4o(?!-mini)`
+//!   negative lookahead.
+//! - The in-memory index lives in [`PricingState`] (per-process).
 //! - `match_record` returns an index into [`PricingState::live_records`]
 //!   rather than a record reference, to satisfy the borrow checker.
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -25,7 +22,7 @@ pub const PRICING_FETCH_TIMEOUT_MS: u64 = 8000;
 pub const PRICING_SOURCE_CUSTOM: &str = "custom";
 
 /// Mean chars-per-token divisor used when a session reports no actual token
-/// usage. Mirrors `TOKEN_CHARS_PER_TOKEN` in JS.
+/// usage.
 pub const TOKEN_CHARS_PER_TOKEN: f64 = 3.8;
 
 /// Origin providers win when several providers list the same model id.
@@ -61,7 +58,7 @@ pub struct FamilyDef {
     pub cache_per_1m: f64,
 }
 
-/// Mirrors `FAMILY_DEFS` in JS. The `test` regexes are implemented by
+/// Model family definitions. The `test` patterns are implemented by
 /// [`family_matches`] (no regex crate needed).
 pub static FAMILY_DEFS: &[FamilyDef] = &[
     FamilyDef { id: "claude-opus", display_name: "Claude Opus (3 / 4)", in_per_1m: 15.0, out_per_1m: 75.0, cache_per_1m: 1.5 },
@@ -87,7 +84,7 @@ fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// JS `\b<needle>\b` on an already-lowercased haystack.
+/// Regex-style `\b<needle>\b` match on an already-lowercased haystack.
 fn contains_word(hay: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
@@ -119,8 +116,8 @@ fn gemini_then(hay: &str, second: &str) -> bool {
     }
 }
 
-/// Pure port of each `FAMILY_DEFS[*].test`. `model` may be any case;
-/// matching is case-insensitive like the `/i` flag.
+/// Evaluates `FAMILY_DEFS[*].test` for one family. `model` may be any case;
+/// matching is case-insensitive.
 pub fn family_matches(family_id: &str, model: &str) -> bool {
     let hay = model.to_lowercase();
     match family_id {
@@ -176,29 +173,8 @@ pub fn family_matches(family_id: &str, model: &str) -> bool {
     }
 }
 
-/// Backwards-compatible hardcoded table (same shape as before).
-pub fn fallback_pricing() -> Vec<ModelPricing> {
-    FAMILY_DEFS
-        .iter()
-        .map(|f| ModelPricing {
-            id: f.id.to_string(),
-            display_name: f.display_name.to_string(),
-            in_per_1m: f.in_per_1m,
-            out_per_1m: f.out_per_1m,
-            cache_per_1m: f.cache_per_1m,
-            source: "fallback".to_string(),
-            matched_model: None,
-            provider: None,
-        })
-        .collect()
-}
-
-pub fn token_chars_per_token() -> f64 {
-    TOKEN_CHARS_PER_TOKEN
-}
-
 // ---------------------------------------------------------------------------
-// Serde structs (camelCase to match original JSON API)
+// Serde structs (camelCase wire format)
 // ---------------------------------------------------------------------------
 
 /// One flattened models.dev record.
@@ -282,16 +258,6 @@ pub struct PriceOverride {
     pub updated_at: String,
 }
 
-/// Delete scope: `{provider?, modelId?}`. All-empty wipes everything.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OverrideScope {
-    #[serde(default)]
-    pub provider: String,
-    #[serde(default)]
-    pub model_id: String,
-}
-
 #[derive(Debug, Clone)]
 struct OverrideRow {
     provider: String,
@@ -303,7 +269,7 @@ struct OverrideRow {
     updated_at: String,
 }
 
-/// In-memory live index + overrides (per-process, like the JS module state).
+/// In-memory live index + overrides (per-process).
 #[derive(Default)]
 pub struct PricingState {
     pub live_records: Vec<LiveRecord>,
@@ -752,7 +718,7 @@ pub fn calculate_cost(
 }
 
 /// Estimate token counts from text length when `token_usage_json` is missing.
-/// Mirrors `syncAnalytics`: input from user + 0.7×tool chars, output from
+/// Input from user + 0.7×tool chars, output from
 /// assistant chars, at [`TOKEN_CHARS_PER_TOKEN`] chars per token.
 pub fn estimate_tokens_from_chars(user_chars: i64, assistant_chars: i64, tool_chars: i64) -> (i64, i64) {
     let input = ((user_chars as f64 + tool_chars as f64 * 0.7) / TOKEN_CHARS_PER_TOKEN).round() as i64;
@@ -825,33 +791,6 @@ pub fn get_pricing_reference(state: &PricingState) -> Vec<PricingReferenceRow> {
 // ---------------------------------------------------------------------------
 // Cache persistence
 // ---------------------------------------------------------------------------
-
-pub const PRICING_SCHEMA_SQL: &str = "
-CREATE TABLE IF NOT EXISTS model_pricing_cache (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  payload_json TEXT NOT NULL,
-  model_count INTEGER NOT NULL DEFAULT 0,
-  source_url TEXT NOT NULL DEFAULT 'https://models.dev/api.json',
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS model_price_overrides (
-  provider TEXT NOT NULL DEFAULT '',
-  model_id TEXT NOT NULL,
-  display_name TEXT,
-  in_per_1m REAL NOT NULL,
-  out_per_1m REAL NOT NULL,
-  cache_per_1m REAL NOT NULL DEFAULT 0,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (provider, model_id)
-);
-";
-
-/// Create the pricing tables if missing.
-pub fn init_pricing_schema(db: &Connection) -> Result<(), String> {
-    db.execute_batch(PRICING_SCHEMA_SQL)
-        .map_err(|e| format!("Could not create the pricing schema: {e}"))?;
-    Ok(())
-}
 
 fn now_millis() -> i64 {
     SystemTime::now()
@@ -1091,14 +1030,6 @@ pub fn delete_price_overrides(
     .map_err(|e| format!("Could not reset the price overrides: {e}"))?;
     load_pricing_cache(db, state)?;
     Ok(deleted as i64)
-}
-
-pub fn delete_price_overrides_typed(
-    db: &Connection,
-    state: &mut PricingState,
-    scope: &OverrideScope,
-) -> Result<i64, String> {
-    delete_price_overrides(db, state, &json!({ "provider": scope.provider, "modelId": scope.model_id }))
 }
 
 // ---------------------------------------------------------------------------

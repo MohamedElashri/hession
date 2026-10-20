@@ -20,8 +20,6 @@ both the ones on this computer and the ones on the SSH hosts you work on
 - **Analytics** for tokens, estimated cost, tools, and failures
 - **Local-first**: everything is stored in a SQLite database on your machine
 
-![Sessions view](screenshots/sessions-homepage.png)
-
 ## Install
 
 There are no prebuilt releases yet. Build it from source (Linux shown; see
@@ -42,6 +40,20 @@ sudo apt install ./src-tauri/target/release/bundle/deb/*.deb
    `~/.ssh/config`) or type one. Then choose **Sync updates**.
 3. Select a session to read it. Choose **Resume** to continue it in a
    terminal, or **VS Code** to open its workspace.
+
+## How it works
+
+- **Reads** each agent's own history files (for example `~/.claude/projects`).
+  It never writes to them.
+- **Stores** an indexed copy in `~/.hession/sessions.sqlite`. Sync only
+  re-reads files whose size or modification time changed.
+- **Remote hosts** you add are reached with your `ssh` and `~/.ssh/config`,
+  without password prompts. Their history files are copied with `rsync` into
+  `~/.hession/remotes/<host>/` and then indexed like local files. Nothing on
+  the host is changed.
+- **Nothing is uploaded.** Besides your SSH hosts, the only network request
+  is a model-price download from [models.dev](https://models.dev), and only
+  when you click it in Analytics.
 
 ## Documentation
 

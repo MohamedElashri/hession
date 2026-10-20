@@ -184,7 +184,7 @@ jobs:
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          # Ad-hoc signing matches Serverbox; this is not notarization.
+          # Ad-hoc signing only; builds are not notarized.
           APPLE_SIGNING_IDENTITY: ${{ matrix.os == 'macos' && '-' || '' }}
         with:
           releaseId: ${{ needs.prepare.outputs.release_id }}

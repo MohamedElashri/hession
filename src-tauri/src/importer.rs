@@ -27,7 +27,7 @@ pub(crate) fn cline_resume_environment(file: &Path) -> Vec<(String, String)> {
 
 /// `SyncError::file` prefix for a remote host that could not be fetched.
 pub const HOST_ERROR_PREFIX: &str = "host ";
-/// Max errors retained per run (mirrors the JS cap of 25).
+/// Max errors retained per run.
 const MAX_ERRORS: usize = 25;
 /// Cap on files collected during directory walks (robustness guard).
 const MAX_FILES: usize = 100_000;
@@ -57,14 +57,14 @@ pub(crate) fn is_stop_requested() -> bool {
 // Public shapes
 // ---------------------------------------------------------------------------
 
-/// One importable agent family (mirrors `getAvailableAgents` rows).
+/// One importable agent family.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AvailableAgent {
     pub family: String,
     pub product: String,
 }
 
-/// One checkpoint row (mirrors `getSyncCheckpoints` rows).
+/// One checkpoint row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
     pub family: String,
@@ -89,14 +89,14 @@ pub struct NormalizedRecord {
     pub payload: Value,
 }
 
-/// One import failure (mirrors JS `stats.errors` entries).
+/// One import failure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncError {
     pub file: String,
     pub error: String,
 }
 
-/// Run totals (mirrors the JS `status`/`stats` object, simplified).
+/// Run totals.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SyncSummary {
     pub files_done: usize,
@@ -108,7 +108,7 @@ pub struct SyncSummary {
 }
 
 // ---------------------------------------------------------------------------
-// Source discovery (mirrors `userRoots` + env overrides)
+// Source discovery (+ env overrides)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,7 +188,7 @@ fn all_sources() -> Vec<Source> {
     out
 }
 
-/// All known local sources with env overrides applied. Mirrors `userRoots`:
+/// All known local sources with env overrides applied:
 /// `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `XDG_DATA_HOME`, `PI_CODING_AGENT_DIR`,
 /// `COMMANDCODE_HOME`, `HERMES_HOME`, `ANTIGRAVITY_HOME`.
 fn local_sources() -> Vec<Source> {
@@ -287,7 +287,7 @@ fn source_present(src: &Source) -> bool {
     }
 }
 
-/// Families whose source paths exist (mirrors `getAvailableAgents`).
+/// Families whose source paths exist.
 pub fn get_available_agents() -> Vec<AvailableAgent> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -337,8 +337,7 @@ fn sort_by_mtime_desc(paths: &mut [PathBuf]) {
     });
 }
 
-/// All candidate files for one family (mirrors `allCandidates`, simplified:
-/// muse date-path filtering and opencode/hermes unit counting are skipped).
+/// All candidate files for one family.
 pub fn discover_source_files(family: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for src in all_sources().iter().filter(|s| s.family == family) {
@@ -455,7 +454,7 @@ fn iso_time(value: &serde_json::Value) -> Option<String> {
             if !f.is_finite() {
                 return None;
             }
-            // Mirrors JS `isoTime`: values < 1e12 are seconds, otherwise ms.
+            // Values < 1e12 are seconds, otherwise milliseconds.
             // Muse `recorded_at` is microseconds (>= 1e14 can never be ms:
             // 1e14 ms is year 5138), with nanoseconds above 1e17.
             let a = f.abs();
@@ -485,7 +484,7 @@ fn iso_time(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Lenient timestamp parse; mirrors the JS `toIso` normalization.
+/// Lenient timestamp parse, normalized to ISO.
 fn parse_time_str(raw: &str) -> Option<String> {
     let s = raw.trim();
     if s.is_empty() {
@@ -876,7 +875,7 @@ fn set_file_state(
     Ok(())
 }
 
-/// Checkpoint rows for every known agent family (mirrors `getSyncCheckpoints`).
+/// Checkpoint rows for every known agent family.
 pub fn get_checkpoints(conn: &Connection) -> Result<Vec<Checkpoint>, String> {
     let mut stmt = conn
         .prepare(
@@ -947,12 +946,6 @@ fn split_source_uri(source_uri: &str) -> Result<(&str, PathBuf), String> {
 // Atomic source imports: session, transcript, derived activity, and sync state
 // ---------------------------------------------------------------------------
 
-/// Import a JSONL or supported SQLite source (`{family}://{abs-path}`).
-/// Returns the number of entries committed (0 = unchanged / empty new source).
-pub fn import_file(db_path: &Path, source_uri: &str) -> Result<usize, String> {
-    import_file_force(db_path, source_uri, false)
-}
-
 /// Reuse the pricing index for the whole sync; reload only after a user
 /// changes prices, while holding the same writer slot as that change.
 struct ImportPricing {
@@ -998,12 +991,6 @@ fn commit_batch(
     tx.commit().map_err(|e| format!("commit import batch: {e}"))?;
     crate::analytics::shared_state().clear_cache();
     Ok(counts)
-}
-
-fn import_file_force(db_path: &Path, source_uri: &str, force: bool) -> Result<usize, String> {
-    let mut conn = crate::db::open_db(db_path).map_err(|e| e.to_string())?;
-    crate::db::configure_bulk_writer(&conn).map_err(|e| e.to_string())?;
-    import_file_with_conn(&mut conn, source_uri, force, None, &mut ImportPricing::new())
 }
 
 fn import_file_with_conn(
@@ -1237,15 +1224,8 @@ fn push_error(summary: &mut SyncSummary, file: &str, error: String) {
     });
 }
 
-/// Full/import run over all (or one family's) candidates.
-/// `mode` is `"incremental"` (default) or `"full"`.
-pub fn sync_all(agent_filter: Option<String>, mode: &str) -> SyncSummary {
-    reset_stop();
-    sync_all_with_progress(agent_filter.as_deref(), mode, &|_, _, _| {})
-}
-
-/// [`sync_all`] with a progress hook `(files_done, files_total, records)`.
-/// Used by `sync.rs` so the status snapshot moves during long runs.
+/// Mirror remote hosts, then import all (or one family's) sources. `mode` is
+/// `"incremental"` or `"full"`; `progress` receives `(done, total, records)`.
 /// The caller resets cancellation before making the run available to stop.
 pub fn sync_all_with_progress(
     agent_filter: Option<&str>,

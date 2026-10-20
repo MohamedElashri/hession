@@ -841,7 +841,8 @@ mod tests {
         std::env::set_var(crate::brand::env_var("DATA_DIR"), &data);
 
         set_remote_hosts(vec![HostConfig { name: "box".into(), enabled: true }]).unwrap();
-        let summary = crate::importer::sync_all(None, "incremental");
+        let sync = || crate::importer::sync_all_with_progress(None, "incremental", &|_, _, _| {});
+        let summary = sync();
         assert!(summary.errors.is_empty(), "{:?}", summary.errors);
 
         let remote_file = project.join(format!("{id}.jsonl"));
@@ -861,7 +862,7 @@ mod tests {
         assert_eq!((host.as_str(), cwd.as_str(), workspace.as_str()), ("box", "/work/proj", "box:/work/proj"));
 
         // Unchanged remote files are skipped on the next sync.
-        let again = crate::importer::sync_all(None, "incremental");
+        let again = sync();
         assert!(again.errors.is_empty(), "{:?}", again.errors);
         assert_eq!(again.records, 0);
     }

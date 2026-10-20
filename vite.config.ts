@@ -16,6 +16,8 @@ export default defineConfig({
     },
   ],
   clearScreen: false,
+  // The bundle loads from disk inside the app, so web chunk-size advice doesn't apply.
+  build: { chunkSizeWarningLimit: 2000 },
   base: './',
   server: {
     port: 1420,

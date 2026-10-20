@@ -1,42 +1,15 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   TrendingUp, Coins, Terminal, Activity, Flame, AlertTriangle, CheckCircle2,
-  Clock, ArrowUpRight, ArrowUp, ArrowDown, ArrowUpDown, RefreshCw, SlidersHorizontal, Filter,
-  DollarSign, Search, Copy, Check, ExternalLink, ChevronDown,
-  ChevronRight, Info, X, Zap, BarChart3, Cpu, LoaderCircle
+  Clock, ArrowUpRight, RefreshCw, SlidersHorizontal, DollarSign, Copy, Check,
+  ExternalLink, Info, X, LoaderCircle,
 } from 'lucide-react';
 
 import { parseDate, filterSince } from './dates.js';
 import ReportFilters from './components/ReportFilters.jsx';
 import { useNumericSort, NumericSortHeader, numericSortValue } from './components/SortableTable.jsx';
 import { changeReportFilters, reportError } from './analytics-data.js';
-import { invoke } from '@tauri-apps/api/core';
-
-const API = '/api';
-// Tauri-first API layer: try `invoke` first (desktop app); fall back to the
-// HTTP dev API when the Tauri runtime is absent (vite dev outside Tauri).
-// Command names follow the frontend<->backend contract:
-// GET /api/analytics->get_analytics, POST /api/analytics/refresh->refresh_analytics,
-// GET /api/analytics/pricing->get_pricing_status,
-// POST /api/analytics/pricing/sync->sync_pricing,
-// GET /api/analytics/pricing/overrides->get_pricing_overrides,
-// POST ->save_pricing_override, DELETE ->delete_pricing_override.
-// Same query params / request bodies are passed as invoke args.
-const hasTauriRuntime = () => typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__?.invoke;
-const tauriError = (e) => e instanceof Error ? e : new Error(typeof e === 'string' ? e : (e?.message || JSON.stringify(e ?? 'Unknown error')));
-const apiCall = async (cmd, args, url, opts = {}) => {
-  try { return await invoke(cmd, args); }
-  catch (e) {
-    if (url == null || hasTauriRuntime()) throw tauriError(e);
-    return fetchJson(url, opts);
-  }
-};
-const fetchJson = async (url, opts = {}) => {
-  const res = await fetch(url, opts);
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || res.statusText);
-  return json;
-};
+import { api } from './api.js';
 
 // Format helper utilities
 const formatNum = (num) => {
@@ -133,7 +106,7 @@ export default function AnalyticsView({
         workspace: workspaceFilter || '',
         model: modelFilter || '',
       };
-      const json = await apiCall('get_analytics', analyticsParams, `${API}/analytics?${params.toString()}`);
+      const json = await api('get_analytics', analyticsParams);
       if (reqId === analyticsRequestId.current) {
         setData(json);
         if (json.refreshError) setError(json.refreshError);
@@ -166,7 +139,7 @@ export default function AnalyticsView({
   const handleManualRefresh = async () => {
     setRefreshing(true);
     try {
-      await apiCall('refresh_analytics', {}, `${API}/analytics/refresh`, { method: 'POST' });
+      await api('refresh_analytics');
       await fetchAnalytics(true);
     } catch (e) {
       setError(reportError(e));
@@ -176,14 +149,14 @@ export default function AnalyticsView({
 
   const fetchPricingStatus = useCallback(async () => {
     try {
-      setPricingStatus(await apiCall('get_pricing_status', {}, `${API}/analytics/pricing`));
+      setPricingStatus(await api('get_pricing_status'));
     } catch (e) { setError(reportError(e)); }
   }, []);
 
   const fetchOverrides = useCallback(async () => {
     setOverridesLoading(true);
     try {
-      const json = await apiCall('get_pricing_overrides', {}, `${API}/analytics/pricing/overrides`);
+      const json = await api('get_pricing_overrides');
       setOverrides(Array.isArray(json.overrides) ? json.overrides : []);
     } catch (e) { setError(reportError(e)); }
     finally {
@@ -201,11 +174,7 @@ export default function AnalyticsView({
     setOverrideSaving(true);
     setError('');
     try {
-      const json = await apiCall('save_pricing_override', payload, `${API}/analytics/pricing/overrides`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      const json = await api('save_pricing_override', payload);
       if (Array.isArray(json.overrides)) setOverrides(json.overrides);
       else await fetchOverrides();
       await fetchPricingStatus();
@@ -226,11 +195,7 @@ export default function AnalyticsView({
     setOverrideSaving(true);
     setError('');
     try {
-      const json = await apiCall('delete_pricing_override', (scope || {}), `${API}/analytics/pricing/overrides`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(scope || {}),
-      });
+      const json = await api('delete_pricing_override', (scope || {}));
       if (Array.isArray(json.overrides)) setOverrides(json.overrides);
       else await fetchOverrides();
       await fetchPricingStatus();
@@ -249,7 +214,7 @@ export default function AnalyticsView({
     setPricingSyncing(true);
     setError('');
     try {
-      const json = await apiCall('sync_pricing', {}, `${API}/analytics/pricing/sync`, { method: 'POST' });
+      const json = await api('sync_pricing');
       if (json.pricing) setPricingStatus(json.pricing);
       else await fetchPricingStatus();
       await fetchAnalytics(true);

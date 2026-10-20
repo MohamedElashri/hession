@@ -5,8 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
+    "build": "vite build",
     "tauri": "node scripts/brand.mjs && tauri",
     "check": "node scripts/brand.mjs && npm run build && cargo check --manifest-path src-tauri/Cargo.toml",
     "brand": "node scripts/brand.mjs",

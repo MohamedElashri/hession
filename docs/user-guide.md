@@ -17,11 +17,9 @@ Click the server icon next to **Hosts** in the sidebar.
 - **Test** connects to the host and lists the agent histories it found.
 - Uncheck a host to pause it without removing it.
 
-On each sync, every enabled host is contacted with your own `ssh`, and its
-agent histories are copied with `rsync` into
-`~/.hession/remotes/<host>/`. Only transcript files are copied (`.jsonl`,
-`.json`, `.db`), and nothing on the host is changed. Copies are never pruned,
-so sessions remain even after the agent deletes old history on the host.
+Each sync copies the hosts' transcript files (`.jsonl`, `.json`, `.db`) into
+`~/.hession/remotes/<host>/` with `rsync`. Copies are never pruned, so sessions
+stay even after an agent deletes old history on the host.
 
 **Requirements**
 
@@ -46,8 +44,8 @@ into the recorded folder, and starts the agent with your login shell, so
 left in a shell on that host. The dialog warns if the agent isn't installed
 there. Use **Copy command** to paste the command into your own terminal.
 
-Your choice of terminal app is remembered. On Linux, `$TERMINAL` is tried
-first. Remote resume works from Linux and macOS.
+The terminal you pick is remembered (on Linux, `$TERMINAL` is the default).
+Remote resume works from Linux and macOS.
 
 **VS Code** opens the session's folder: locally with `code <folder>`, and on a
 remote host through Remote-SSH. This needs the `code` command on your `PATH`;
@@ -67,8 +65,8 @@ in VS Code, run *Shell Command: Install 'code' command in PATH*.
 | Hermes Agent | `~/.hermes/state.db`, `profiles/*/state.db` | `HERMES_HOME` |
 | Antigravity | `~/.gemini/antigravity/brain` | `ANTIGRAVITY_HOME` |
 
-Overrides are read from the environment that launches the app, and on remote
-hosts from the host's own environment. Source files are only ever read.
+Overrides come from the environment that launches the app, or on a remote
+host, from that host's environment.
 
 Cline task folders created by the editor extension can't be resumed from the
 CLI; resume them from *Cline → History* in the editor.
@@ -91,6 +89,7 @@ Everything lives in `~/.hession/` (set `HESSION_DATA_DIR` to change this):
 | `sessions.sqlite` | The library: transcripts, tools, stars, tags, prices |
 | `remotes.json` | Your remote host list |
 | `remotes/<host>/` | Files copied from each host |
+| `terminal-preference.json` | Terminal chosen for Resume |
 
 Open the **database icon** (next to the theme toggle) to back up the database,
 restore a backup, or delete sessions matching a filter. Deleted sessions come
