@@ -7,9 +7,3 @@ target
 src-tauri/gen
 *.log
 
-# Internal agent working files
-AGENTS.md
-current.md
-contextmap.md
-decisions.md
-docs/
