@@ -1,0 +1,7 @@
+<!-- Hession mark: an "h" drawn as a link between two endpoints, this machine
+     (top) and a remote host (bottom). 24-unit grid, uses currentColor. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round">
+  <path d="M7 7.4V19.6M7 13.6a5 5 0 0 1 10 0v2.2"/>
+  <circle cx="7" cy="4.3" r="1.9" fill="currentColor" stroke="none"/>
+  <circle cx="17" cy="19.2" r="1.9" fill="currentColor" stroke="none"/>
+</svg>

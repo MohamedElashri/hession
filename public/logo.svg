@@ -1,0 +1,29 @@
+<!-- App icon source (1024², transparent outside the tile). The tile follows the
+     macOS icon grid (824² at 100,100). Regenerate platform icons with
+     `npm run icons`. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#202226"/>
+      <stop offset="1" stop-color="#0f1012"/>
+    </linearGradient>
+    <!-- In the mark's 24-unit grid (the group that uses it is scaled). -->
+    <linearGradient id="ink" x1="5" y1="2.4" x2="19" y2="21.1" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#d6ffb8"/>
+      <stop offset="1" stop-color="#8fd465"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="512" cy="430" r="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#b8f58e" stop-opacity=".10"/>
+      <stop offset="1" stop-color="#b8f58e" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#glow)"/>
+  <rect x="102" y="102" width="820" height="820" rx="183" fill="none" stroke="#ffffff" stroke-opacity=".08" stroke-width="4"/>
+  <!-- mark.svg at 24 units → 28 px/unit, centred: (1024 - 24*28)/2 = 176 -->
+  <g transform="translate(176 176) scale(28)" fill="none" stroke="url(#ink)" stroke-width="2.3" stroke-linecap="round">
+    <path d="M7 7.4V19.6M7 13.6a5 5 0 0 1 10 0v2.2"/>
+    <circle cx="7" cy="4.3" r="1.9" fill="url(#ink)" stroke="none"/>
+    <circle cx="17" cy="19.2" r="1.9" fill="url(#ink)" stroke="none"/>
+  </g>
+</svg>

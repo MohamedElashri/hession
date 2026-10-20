@@ -1,0 +1,30 @@
+[package]
+name = "app"
+version = "0.1.0"
+description = "A local-first home for your coding agent sessions, local and remote."
+authors = ["Mohamed Elashri"]
+edition = "2021"
+rust-version = "1.85"
+
+[lib]
+name = "app_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+serde_json = "1"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["clock"] }
+chrono-tz = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "charset", "http2"] }
+thiserror = "2"
+rusqlite = { version = "0.40.2", features = ["bundled", "functions", "hooks", "backup"] }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
