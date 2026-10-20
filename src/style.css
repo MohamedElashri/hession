@@ -742,7 +742,7 @@
 @media (max-width:900px){.override-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:600px){.override-form-grid{grid-template-columns:minmax(0,1fr)}}
 
-/* Analytics date{border:0;background:transparent;color:inherit;font:10px var(--display);height:30px;min-width:115px;color-scheme:dark;outline:0}
+/* Analytics session leaders and efficiency views */
 
 .analytics-leaderboard{display:flex;flex-direction:column;gap:6px}
 .analytics-session-leader{display:flex;align-items:center;gap:9px;width:100%;text-align:left;border:1px solid var(--line);border-radius:6px;padding:9px;background:transparent;color:inherit;font:10px var(--display);cursor:pointer}
