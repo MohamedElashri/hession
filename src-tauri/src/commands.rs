@@ -17,11 +17,11 @@ use rusqlite::types::{ToSql, Value as SqlValue, ValueRef};
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, State};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::io::Write;
 
 use super::AppState;
 use crate::{analytics, db, importer, pricing, sync};
@@ -38,7 +38,6 @@ const ALLOWED_FAMILIES: &[&str] = &[
     "hermes",
     "antigravity",
 ];
-
 
 /// Host filter value for sessions recorded on this machine.
 const LOCAL_HOST: &str = "@local";
@@ -196,8 +195,7 @@ pub async fn ping(_state: State<'_, AppState>) -> Result<String, String> {
 
 fn get_health_inner(db_path: &Path) -> Result<Value, String> {
     let conn = open_db(db_path)?;
-    let row = query_one(&conn, "SELECT COUNT(*) n FROM session", &[])?
-        .unwrap_or(json!({"n": 0}));
+    let row = query_one(&conn, "SELECT COUNT(*) n FROM session", &[])?.unwrap_or(json!({"n": 0}));
     let sessions = row.get("n").and_then(|v| v.as_i64()).unwrap_or(0);
     Ok(json!({
         "ok": true,
@@ -219,42 +217,42 @@ pub async fn get_health(state: State<'_, AppState>) -> Result<Value, String> {
 // search_sessions
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
 fn search_sessions_inner(
     db_path: &Path,
-    q: &str,
-    agent: &str,
-    project: &str,
-    models: &[String],
-    branch: &str,
-    tools: &[String],
-    since: &str,
-    sort: &str,
+    filters: &SessionFilters,
     limit: i64,
     offset: i64,
-    starred: bool,
-    tags: &[String],
-    host: &str,
 ) -> Result<Value, String> {
     let mut conn = open_db(db_path)?;
     let snapshot = conn.transaction().map_err(|e| e.to_string())?;
-    let result = search_sessions_from_conn(&snapshot, q, agent, project, models, branch, tools, since, sort, limit, offset, starred, tags, host, None)?;
+    let result = search_sessions_from_conn(&snapshot, filters, limit, offset, None)?;
     snapshot.commit().map_err(|e| e.to_string())?;
     Ok(result)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn search_sessions_from_conn(conn: &Connection, q: &str, agent: &str, project: &str, models: &[String], branch: &str, tools: &[String], since: &str, sort: &str, limit: i64, offset: i64, starred: bool, tags: &[String], host: &str, job: Option<&ExportJob>) -> Result<Value, String> {
+fn search_sessions_from_conn(
+    conn: &Connection,
+    f: &SessionFilters,
+    limit: i64,
+    offset: i64,
+    job: Option<&ExportJob>,
+) -> Result<Value, String> {
+    let (q, agent, project, branch, since, sort, host) = (
+        f.q.as_str(),
+        f.agent.as_str(),
+        f.project.as_str(),
+        f.branch.as_str(),
+        f.since.as_str(),
+        f.sort.as_str(),
+        f.host.as_str(),
+    );
+    let (models, tools, tags, starred) = (&f.models, &f.tools, &f.tags, f.starred);
     // ORDER BY uses the plain COALESCE expression so SQLite can use
     // session_activity_idx. Whitelisted — never interpolated from raw input.
     let order_by = match sort {
         "oldest" => "COALESCE(s.last_event_at,s.started_at) ASC, s.id ASC",
-        "longest" => {
-            "duration_days DESC, COALESCE(s.last_event_at,s.started_at) DESC, s.id DESC"
-        }
-        "messages" => {
-            "entry_count DESC, COALESCE(s.last_event_at,s.started_at) DESC, s.id DESC"
-        }
+        "longest" => "duration_days DESC, COALESCE(s.last_event_at,s.started_at) DESC, s.id DESC",
+        "messages" => "entry_count DESC, COALESCE(s.last_event_at,s.started_at) DESC, s.id DESC",
         _ => "COALESCE(s.last_event_at,s.started_at) DESC, s.id DESC",
     };
 
@@ -262,10 +260,16 @@ fn search_sessions_from_conn(conn: &Connection, q: &str, agent: &str, project: &
     let mut params: Vec<SqlValue> = Vec::new();
 
     if starred {
-        filters.push("EXISTS (SELECT 1 FROM session_annotation n WHERE n.session_id=s.id AND n.starred=1)".to_string());
+        filters.push(
+            "EXISTS (SELECT 1 FROM session_annotation n WHERE n.session_id=s.id AND n.starred=1)"
+                .to_string(),
+        );
     }
     for tag in tags {
-        filters.push("EXISTS (SELECT 1 FROM session_tag t WHERE t.session_id=s.id AND t.label=?)".to_string());
+        filters.push(
+            "EXISTS (SELECT 1 FROM session_tag t WHERE t.session_id=s.id AND t.label=?)"
+                .to_string(),
+        );
         params.push(SqlValue::Text(tag.clone()));
     }
     // `@local` selects this machine's sessions; any other value is an SSH host.
@@ -310,9 +314,8 @@ fn search_sessions_from_conn(conn: &Connection, q: &str, agent: &str, project: &
     if let Some(cutoff) = sessions_since_cutoff(since) {
         // julianday() kept for correctness: plain string >= misorders
         // millisecond boundaries when stored/param formats mix.
-        filters.push(
-            "julianday(COALESCE(s.last_event_at,s.started_at)) >= julianday(?)".to_string(),
-        );
+        filters
+            .push("julianday(COALESCE(s.last_event_at,s.started_at)) >= julianday(?)".to_string());
         params.push(SqlValue::Text(cutoff));
     }
 
@@ -358,15 +361,17 @@ fn search_sessions_from_conn(conn: &Connection, q: &str, agent: &str, project: &
     list_params.push(SqlValue::Integer(limit));
     list_params.push(SqlValue::Integer(offset));
     let mut sessions = query_all(
-        &conn,
+        conn,
         &format!("SELECT {columns} {base} ORDER BY {order_by} LIMIT ? OFFSET ?"),
         &list_params,
     )?;
     for session in &mut sessions {
-        if let Some(job) = job { job.check()?; }
-        attach_annotations(&conn, session)?;
+        if let Some(job) = job {
+            job.check()?;
+        }
+        attach_annotations(conn, session)?;
     }
-    let total = query_one(&conn, &format!("SELECT COUNT(*) n {base}"), &params)?
+    let total = query_one(conn, &format!("SELECT COUNT(*) n {base}"), &params)?
         .and_then(|row| row.get("n").and_then(|v| v.as_i64()))
         .unwrap_or(0);
     Ok(json!({ "sessions": sessions, "total": total }))
@@ -375,6 +380,8 @@ fn search_sessions_from_conn(conn: &Connection, q: &str, agent: &str, project: &
 /// Flat args `{ q, agent, project, model, branch, tool, since, sort, limit,
 /// offset }` where `model`/`tool` are comma-joined strings and
 /// `limit`/`offset` arrive as strings from the frontend.
+// Each parameter is a field of the frontend's IPC call.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn search_sessions(
     state: State<'_, AppState>,
@@ -393,31 +400,32 @@ pub async fn search_sessions(
     host: Option<String>,
 ) -> Result<Value, String> {
     let db_path = db_path_of(&state)?;
-    let args = (
-        opt_str(&q).to_string(),
-        opt_str(&agent).to_string(),
-        opt_str(&project).to_string(),
-        opt_str(&model)
+    let list = |value: &Option<String>| {
+        opt_str(value)
             .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>(),
-        opt_str(&branch).to_string(),
-        opt_str(&tool)
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>(),
-        opt_str(&since).to_string(),
-        opt_str(&sort).to_string(),
+            .collect::<Vec<_>>()
+    };
+    let filters = SessionFilters {
+        q: opt_str(&q).to_string(),
+        agent: opt_str(&agent).to_string(),
+        project: opt_str(&project).to_string(),
+        models: list(&model),
+        branch: opt_str(&branch).to_string(),
+        tools: list(&tool),
+        since: opt_str(&since).to_string(),
+        sort: opt_str(&sort).to_string(),
+        starred: opt_str(&starred) == "true",
+        tags: tags.unwrap_or_default(),
+        host: opt_str(&host).to_string(),
+    };
+    let (limit, offset) = (
         clamp_limit(limit.as_deref(), 20, 1, 100),
         parse_i64(opt_str(&offset), 0).max(0),
     );
     tauri::async_runtime::spawn_blocking(move || {
-        search_sessions_inner(
-            &db_path, &args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6, &args.7,
-            args.8, args.9, opt_str(&starred) == "true", &tags.unwrap_or_default(), opt_str(&host),
-        )
+        search_sessions_inner(&db_path, &filters, limit, offset)
     })
     .await
     .map_err(|e| format!("search_sessions failed: {e}"))?
@@ -428,7 +436,10 @@ pub async fn search_sessions(
 // ---------------------------------------------------------------------------
 
 fn get_session_inner(db_path: &Path, id: &str, limit: i64, page: i64) -> Result<Value, String> {
-    let session_id: i64 = id.trim().parse().map_err(|_| "Session not found".to_string())?;
+    let session_id: i64 = id
+        .trim()
+        .parse()
+        .map_err(|_| "Session not found".to_string())?;
     let mut offset = (page.max(1) - 1) * limit;
     let mut conn = open_db(db_path)?;
     let snapshot = conn.transaction().map_err(|e| e.to_string())?;
@@ -437,26 +448,29 @@ fn get_session_inner(db_path: &Path, id: &str, limit: i64, page: i64) -> Result<
     Ok(result)
 }
 
-fn get_session_from_conn(conn: &Connection, session_id: i64, limit: i64, offset: &mut i64) -> Result<Value, String> {
+fn get_session_from_conn(
+    conn: &Connection,
+    session_id: i64,
+    limit: i64,
+    offset: &mut i64,
+) -> Result<Value, String> {
     let mut session = query_one(
-        &conn,
-        &format!(
-            "SELECT s.*,a.family AS agent,a.product,w.path AS project,\
+        conn,
+        "SELECT s.*,a.family AS agent,a.product,w.path AS project,\
              (SELECT branch FROM session_context c WHERE c.session_id=s.id \
               AND c.branch IS NOT NULL ORDER BY c.id DESC LIMIT 1) AS branch,\
              (SELECT model_key FROM session_context c JOIN model m ON m.id=c.model_id \
               WHERE c.session_id=s.id ORDER BY c.id DESC LIMIT 1) AS model \
              FROM session s JOIN agent a ON a.id=s.agent_id \
              LEFT JOIN workspace w ON w.id=s.workspace_id \
-             WHERE s.id=?"
-        ),
+             WHERE s.id=?",
         &[SqlValue::Integer(session_id)],
     )?
     .ok_or_else(|| "Session not found".to_string())?;
 
     attach_annotations(conn, &mut session)?;
     let entry_counts = query_one(
-        &conn,
+        conn,
         "WITH classified AS (
            SELECT e.role, CASE WHEN e.role='tool'
              OR EXISTS (SELECT 1 FROM tool_invocation t WHERE t.entry_id=e.id)
@@ -483,7 +497,7 @@ fn get_session_from_conn(conn: &Connection, session_id: i64, limit: i64, offset:
     }
 
     let entries = query_all(
-        &conn,
+        conn,
         "SELECT * FROM entry WHERE session_id=? ORDER BY ordinal LIMIT ? OFFSET ?",
         &[
             SqlValue::Integer(session_id),
@@ -501,10 +515,16 @@ fn get_session_from_conn(conn: &Connection, session_id: i64, limit: i64, offset:
         HashMap<i64, Vec<Value>>,
     ) = (HashMap::new(), HashMap::new());
     if !entry_ids.is_empty() {
-        let placeholders = "SELECT id FROM entry WHERE session_id=? ORDER BY ordinal LIMIT ? OFFSET ?";
-        let params = vec![SqlValue::Integer(session_id), SqlValue::Integer(session_id), SqlValue::Integer(limit), SqlValue::Integer(*offset)];
+        let placeholders =
+            "SELECT id FROM entry WHERE session_id=? ORDER BY ordinal LIMIT ? OFFSET ?";
+        let params = vec![
+            SqlValue::Integer(session_id),
+            SqlValue::Integer(session_id),
+            SqlValue::Integer(limit),
+            SqlValue::Integer(*offset),
+        ];
         for part in query_all(
-            &conn,
+            conn,
             &format!(
                 "SELECT cp.*, e.ordinal AS e_ord FROM content_part cp \
                  JOIN entry e ON e.id=cp.entry_id \
@@ -518,7 +538,7 @@ fn get_session_from_conn(conn: &Connection, session_id: i64, limit: i64, offset:
             }
         }
         for tool in query_all(
-            &conn,
+            conn,
             &format!(
                 "SELECT * FROM tool_invocation WHERE session_id=? \
                  AND entry_id IN ({placeholders}) ORDER BY id"
@@ -584,18 +604,20 @@ fn get_agents_inner(db_path: &Path) -> Result<Value, String> {
     // Indexed rows (families already imported, with visible-session counts).
     let mut agents = query_all(
         &conn,
-        &format!(
-            "SELECT a.family,a.product,COUNT(s.id) AS sessions \
+        "SELECT a.family,a.product,COUNT(s.id) AS sessions \
              FROM agent a LEFT JOIN session s ON s.agent_id=a.id \
-             GROUP BY a.family ORDER BY a.product"
-        ),
+             GROUP BY a.family ORDER BY a.product",
         &[],
     )?;
     // Union with filesystem-discovered agents: families whose sources exist on disk appear with `sessions: 0`
     // even before their first import.
     let mut seen: HashSet<String> = agents
         .iter()
-        .filter_map(|row| row.get("family").and_then(|v| v.as_str()).map(str::to_string))
+        .filter_map(|row| {
+            row.get("family")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
         .collect();
     for available in importer::get_available_agents() {
         if seen.contains(&available.family) {
@@ -637,12 +659,10 @@ fn get_projects_inner(db_path: &Path) -> Result<Value, String> {
     let conn = open_db(db_path)?;
     let projects = query_all(
         &conn,
-        &format!(
-            "SELECT w.path,w.display_name,COUNT(s.id) AS sessions \
+        "SELECT w.path,w.display_name,COUNT(s.id) AS sessions \
              FROM workspace w \
              LEFT JOIN session s ON s.workspace_id=w.id \
-             GROUP BY w.id HAVING sessions>0 ORDER BY sessions DESC,w.path"
-        ),
+             GROUP BY w.id HAVING sessions>0 ORDER BY sessions DESC,w.path",
         &[],
     )?;
     Ok(Value::Array(projects))
@@ -664,45 +684,55 @@ fn get_facets_inner(db_path: &Path) -> Result<Value, String> {
     let conn = open_db(db_path)?;
     let models = query_all(
         &conn,
-        &format!(
-            "SELECT DISTINCT m.model_key AS value,m.provider AS provider \
+        "SELECT DISTINCT m.model_key AS value,m.provider AS provider \
              FROM model m JOIN session_context c ON c.model_id=m.id \
              JOIN session s ON s.id=c.session_id \
-             ORDER BY m.provider,m.model_key"
-        ),
+             ORDER BY m.provider,m.model_key",
         &[],
     )?;
     let branches = query_all(
         &conn,
-        &format!(
-            "SELECT DISTINCT c.branch AS value FROM session_context c \
+        "SELECT DISTINCT c.branch AS value FROM session_context c \
              JOIN session s ON s.id=c.session_id \
              WHERE c.branch IS NOT NULL AND c.branch<>'' \
-             ORDER BY c.branch LIMIT 300"
-        ),
+             ORDER BY c.branch LIMIT 300",
         &[],
     )?
     .into_iter()
-    .filter_map(|row| row.get("value").and_then(|v| v.as_str()).map(str::to_string))
+    .filter_map(|row| {
+        row.get("value")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    })
     .map(Value::String)
     .collect::<Vec<_>>();
     let tools = query_all(
         &conn,
-        &format!(
-            "SELECT DISTINCT t.tool_name AS value FROM tool_invocation t \
+        "SELECT DISTINCT t.tool_name AS value FROM tool_invocation t \
              JOIN session s ON s.id=t.session_id \
-             ORDER BY t.tool_name LIMIT 300"
-        ),
+             ORDER BY t.tool_name LIMIT 300",
         &[],
     )?
     .into_iter()
-    .filter_map(|row| row.get("value").and_then(|v| v.as_str()).map(str::to_string))
+    .filter_map(|row| {
+        row.get("value")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    })
     .map(Value::String)
     .collect::<Vec<_>>();
-    let tags = query_all(&conn, "SELECT DISTINCT label AS value FROM session_tag ORDER BY label", &[])?
-        .into_iter().filter_map(|row| row["value"].as_str().map(str::to_string)).collect::<Vec<_>>();
+    let tags = query_all(
+        &conn,
+        "SELECT DISTINCT label AS value FROM session_tag ORDER BY label",
+        &[],
+    )?
+    .into_iter()
+    .filter_map(|row| row["value"].as_str().map(str::to_string))
+    .collect::<Vec<_>>();
     let hosts = query_all(&conn, "SELECT host AS value, COUNT(*) AS sessions FROM session WHERE host IS NOT NULL GROUP BY host ORDER BY host", &[])?;
-    Ok(json!({ "models": models, "branches": branches, "tools": tools, "tags": tags, "hosts": hosts }))
+    Ok(
+        json!({ "models": models, "branches": branches, "tools": tools, "tags": tags, "hosts": hosts }),
+    )
 }
 
 #[tauri::command]
@@ -756,7 +786,8 @@ fn get_analytics_inner(
     model: &str,
 ) -> Result<Value, String> {
     let mut conn = open_db(db_path).map_err(sync::report_error)?;
-    conn.pragma_update(None, "query_only", true).map_err(|e| e.to_string())?;
+    conn.pragma_update(None, "query_only", true)
+        .map_err(|e| e.to_string())?;
     let snapshot = conn.transaction().map_err(|e| e.to_string())?;
     let analytics_state = analytics::shared_state();
     let filters = analytics::AnalyticsFilters {
@@ -771,7 +802,8 @@ fn get_analytics_inner(
         since: since.trim().to_string(),
         until: until.trim().to_string(),
     };
-    let mut report = analytics::get_full_analytics(&snapshot, &filters, &analytics_state).map_err(sync::report_error)?;
+    let mut report = analytics::get_full_analytics(&snapshot, &filters, &analytics_state)
+        .map_err(sync::report_error)?;
     snapshot.commit().map_err(|e| e.to_string())?;
     let (refreshing, error) = analytics::refresh_status();
     report["refreshing"] = json!(refreshing);
@@ -800,7 +832,9 @@ pub async fn get_analytics(
         opt_str(&until).to_string(),
     );
     tauri::async_runtime::spawn_blocking(move || {
-        get_analytics_inner(&db_path, &args.0, &args.1, &args.5, &args.2, &args.3, &args.4)
+        get_analytics_inner(
+            &db_path, &args.0, &args.1, &args.5, &args.2, &args.3, &args.4,
+        )
     })
     .await
     .map_err(|e| format!("get_analytics failed: {e}"))?
@@ -849,7 +883,9 @@ pub async fn get_pricing_status(state: State<'_, AppState>) -> Result<Value, Str
 fn sync_pricing_inner(db_path: &Path, raw: &Value, updated_at: &str) -> Result<Value, String> {
     let _writer = db::user_write();
     let mut conn = open_db(db_path)?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let mut pricing = pricing::PricingState::new();
     pricing::save_pricing_payload(&tx, &mut pricing, raw, updated_at)?;
     let shared = Arc::new(Mutex::new(pricing));
@@ -925,7 +961,9 @@ fn save_pricing_override_inner(
     });
     let _writer = db::user_write();
     let mut conn = open_db(db_path)?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let mut pricing = pricing::PricingState::new();
     let saved = pricing::upsert_price_override(&tx, &mut pricing, &input)?;
     let shared = Arc::new(Mutex::new(pricing));
@@ -975,9 +1013,7 @@ pub async fn save_pricing_override(
         cachePer1M,
     );
     tauri::async_runtime::spawn_blocking(move || {
-        save_pricing_override_inner(
-            &db_path, &args.0, &args.1, &args.2, args.3, args.4, args.5,
-        )
+        save_pricing_override_inner(&db_path, &args.0, &args.1, &args.2, args.3, args.4, args.5)
     })
     .await
     .map_err(|e| format!("save_pricing_override failed: {e}"))?
@@ -996,7 +1032,9 @@ fn delete_pricing_override_inner(
     let scope = json!({ "provider": provider, "modelId": modelId });
     let _writer = db::user_write();
     let mut conn = open_db(db_path)?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let mut pricing = pricing::PricingState::new();
     let deleted = pricing::delete_price_overrides(&tx, &mut pricing, &scope)?;
     let shared = Arc::new(Mutex::new(pricing));
@@ -1030,7 +1068,10 @@ pub async fn delete_pricing_override(
     modelId: Option<String>,
 ) -> Result<Value, String> {
     let db_path = db_path_of(&state)?;
-    let args = (opt_str(&provider).to_string(), opt_str(&modelId).to_string());
+    let args = (
+        opt_str(&provider).to_string(),
+        opt_str(&modelId).to_string(),
+    );
     tauri::async_runtime::spawn_blocking(move || {
         delete_pricing_override_inner(&db_path, &args.0, &args.1)
     })
@@ -1160,16 +1201,33 @@ pub async fn start_sync(
     }))
 }
 
-
 fn attach_annotations(conn: &Connection, session: &mut Value) -> Result<(), String> {
     let id = session["id"].as_i64().ok_or("Invalid session ID")?;
-    session["starred"] = json!(query_one(conn, "SELECT starred FROM session_annotation WHERE session_id=?", &[SqlValue::Integer(id)])?.map(|r| r["starred"].as_i64() == Some(1)).unwrap_or(false));
-    session["tags"] = json!(query_all(conn, "SELECT label FROM session_tag WHERE session_id=? ORDER BY label", &[SqlValue::Integer(id)])?.into_iter().filter_map(|r| r["label"].as_str().map(str::to_string)).collect::<Vec<_>>());
+    session["starred"] = json!(query_one(
+        conn,
+        "SELECT starred FROM session_annotation WHERE session_id=?",
+        &[SqlValue::Integer(id)]
+    )?
+    .map(|r| r["starred"].as_i64() == Some(1))
+    .unwrap_or(false));
+    session["tags"] = json!(query_all(
+        conn,
+        "SELECT label FROM session_tag WHERE session_id=? ORDER BY label",
+        &[SqlValue::Integer(id)]
+    )?
+    .into_iter()
+    .filter_map(|r| r["label"].as_str().map(str::to_string))
+    .collect::<Vec<_>>());
     Ok(())
 }
 
 #[tauri::command]
-pub async fn update_session_annotations(state: State<'_, AppState>, id: i64, starred: Option<bool>, tags: Option<Vec<String>>) -> Result<Value, String> {
+pub async fn update_session_annotations(
+    state: State<'_, AppState>,
+    id: i64,
+    starred: Option<bool>,
+    tags: Option<Vec<String>>,
+) -> Result<Value, String> {
     let path = db_path_of(&state)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _writer = db::user_write();
@@ -1195,20 +1253,32 @@ pub async fn update_session_annotations(state: State<'_, AppState>, id: i64, sta
     }).await.map_err(|e| e.to_string())?
 }
 
+/// Session list filters, shared by search and export.
 #[derive(serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct ExportFilters {
-    #[serde(default)] q: String,
-    #[serde(default)] agent: String,
-    #[serde(default)] project: String,
-    #[serde(default)] models: Vec<String>,
-    #[serde(default)] branch: String,
-    #[serde(default)] tools: Vec<String>,
-    #[serde(default)] since: String,
-    #[serde(default)] sort: String,
-    #[serde(default)] starred: bool,
-    #[serde(default)] tags: Vec<String>,
-    #[serde(default)] host: String,
+pub struct SessionFilters {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    agent: String,
+    #[serde(default)]
+    project: String,
+    #[serde(default)]
+    models: Vec<String>,
+    #[serde(default)]
+    branch: String,
+    #[serde(default)]
+    tools: Vec<String>,
+    #[serde(default)]
+    since: String,
+    #[serde(default)]
+    sort: String,
+    #[serde(default)]
+    starred: bool,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    host: String,
 }
 
 #[derive(Default)]
@@ -1223,18 +1293,33 @@ struct ExportJob {
 
 impl ExportJob {
     fn check(&self) -> Result<(), String> {
-        if self.cancelled.load(Ordering::SeqCst) { Err("Export stopped".to_string()) } else { Ok(()) }
+        if self.cancelled.load(Ordering::SeqCst) {
+            Err("Export stopped".to_string())
+        } else {
+            Ok(())
+        }
     }
 }
 
 fn export_job(state: &ExportState, id: &str) -> Result<Arc<ExportJob>, String> {
-    state.0.lock().map_err(|_| "Could not access export state")?.get(id).cloned().ok_or_else(|| "Export no longer active".to_string())
+    state
+        .0
+        .lock()
+        .map_err(|_| "Could not access export state")?
+        .get(id)
+        .cloned()
+        .ok_or_else(|| "Export no longer active".to_string())
 }
 
 #[tauri::command]
 pub fn begin_export(state: State<'_, ExportState>, job_id: String) -> Result<(), String> {
-    let mut jobs = state.0.lock().map_err(|_| "Could not access export state")?;
-    if jobs.contains_key(&job_id) { return Err("Export already active".to_string()); }
+    let mut jobs = state
+        .0
+        .lock()
+        .map_err(|_| "Could not access export state")?;
+    if jobs.contains_key(&job_id) {
+        return Err("Export already active".to_string());
+    }
     jobs.insert(job_id, Arc::new(ExportJob::default()));
     Ok(())
 }
@@ -1243,20 +1328,44 @@ pub fn begin_export(state: State<'_, ExportState>, job_id: String) -> Result<(),
 pub fn cancel_export(state: State<'_, ExportState>, job_id: String) -> Result<bool, String> {
     let job = export_job(&state, &job_id)?;
     let saved = job.saved.lock().map_err(|_| "Could not stop export")?;
-    if *saved { return Ok(false); }
+    if *saved {
+        return Ok(false);
+    }
     job.cancelled.store(true, Ordering::SeqCst);
-    if let Some(handle) = job.interrupt.lock().map_err(|_| "Could not stop export")?.as_ref() { handle.interrupt(); }
+    if let Some(handle) = job
+        .interrupt
+        .lock()
+        .map_err(|_| "Could not stop export")?
+        .as_ref()
+    {
+        handle.interrupt();
+    }
     Ok(true)
 }
 
 #[tauri::command]
 pub fn finish_export(state: State<'_, ExportState>, job_id: String) -> Result<(), String> {
-    state.0.lock().map_err(|_| "Could not access export state")?.remove(&job_id);
+    state
+        .0
+        .lock()
+        .map_err(|_| "Could not access export state")?
+        .remove(&job_id);
     Ok(())
 }
 
+// Each parameter is a field of the frontend's IPC call.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
-pub async fn export_sessions(state: State<'_, AppState>, exports: State<'_, ExportState>, app: tauri::AppHandle, job_id: String, scope: String, id: Option<i64>, filters: ExportFilters, include_stats: bool) -> Result<Value, String> {
+pub async fn export_sessions(
+    state: State<'_, AppState>,
+    exports: State<'_, ExportState>,
+    app: tauri::AppHandle,
+    job_id: String,
+    scope: String,
+    id: Option<i64>,
+    filters: SessionFilters,
+    include_stats: bool,
+) -> Result<Value, String> {
     let path = db_path_of(&state)?;
     let job = export_job(&exports, &job_id)?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -1268,10 +1377,10 @@ pub async fn export_sessions(state: State<'_, AppState>, exports: State<'_, Expo
         conn.pragma_update(None, "query_only", true).map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let ids = if scope == "session" { vec![id.ok_or("Select a session to export")?] } else {
-            let f = if scope == "library" { ExportFilters::default() } else { filters };
+            let f = if scope == "library" { SessionFilters::default() } else { filters };
             // Use the library's exact search and ordering, without pagination.
             // This connection holds a read snapshot while assembling transcripts.
-            let result = search_sessions_from_conn(&tx, &f.q, &f.agent, &f.project, &f.models, &f.branch, &f.tools, &f.since, &f.sort, -1, 0, f.starred, &f.tags, &f.host, Some(&job))?;
+            let result = search_sessions_from_conn(&tx, &f, -1, 0, Some(&job))?;
             result["sessions"].as_array().ok_or("Invalid session list")?.iter().filter_map(|s| s["id"].as_i64()).collect()
         };
         let pricing = Arc::new(Mutex::new(pricing::PricingState::new()));
@@ -1318,30 +1427,52 @@ pub async fn export_sessions(state: State<'_, AppState>, exports: State<'_, Expo
 }
 
 #[tauri::command]
-pub async fn save_export(state: State<'_, ExportState>, job_id: String, path: String, contents: String) -> Result<(), String> {
+pub async fn save_export(
+    state: State<'_, ExportState>,
+    job_id: String,
+    path: String,
+    contents: String,
+) -> Result<(), String> {
     let job = export_job(&state, &job_id)?;
     tauri::async_runtime::spawn_blocking(move || {
         job.check()?;
         let target = PathBuf::from(path);
         let parent = target.parent().ok_or("Invalid export path")?;
-        let temp = parent.join(format!(".{}-export-{}.tmp", crate::brand::SLUG, uuid::Uuid::new_v4()));
+        let temp = parent.join(format!(
+            ".{}-export-{}.tmp",
+            crate::brand::SLUG,
+            uuid::Uuid::new_v4()
+        ));
         let result = (|| -> Result<(), String> {
-            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp).map_err(|e| format!("Could not save export: {e}"))?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)
+                .map_err(|e| format!("Could not save export: {e}"))?;
             for chunk in contents.as_bytes().chunks(64 * 1024) {
                 job.check()?;
-                file.write_all(chunk).map_err(|e| format!("Could not save export: {e}"))?;
+                file.write_all(chunk)
+                    .map_err(|e| format!("Could not save export: {e}"))?;
             }
-            file.sync_all().map_err(|e| format!("Could not save export: {e}"))?;
+            file.sync_all()
+                .map_err(|e| format!("Could not save export: {e}"))?;
             drop(file);
-            let mut saved = job.saved.lock().map_err(|_| "Could not access export state")?;
+            let mut saved = job
+                .saved
+                .lock()
+                .map_err(|_| "Could not access export state")?;
             job.check()?;
             std::fs::rename(&temp, &target).map_err(|e| format!("Could not save export: {e}"))?;
             *saved = true;
             Ok(())
         })();
-        if result.is_err() { let _ = std::fs::remove_file(&temp); }
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
         result
-    }).await.map_err(|e| e.to_string())?
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

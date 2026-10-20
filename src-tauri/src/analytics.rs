@@ -24,12 +24,12 @@ use crate::pricing::{
 };
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeDelta, Timelike, Utc};
 use rusqlite::functions::{Context, FunctionFlags};
-use rusqlite::{Connection, Row, Statement, types::ValueRef};
+use rusqlite::{types::ValueRef, Connection, Row, Statement};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Cooperative cancellation probe shared by report calculations.
@@ -81,9 +81,18 @@ pub struct AnalyticsState {
     revision: AtomicU64,
 }
 
+impl Default for AnalyticsState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AnalyticsState {
     pub fn new() -> Self {
-        Self { cache: Mutex::new(HashMap::new()), revision: AtomicU64::new(0) }
+        Self {
+            cache: Mutex::new(HashMap::new()),
+            revision: AtomicU64::new(0),
+        }
     }
 
     pub fn clear_cache(&self) {
@@ -97,7 +106,9 @@ impl AnalyticsState {
 /// One bounded report cache for the application, rather than one per request.
 pub fn shared_state() -> Arc<AnalyticsState> {
     static STATE: OnceLock<Arc<AnalyticsState>> = OnceLock::new();
-    STATE.get_or_init(|| Arc::new(AnalyticsState::new())).clone()
+    STATE
+        .get_or_init(|| Arc::new(AnalyticsState::new()))
+        .clone()
 }
 
 static PRICE_REVISION: AtomicU64 = AtomicU64::new(0);
@@ -107,8 +118,11 @@ pub(crate) fn pricing_revision() -> u64 {
 }
 
 pub(crate) fn queue_recalculation(conn: &Connection) -> Result<(), String> {
-    conn.execute("INSERT OR IGNORE INTO analytics_refresh_queue SELECT id FROM session", [])
-        .map_err(|e| sqlite_error("Could not queue analytics recalculation", e))?;
+    conn.execute(
+        "INSERT OR IGNORE INTO analytics_refresh_queue SELECT id FROM session",
+        [],
+    )
+    .map_err(|e| sqlite_error("Could not queue analytics recalculation", e))?;
     Ok(())
 }
 
@@ -253,7 +267,11 @@ fn parse_date(value: &str) -> Option<DateTime<Utc>> {
         return None;
     }
     let text = text.replacen(' ', "T", 1);
-    let text = if has_timezone_suffix(&text) { text } else { format!("{text}Z") };
+    let text = if has_timezone_suffix(&text) {
+        text
+    } else {
+        format!("{text}Z")
+    };
     DateTime::parse_from_rfc3339(&text)
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
@@ -279,11 +297,18 @@ struct Calendar {
 /// `GMT-8`, …). IANA names are handled separately by `calendar_in`.
 fn timezone_offset_minutes(tz: &str) -> i32 {
     let t = tz.trim();
-    if t.is_empty() || t.eq_ignore_ascii_case("utc") || t.eq_ignore_ascii_case("gmt") || t.eq_ignore_ascii_case("z") {
+    if t.is_empty()
+        || t.eq_ignore_ascii_case("utc")
+        || t.eq_ignore_ascii_case("gmt")
+        || t.eq_ignore_ascii_case("z")
+    {
         return 0;
     }
     let upper = t.to_ascii_uppercase();
-    let rest = upper.strip_prefix("UTC").or_else(|| upper.strip_prefix("GMT")).unwrap_or(upper.as_str());
+    let rest = upper
+        .strip_prefix("UTC")
+        .or_else(|| upper.strip_prefix("GMT"))
+        .unwrap_or(upper.as_str());
     let rest = rest.trim();
     if rest.is_empty() {
         return 0;
@@ -298,7 +323,10 @@ fn timezone_offset_minutes(tz: &str) -> i32 {
     let digits = digits.trim();
     // Accept HH, HHMM, HH:MM.
     let (h, m) = if let Some((a, b)) = digits.split_once(':') {
-        (a.trim().parse::<i32>().unwrap_or(0), b.trim().parse::<i32>().unwrap_or(0))
+        (
+            a.trim().parse::<i32>().unwrap_or(0),
+            b.trim().parse::<i32>().unwrap_or(0),
+        )
     } else if digits.len() > 2 && !digits.contains(' ') {
         let (a, b) = digits.split_at(digits.len() - 2);
         (a.parse::<i32>().unwrap_or(0), b.parse::<i32>().unwrap_or(0))
@@ -330,7 +358,9 @@ fn register_calendar_functions(db: &Connection, timezone: &str) -> Result<(), St
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         move |ctx: &Context| {
             let v: Option<String> = ctx.get(0)?;
-            Ok(v.as_deref().and_then(|t| calendar_in(t, &tz)).map(|c| c.date))
+            Ok(v.as_deref()
+                .and_then(|t| calendar_in(t, &tz))
+                .map(|c| c.date))
         },
     )
     .map_err(|e| format!("Could not register user_date: {e}"))?;
@@ -341,7 +371,9 @@ fn register_calendar_functions(db: &Connection, timezone: &str) -> Result<(), St
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         move |ctx: &Context| {
             let v: Option<String> = ctx.get(0)?;
-            Ok(v.as_deref().and_then(|t| calendar_in(t, &tz)).map(|c| c.hour))
+            Ok(v.as_deref()
+                .and_then(|t| calendar_in(t, &tz))
+                .map(|c| c.hour))
         },
     )
     .map_err(|e| format!("Could not register user_hour: {e}"))?;
@@ -352,14 +384,19 @@ fn register_calendar_functions(db: &Connection, timezone: &str) -> Result<(), St
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         move |ctx: &Context| {
             let v: Option<String> = ctx.get(0)?;
-            Ok(v.as_deref().and_then(|t| calendar_in(t, &tz)).map(|c| c.day))
+            Ok(v.as_deref()
+                .and_then(|t| calendar_in(t, &tz))
+                .map(|c| c.day))
         },
     )
     .map_err(|e| format!("Could not register user_weekday: {e}"))?;
     Ok(())
 }
 
-fn register_cache_discount(db: &Connection, pricing: Arc<Mutex<PricingState>>) -> Result<(), String> {
+fn register_cache_discount(
+    db: &Connection,
+    pricing: Arc<Mutex<PricingState>>,
+) -> Result<(), String> {
     db.create_scalar_function(
         "cache_discount",
         1,
@@ -404,11 +441,26 @@ pub(crate) struct SessionAnalytics {
     pub tool_error_count: i64,
 }
 
+/// Session columns read by [`calculate_session`]: agent, workspace, start, last
+/// event, metrics JSON, token usage JSON, model, duration in seconds.
+type SessionInputs = (
+    i64,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<f64>,
+);
+
 /// Read-only calculation, also used for exports without claiming the writer.
-pub(crate) fn calculate_session(db: &Connection, pricing: &Arc<Mutex<PricingState>>, id: i64) -> Result<SessionAnalytics, String> {
-    let (agent_id, workspace_id, started_at, last_event_at, metrics_json, token_usage_json, model_name, duration_seconds_opt): (
-        i64, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<f64>,
-    ) = db
+pub(crate) fn calculate_session(
+    db: &Connection,
+    pricing: &Arc<Mutex<PricingState>>,
+    id: i64,
+) -> Result<SessionAnalytics, String> {
+    let (agent_id, workspace_id, started_at, last_event_at, metrics_json, token_usage_json, model_name, duration_seconds_opt): SessionInputs = db
         .query_row(
             "SELECT s.agent_id, s.workspace_id, s.started_at, s.last_event_at,
                     s.metrics_json, s.token_usage_json,
@@ -421,12 +473,23 @@ pub(crate) fn calculate_session(db: &Connection, pricing: &Arc<Mutex<PricingStat
         )
         .map_err(|e| sqlite_error("Could not read the analytics session", e))?;
     // NULL/missing/NaN duration -> 0.
-    let duration_seconds: f64 = duration_seconds_opt.filter(|v| v.is_finite()).unwrap_or(0.0);
+    let duration_seconds: f64 = duration_seconds_opt
+        .filter(|v| v.is_finite())
+        .unwrap_or(0.0);
 
     // Use cached metrics only when every required count is present. Older
     // imports contain partial blobs and must fall back to the actual rows.
-    let (total_turns, user_turns, assistant_turns, user_chars, assistant_chars, tool_chars): (i64, i64, i64, i64, i64, i64) = {
-        let metrics: Option<Value> = metrics_json.as_deref().and_then(|s| serde_json::from_str(s).ok());
+    let (total_turns, user_turns, assistant_turns, user_chars, assistant_chars, tool_chars): (
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+    ) = {
+        let metrics: Option<Value> = metrics_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok());
         match metrics.filter(|m| ["total_turns", "user_turns", "assistant_turns", "user_chars", "assistant_chars", "tool_chars"]
             .iter().all(|key| m.get(*key).and_then(Value::as_i64).is_some_and(|n| n >= 0))) {
             Some(m) => (
@@ -453,12 +516,19 @@ pub(crate) fn calculate_session(db: &Connection, pricing: &Arc<Mutex<PricingStat
     };
 
     let (tool_count, tool_error_count): (i64, i64) = {
-        let metrics: Option<Value> = metrics_json.as_deref().and_then(|s| serde_json::from_str(s).ok());
-        match metrics.filter(|m| ["tool_count", "tool_error_count"].iter()
-            .all(|key| m.get(*key).and_then(Value::as_i64).is_some_and(|n| n >= 0))) {
+        let metrics: Option<Value> = metrics_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok());
+        match metrics.filter(|m| {
+            ["tool_count", "tool_error_count"]
+                .iter()
+                .all(|key| m.get(*key).and_then(Value::as_i64).is_some_and(|n| n >= 0))
+        }) {
             Some(m) => (
                 m.get("tool_count").and_then(|v| v.as_i64()).unwrap_or(0),
-                m.get("tool_error_count").and_then(|v| v.as_i64()).unwrap_or(0),
+                m.get("tool_error_count")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
             ),
             None => db
                 .query_row(
@@ -474,31 +544,66 @@ pub(crate) fn calculate_session(db: &Connection, pricing: &Arc<Mutex<PricingStat
 
     // Token counts prefer actual reported usage; otherwise estimate from text
     // length at TOKEN_CHARS_PER_TOKEN chars per token.
-    let usage: Option<Value> = token_usage_json.as_deref().and_then(|s| serde_json::from_str(s).ok());
+    let usage: Option<Value> = token_usage_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok());
     let usage_num = |key: &str| {
-        usage.as_ref().and_then(|u| u.get(key)).filter(|v| !v.is_null()).and_then(|v| v.as_f64()).filter(|n| n.is_finite() && *n >= 0.0)
+        usage
+            .as_ref()
+            .and_then(|u| u.get(key))
+            .filter(|v| !v.is_null())
+            .and_then(|v| v.as_f64())
+            .filter(|n| n.is_finite() && *n >= 0.0)
     };
     let (est_in, est_out) = estimate_tokens_from_chars(user_chars, assistant_chars, tool_chars);
     let input = usage_num("inputTokens").map(|v| v as i64).unwrap_or(est_in);
-    let output = usage_num("outputTokens").map(|v| v as i64).unwrap_or(est_out);
+    let output = usage_num("outputTokens")
+        .map(|v| v as i64)
+        .unwrap_or(est_out);
     let cached = usage_num("cachedTokens").map(|v| v as i64).unwrap_or(0);
-    let total_tokens = input.checked_add(output)
+    let total_tokens = input
+        .checked_add(output)
         .ok_or("Session token counts exceed the supported range")?;
 
     let estimated_cost = {
-        let mut st = pricing.lock().map_err(|_| "Could not lock the pricing state".to_string())?;
-        calculate_cost(&mut st, &model_name.clone().unwrap_or_default(), input, output, cached)
+        let mut st = pricing
+            .lock()
+            .map_err(|_| "Could not lock the pricing state".to_string())?;
+        calculate_cost(
+            &mut st,
+            &model_name.clone().unwrap_or_default(),
+            input,
+            output,
+            cached,
+        )
     };
 
     Ok(SessionAnalytics {
-        session_id: id, agent_id, workspace_id, started_at, last_event_at,
-        duration_seconds, model_name, input_tokens: input, output_tokens: output,
-        cached_tokens: cached, total_tokens, estimated_cost,
-        user_turns, assistant_turns, total_turns, tool_count, tool_error_count,
+        session_id: id,
+        agent_id,
+        workspace_id,
+        started_at,
+        last_event_at,
+        duration_seconds,
+        model_name,
+        input_tokens: input,
+        output_tokens: output,
+        cached_tokens: cached,
+        total_tokens,
+        estimated_cost,
+        user_turns,
+        assistant_turns,
+        total_turns,
+        tool_count,
+        tool_error_count,
     })
 }
 
-pub(crate) fn process_session(db: &Connection, pricing: &Arc<Mutex<PricingState>>, id: i64) -> Result<(), String> {
+pub(crate) fn process_session(
+    db: &Connection,
+    pricing: &Arc<Mutex<PricingState>>,
+    id: i64,
+) -> Result<(), String> {
     let row = calculate_session(db, pricing, id)?;
     db.prepare_cached(
         "INSERT OR REPLACE INTO session_analytics (
@@ -524,7 +629,12 @@ pub fn sync_analytics(
     force: bool,
     pricing: &Arc<Mutex<PricingState>>,
 ) -> Result<usize, String> {
-    sync_analytics_cancellable(db, force, pricing, &std::sync::atomic::AtomicBool::new(false))
+    sync_analytics_cancellable(
+        db,
+        force,
+        pricing,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
 }
 
 pub fn sync_analytics_cancellable(
@@ -636,7 +746,10 @@ fn ref_to_json(v: ValueRef) -> Value {
     }
 }
 
-fn rows_to_json(stmt: &mut Statement, params: &[&dyn rusqlite::types::ToSql]) -> Result<Vec<Value>, rusqlite::Error> {
+fn rows_to_json(
+    stmt: &mut Statement,
+    params: &[&dyn rusqlite::types::ToSql],
+) -> Result<Vec<Value>, rusqlite::Error> {
     let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
     let mapped = stmt.query_map(params, {
         let cols = cols.clone();
@@ -655,7 +768,10 @@ fn rows_to_json(stmt: &mut Statement, params: &[&dyn rusqlite::types::ToSql]) ->
     Ok(out)
 }
 
-fn one_to_json(stmt: &mut Statement, params: &[&dyn rusqlite::types::ToSql]) -> Result<Option<Value>, rusqlite::Error> {
+fn one_to_json(
+    stmt: &mut Statement,
+    params: &[&dyn rusqlite::types::ToSql],
+) -> Result<Option<Value>, rusqlite::Error> {
     let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
     let mut rows = stmt.query(params)?;
     match rows.next()? {
@@ -699,10 +815,14 @@ fn build_filters(q: &AnalyticsFilters) -> (String, Vec<String>) {
         };
         if let Some(days) = days {
             let cutoff = Utc::now() - TimeDelta::milliseconds(days * 86_400_000);
-            clauses.push("julianday(COALESCE(sa.started_at, s.started_at)) >= julianday(?)".to_string());
+            clauses.push(
+                "julianday(COALESCE(sa.started_at, s.started_at)) >= julianday(?)".to_string(),
+            );
             params.push(cutoff.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
         } else if let Some(parsed) = parse_date(q.since.trim()) {
-            clauses.push("julianday(COALESCE(sa.started_at, s.started_at)) >= julianday(?)".to_string());
+            clauses.push(
+                "julianday(COALESCE(sa.started_at, s.started_at)) >= julianday(?)".to_string(),
+            );
             params.push(parsed.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
         }
     }
@@ -734,12 +854,46 @@ const CACHE_COLUMNS: &str = "
 fn apply_efficiency(row: &mut Value) {
     let Some(o) = row.as_object_mut() else { return };
     let f = |k: &str| o.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let (input, hits, turns, cost, dur, days) =
-        (f("input_tokens"), f("cache_hit_tokens"), f("total_turns"), f("estimated_cost"), f("total_duration_seconds"), f("active_days"));
-    o.insert("cache_hit_pct".into(), json!(if input > 0.0 { hits / input * 100.0 } else { 0.0 }));
-    o.insert("cost_per_turn".into(), if turns > 0.0 { json!(cost / turns) } else { Value::Null });
-    o.insert("cost_per_hour".into(), if dur > 0.0 { json!(cost * 3600.0 / dur) } else { Value::Null });
-    o.insert("cost_per_day".into(), if days > 0.0 { json!(cost / days) } else { Value::Null });
+    let (input, hits, turns, cost, dur, days) = (
+        f("input_tokens"),
+        f("cache_hit_tokens"),
+        f("total_turns"),
+        f("estimated_cost"),
+        f("total_duration_seconds"),
+        f("active_days"),
+    );
+    o.insert(
+        "cache_hit_pct".into(),
+        json!(if input > 0.0 {
+            hits / input * 100.0
+        } else {
+            0.0
+        }),
+    );
+    o.insert(
+        "cost_per_turn".into(),
+        if turns > 0.0 {
+            json!(cost / turns)
+        } else {
+            Value::Null
+        },
+    );
+    o.insert(
+        "cost_per_hour".into(),
+        if dur > 0.0 {
+            json!(cost * 3600.0 / dur)
+        } else {
+            Value::Null
+        },
+    );
+    o.insert(
+        "cost_per_day".into(),
+        if days > 0.0 {
+            json!(cost / days)
+        } else {
+            Value::Null
+        },
+    );
 }
 
 fn round_to(v: f64, decimals: u32) -> f64 {
@@ -762,7 +916,9 @@ fn empty_day(date: &str) -> Value {
 }
 
 fn fill_days(rows: Vec<Value>, start: Option<String>, end: Option<String>) -> Vec<Value> {
-    let (Some(start), Some(end)) = (start, end) else { return rows };
+    let (Some(start), Some(end)) = (start, end) else {
+        return rows;
+    };
     let mut map: HashMap<String, Value> = HashMap::new();
     for r in rows {
         if let Some(d) = r.get("date").and_then(|v| v.as_str()) {
@@ -814,7 +970,10 @@ pub fn get_full_analytics(
     })
     .to_string();
     {
-        let cache = state.cache.lock().map_err(|_| "Could not lock the analytics cache".to_string())?;
+        let cache = state
+            .cache
+            .lock()
+            .map_err(|_| "Could not lock the analytics cache".to_string())?;
         if let Some((at, data)) = cache.get(&cache_key) {
             if at.elapsed() < Duration::from_secs(10) {
                 return Ok(data.clone());
@@ -827,7 +986,9 @@ pub fn get_full_analytics(
     register_calendar_functions(db, &timezone)?;
 
     let pricing_meta = {
-        let mut p = report_pricing.lock().map_err(|_| "Could not lock the pricing state".to_string())?;
+        let mut p = report_pricing
+            .lock()
+            .map_err(|_| "Could not lock the pricing state".to_string())?;
         get_pricing_status(db, &mut p)?
     };
     let pricing_meta_json = serde_json::to_value(&pricing_meta).unwrap_or(json!({}));
@@ -835,7 +996,10 @@ pub fn get_full_analytics(
     register_cache_discount(db, report_pricing.clone())?;
 
     let (clause, owned) = build_filters(filters);
-    let refs: Vec<&dyn rusqlite::types::ToSql> = owned.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+    let refs: Vec<&dyn rusqlite::types::ToSql> = owned
+        .iter()
+        .map(|s| s as &dyn rusqlite::types::ToSql)
+        .collect();
 
     // 1. Overall KPIs
     let summary_row: Value = {
@@ -863,11 +1027,26 @@ pub fn get_full_analytics(
             .ok_or_else(|| "No KPI row returned.".to_string())?
     };
     let f = |k: &str| summary_row.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let total_sessions = summary_row.get("total_sessions").and_then(|v| v.as_i64()).unwrap_or(0);
+    let total_sessions = summary_row
+        .get("total_sessions")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
     let summary_cost = f("estimated_cost");
-    let avg_cost = if total_sessions > 0 { summary_cost / total_sessions as f64 } else { 0.0 };
-    let avg_turns = if total_sessions > 0 { f("total_turns") / total_sessions as f64 } else { 0.0 };
-    let tool_error_rate = if f("total_tool_calls") > 0.0 { f("tool_error_count") / f("total_tool_calls") * 100.0 } else { 0.0 };
+    let avg_cost = if total_sessions > 0 {
+        summary_cost / total_sessions as f64
+    } else {
+        0.0
+    };
+    let avg_turns = if total_sessions > 0 {
+        f("total_turns") / total_sessions as f64
+    } else {
+        0.0
+    };
+    let tool_error_rate = if f("total_tool_calls") > 0.0 {
+        f("tool_error_count") / f("total_tool_calls") * 100.0
+    } else {
+        0.0
+    };
 
     // 2. By model
     let mut by_model = {
@@ -883,19 +1062,39 @@ pub fn get_full_analytics(
                  GROUP BY sa.model_name ORDER BY estimated_cost DESC, total_tokens DESC"
             ))
             .map_err(|e| sqlite_error("Could not prepare the by-model query", e))?;
-        rows_to_json(&mut stmt, &refs).map_err(|e| sqlite_error("Could not run the by-model query", e))?
+        rows_to_json(&mut stmt, &refs)
+            .map_err(|e| sqlite_error("Could not run the by-model query", e))?
     };
     for row in by_model.iter_mut() {
         apply_efficiency(row);
-        let cost = row.get("estimated_cost").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let name = row.get("model_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let cost = row
+            .get("estimated_cost")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let name = row
+            .get("model_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let pricing = {
-            let mut p = report_pricing.lock().map_err(|_| "Could not lock the pricing state".to_string())?;
+            let mut p = report_pricing
+                .lock()
+                .map_err(|_| "Could not lock the pricing state".to_string())?;
             get_model_pricing(&mut p, &name)
         };
         if let Some(o) = row.as_object_mut() {
-            o.insert("cost_pct".into(), json!(if summary_cost > 0.0 { cost / summary_cost * 100.0 } else { 0.0 }));
-            o.insert("pricing".into(), serde_json::to_value(&pricing).unwrap_or(Value::Null));
+            o.insert(
+                "cost_pct".into(),
+                json!(if summary_cost > 0.0 {
+                    cost / summary_cost * 100.0
+                } else {
+                    0.0
+                }),
+            );
+            o.insert(
+                "pricing".into(),
+                serde_json::to_value(&pricing).unwrap_or(Value::Null),
+            );
         }
     }
 
@@ -914,18 +1113,35 @@ pub fn get_full_analytics(
                  GROUP BY a.id ORDER BY estimated_cost DESC, sessions DESC"
             ))
             .map_err(|e| sqlite_error("Could not prepare the by-agent query", e))?;
-        rows_to_json(&mut stmt, &refs).map_err(|e| sqlite_error("Could not run the by-agent query", e))?
+        rows_to_json(&mut stmt, &refs)
+            .map_err(|e| sqlite_error("Could not run the by-agent query", e))?
     };
     for row in by_agent.iter_mut() {
         apply_efficiency(row);
         let (cost, tc, te) = (
-            row.get("estimated_cost").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            row.get("tool_count").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            row.get("tool_error_count").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            row.get("estimated_cost")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
+            row.get("tool_count")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
+            row.get("tool_error_count")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
         );
         if let Some(o) = row.as_object_mut() {
-            o.insert("cost_pct".into(), json!(if summary_cost > 0.0 { cost / summary_cost * 100.0 } else { 0.0 }));
-            o.insert("error_rate".into(), json!(if tc > 0.0 { te / tc * 100.0 } else { 0.0 }));
+            o.insert(
+                "cost_pct".into(),
+                json!(if summary_cost > 0.0 {
+                    cost / summary_cost * 100.0
+                } else {
+                    0.0
+                }),
+            );
+            o.insert(
+                "error_rate".into(),
+                json!(if tc > 0.0 { te / tc * 100.0 } else { 0.0 }),
+            );
         }
     }
 
@@ -943,13 +1159,24 @@ pub fn get_full_analytics(
                  GROUP BY sa.workspace_id ORDER BY estimated_cost DESC, total_tokens DESC"
             ))
             .map_err(|e| sqlite_error("Could not prepare the by-workspace query", e))?;
-        rows_to_json(&mut stmt, &refs).map_err(|e| sqlite_error("Could not run the by-workspace query", e))?
+        rows_to_json(&mut stmt, &refs)
+            .map_err(|e| sqlite_error("Could not run the by-workspace query", e))?
     };
     for row in by_workspace.iter_mut() {
         apply_efficiency(row);
-        let cost = row.get("estimated_cost").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let cost = row
+            .get("estimated_cost")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
         if let Some(o) = row.as_object_mut() {
-            o.insert("cost_pct".into(), json!(if summary_cost > 0.0 { cost / summary_cost * 100.0 } else { 0.0 }));
+            o.insert(
+                "cost_pct".into(),
+                json!(if summary_cost > 0.0 {
+                    cost / summary_cost * 100.0
+                } else {
+                    0.0
+                }),
+            );
         }
     }
 
@@ -968,10 +1195,13 @@ pub fn get_full_analytics(
                  ORDER BY date ASC"
             ))
             .map_err(|e| sqlite_error("Could not prepare the daily trend query", e))?;
-        rows_to_json(&mut stmt, &refs).map_err(|e| sqlite_error("Could not run the daily trend query", e))?
+        rows_to_json(&mut stmt, &refs)
+            .map_err(|e| sqlite_error("Could not run the daily trend query", e))?
     };
     let now_iso = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let today = calendar_in(&now_iso, &timezone).map(|c| c.date).unwrap_or_else(|| Utc::now().date_naive().format("%Y-%m-%d").to_string());
+    let today = calendar_in(&now_iso, &timezone)
+        .map(|c| c.date)
+        .unwrap_or_else(|| Utc::now().date_naive().format("%Y-%m-%d").to_string());
     let preset_days: Option<i64> = match filters.since.trim() {
         "day" => Some(1),
         "week" => Some(7),
@@ -981,10 +1211,26 @@ pub fn get_full_analytics(
         _ => None,
     };
     let requested_start = preset_days
-        .and_then(|d| calendar_in(&(Utc::now() - TimeDelta::milliseconds(d * 86_400_000)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true), &timezone))
+        .and_then(|d| {
+            calendar_in(
+                &(Utc::now() - TimeDelta::milliseconds(d * 86_400_000))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                &timezone,
+            )
+        })
         .map(|c| c.date)
-        .or_else(|| if filters.since.trim().is_empty() { None } else { calendar_in(filters.since.trim(), &timezone).map(|c| c.date) });
-    let trend_start = requested_start.or_else(|| daily_rows.first().and_then(|r| r.get("date").and_then(|d| d.as_str()).map(str::to_string)));
+        .or_else(|| {
+            if filters.since.trim().is_empty() {
+                None
+            } else {
+                calendar_in(filters.since.trim(), &timezone).map(|c| c.date)
+            }
+        });
+    let trend_start = requested_start.or_else(|| {
+        daily_rows
+            .first()
+            .and_then(|r| r.get("date").and_then(|d| d.as_str()).map(str::to_string))
+    });
     let trend_start = match trend_start {
         Some(s) if s.as_str() < "2024-01-01" => Some("2024-01-01".to_string()),
         Some(s) => Some(s),
@@ -996,23 +1242,35 @@ pub fn get_full_analytics(
         let window: Vec<Value> = daily_trend[lo..=i].to_vec();
         let mut ma = Map::new();
         for key in ["estimated_cost", "total_tokens", "sessions", "turns"] {
-            let sum: f64 = window.iter().map(|d| d.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0)).sum();
+            let sum: f64 = window
+                .iter()
+                .map(|d| d.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0))
+                .sum();
             ma.insert(key.to_string(), json!(sum / window.len() as f64));
         }
         if let Some(o) = daily_trend[i].as_object_mut() {
             o.insert("moving_average".into(), Value::Object(ma));
             let (u, a) = (
                 o.get("user_turns").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                o.get("assistant_turns").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                o.get("assistant_turns")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
             );
-            o.insert("user_assistant_ratio".into(), if a > 0.0 { json!(u / a) } else { Value::Null });
+            o.insert(
+                "user_assistant_ratio".into(),
+                if a > 0.0 { json!(u / a) } else { Value::Null },
+            );
         }
     }
 
     // Spend outlook (full calendar weeks + month-to-date).
     let month_start = format!("{}-01", &today[..7]);
     let prior_week_start = shift_day(&today, -14);
-    let comparison_start = if month_start < prior_week_start { month_start.clone() } else { prior_week_start.clone() };
+    let comparison_start = if month_start < prior_week_start {
+        month_start.clone()
+    } else {
+        prior_week_start.clone()
+    };
     let comp_filters = AnalyticsFilters {
         agent: filters.agent.clone(),
         model: filters.model.clone(),
@@ -1036,14 +1294,27 @@ pub fn get_full_analytics(
         let mut all_owned = comp_owned.clone();
         all_owned.push(comparison_start.clone());
         all_owned.push(today.clone());
-        let all_refs: Vec<&dyn rusqlite::types::ToSql> = all_owned.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
-        rows_to_json(&mut stmt, &all_refs).map_err(|e| sqlite_error("Could not run the comparison query", e))?
+        let all_refs: Vec<&dyn rusqlite::types::ToSql> = all_owned
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+        rows_to_json(&mut stmt, &all_refs)
+            .map_err(|e| sqlite_error("Could not run the comparison query", e))?
     };
-    let comparison_days = fill_days(comparison_rows, Some(comparison_start.clone()), Some(today.clone()));
+    let comparison_days = fill_days(
+        comparison_rows,
+        Some(comparison_start.clone()),
+        Some(today.clone()),
+    );
     let sum_days = |start: &str, end: &str, key: &str| -> f64 {
-        comparison_days.iter()
-            .filter(|d| { let dt = d.get("date").and_then(|v| v.as_str()).unwrap_or(""); dt >= start && dt <= end })
-            .map(|d| d.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0)).sum()
+        comparison_days
+            .iter()
+            .filter(|d| {
+                let dt = d.get("date").and_then(|v| v.as_str()).unwrap_or("");
+                dt >= start && dt <= end
+            })
+            .map(|d| d.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0))
+            .sum()
     };
     let recent_start = shift_day(&today, -7);
     let recent_end = shift_day(&today, -1);
@@ -1051,12 +1322,27 @@ pub fn get_full_analytics(
     for key in ["estimated_cost", "total_tokens", "sessions", "turns"] {
         let cur = sum_days(&recent_start, &recent_end, key);
         let prev = sum_days(&prior_week_start, &shift_day(&today, -8), key);
-        let pct = if prev > 0.0 { (cur - prev) / prev * 100.0 } else if cur == 0.0 { 0.0 } else { f64::NAN };
-        weekly_deltas.insert(key.to_string(), json!({ "current": cur, "previous": prev, "pct_change": pct }));
+        let pct = if prev > 0.0 {
+            (cur - prev) / prev * 100.0
+        } else if cur == 0.0 {
+            0.0
+        } else {
+            f64::NAN
+        };
+        weekly_deltas.insert(
+            key.to_string(),
+            json!({ "current": cur, "previous": prev, "pct_change": pct }),
+        );
     }
     let month_end_date = month_end(&today);
-    let remaining: f64 = month_end_date[8..].parse::<f64>().unwrap_or(0.0) - today[8..].parse::<f64>().unwrap_or(0.0);
-    let daily_avg = weekly_deltas.get("estimated_cost").and_then(|v| v.get("current")).and_then(|v| v.as_f64()).unwrap_or(0.0) / 7.0;
+    let remaining: f64 = month_end_date[8..].parse::<f64>().unwrap_or(0.0)
+        - today[8..].parse::<f64>().unwrap_or(0.0);
+    let daily_avg = weekly_deltas
+        .get("estimated_cost")
+        .and_then(|v| v.get("current"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0)
+        / 7.0;
     let mtd = sum_days(&month_start, &today, "estimated_cost");
     let spend_outlook = json!({
         "weekly_deltas": weekly_deltas, "recent_start": recent_start, "recent_end": recent_end,
@@ -1067,7 +1353,12 @@ pub fn get_full_analytics(
 
     // Session leaderboards
     let mut leaderboards = Map::new();
-    for metric in ["estimated_cost", "total_tokens", "duration_seconds", "total_turns"] {
+    for metric in [
+        "estimated_cost",
+        "total_tokens",
+        "duration_seconds",
+        "total_turns",
+    ] {
         let mut stmt = db
             .prepare(&format!(
                 "SELECT sa.session_id, s.title AS session_title, a.family, sa.model_name,
@@ -1076,7 +1367,8 @@ pub fn get_full_analytics(
                  {BASE_JOIN} {clause} ORDER BY sa.{metric} DESC, sa.session_id DESC LIMIT 5"
             ))
             .map_err(|e| sqlite_error("Could not prepare the leaderboard query", e))?;
-        let rows = rows_to_json(&mut stmt, &refs).map_err(|e| sqlite_error("Could not run the leaderboard query", e))?;
+        let rows = rows_to_json(&mut stmt, &refs)
+            .map_err(|e| sqlite_error("Could not run the leaderboard query", e))?;
         leaderboards.insert(metric.to_string(), Value::Array(rows));
     }
 
@@ -1099,7 +1391,8 @@ pub fn get_full_analytics(
                  ORDER BY fail_count DESC LIMIT 15"
             ))
             .map_err(|e| sqlite_error("Could not prepare the failing bash query", e))?;
-        rows_to_json(&mut stmt, &refs).map_err(|e| sqlite_error("Could not run the failing bash query", e))?
+        rows_to_json(&mut stmt, &refs)
+            .map_err(|e| sqlite_error("Could not run the failing bash query", e))?
     };
     let mut tool_error_rates = {
         let mut stmt = db
@@ -1116,15 +1409,27 @@ pub fn get_full_analytics(
                  ORDER BY error_calls DESC, total_calls DESC LIMIT 16"
             ))
             .map_err(|e| sqlite_error("Could not prepare the tool error query", e))?;
-        rows_to_json(&mut stmt, &refs).map_err(|e| sqlite_error("Could not run the tool error query", e))?
+        rows_to_json(&mut stmt, &refs)
+            .map_err(|e| sqlite_error("Could not run the tool error query", e))?
     };
     for row in tool_error_rates.iter_mut() {
         let (t, e) = (
-            row.get("total_calls").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            row.get("error_calls").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            row.get("total_calls")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
+            row.get("error_calls")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
         );
         if let Some(o) = row.as_object_mut() {
-            o.insert("error_rate".into(), json!(if t > 0.0 { round_to(e / t * 100.0, 1) } else { 0.0 }));
+            o.insert(
+                "error_rate".into(),
+                json!(if t > 0.0 {
+                    round_to(e / t * 100.0, 1)
+                } else {
+                    0.0
+                }),
+            );
         }
     }
     let slowest_tools = {
@@ -1143,7 +1448,8 @@ pub fn get_full_analytics(
                  ORDER BY t.duration_ms DESC LIMIT 15"
             ))
             .map_err(|e| sqlite_error("Could not prepare the slowest tools query", e))?;
-        rows_to_json(&mut stmt, &refs).map_err(|e| sqlite_error("Could not run the slowest tools query", e))?
+        rows_to_json(&mut stmt, &refs)
+            .map_err(|e| sqlite_error("Could not run the slowest tools query", e))?
     };
     // Nearest-rank p50/p95 across all recorded nonnegative durations.
     let tool_latency = {
@@ -1165,7 +1471,8 @@ pub fn get_full_analytics(
                  FROM ranked GROUP BY tool_name ORDER BY p95_duration_ms DESC, samples DESC"
             ))
             .map_err(|e| sqlite_error("Could not prepare the latency query", e))?;
-        rows_to_json(&mut stmt, &refs).map_err(|e| sqlite_error("Could not run the latency query", e))?
+        rows_to_json(&mut stmt, &refs)
+            .map_err(|e| sqlite_error("Could not run the latency query", e))?
     };
     let tool_statuses = {
         let mut stmt = db
@@ -1178,7 +1485,8 @@ pub fn get_full_analytics(
                  {clause} GROUP BY status ORDER BY count DESC"
             ))
             .map_err(|e| sqlite_error("Could not prepare the tool status query", e))?;
-        rows_to_json(&mut stmt, &refs).map_err(|e| sqlite_error("Could not run the tool status query", e))?
+        rows_to_json(&mut stmt, &refs)
+            .map_err(|e| sqlite_error("Could not run the tool status query", e))?
     };
 
     // 7. Productivity pulse
@@ -1192,12 +1500,16 @@ pub fn get_full_analytics(
                  GROUP BY day_of_week, hour_of_day"
             ))
             .map_err(|e| sqlite_error("Could not prepare the heatmap query", e))?;
-        rows_to_json(&mut stmt, &refs).map_err(|e| sqlite_error("Could not run the heatmap query", e))?
+        rows_to_json(&mut stmt, &refs)
+            .map_err(|e| sqlite_error("Could not run the heatmap query", e))?
     };
     let mut peak_point = json!({ "day_of_week": 1, "hour_of_day": 14, "count": 0 });
     for p in &heatmap_rows {
         if p.get("count").and_then(|v| v.as_i64()).unwrap_or(0)
-            > peak_point.get("count").and_then(|v| v.as_i64()).unwrap_or(0)
+            > peak_point
+                .get("count")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
         {
             peak_point = p.clone();
         }
@@ -1223,7 +1535,10 @@ pub fn get_full_analytics(
         // Params are strings here; SQLite compares numerically for REAL column.
         all_owned.push(min_s);
         all_owned.push(max_s);
-        let all_refs: Vec<&dyn rusqlite::types::ToSql> = all_owned.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+        let all_refs: Vec<&dyn rusqlite::types::ToSql> = all_owned
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
         let row = one_to_json(&mut stmt, &all_refs)
             .map_err(|e| sqlite_error("Could not run the duration query", e))?
             .unwrap_or(json!({}));
@@ -1242,7 +1557,8 @@ pub fn get_full_analytics(
                     COUNT(*) AS count {BASE_JOIN} {clause} GROUP BY label"
             ))
             .map_err(|e| sqlite_error("Could not prepare the turn depth query", e))?;
-        rows_to_json(&mut stmt, &refs).map_err(|e| sqlite_error("Could not run the turn depth query", e))?
+        rows_to_json(&mut stmt, &refs)
+            .map_err(|e| sqlite_error("Could not run the turn depth query", e))?
     };
     let turn_depth_distribution: Vec<Value> = ["0", "1", "2–5", "6–20", "20+"]
         .iter()
@@ -1266,7 +1582,8 @@ pub fn get_full_analytics(
                  GROUP BY sa.workspace_id HAVING total_turns > 0 ORDER BY total_turns DESC LIMIT 16"
             ))
             .map_err(|e| sqlite_error("Could not prepare the turns-by-project query", e))?;
-        rows_to_json(&mut stmt, &refs).map_err(|e| sqlite_error("Could not run the turns-by-project query", e))?
+        rows_to_json(&mut stmt, &refs)
+            .map_err(|e| sqlite_error("Could not run the turns-by-project query", e))?
     };
     let active_days_count: i64 = {
         let mut stmt = db
@@ -1287,23 +1604,64 @@ pub fn get_full_analytics(
         o.insert("total_sessions".into(), json!(total_sessions));
         o.insert("estimated_cost".into(), json!(round_to(summary_cost, 2)));
         o.insert("avg_cost_per_session".into(), json!(round_to(avg_cost, 3)));
-        o.insert("avg_turns_per_session".into(), json!(round_to(avg_turns, 1)));
-        o.insert("tool_error_rate".into(), json!(round_to(tool_error_rate, 1)));
-        o.insert("total_duration_hours".into(), json!(round_to(f("total_duration_seconds") / 3600.0, 1)));
-        o.insert("avg_duration_minutes".into(), json!(round_to(f("avg_duration_seconds") / 60.0, 1)));
+        o.insert(
+            "avg_turns_per_session".into(),
+            json!(round_to(avg_turns, 1)),
+        );
+        o.insert(
+            "tool_error_rate".into(),
+            json!(round_to(tool_error_rate, 1)),
+        );
+        o.insert(
+            "total_duration_hours".into(),
+            json!(round_to(f("total_duration_seconds") / 3600.0, 1)),
+        );
+        o.insert(
+            "avg_duration_minutes".into(),
+            json!(round_to(f("avg_duration_seconds") / 60.0, 1)),
+        );
         o.insert("active_days".into(), json!(active_days_count));
-        o.insert("peak_day_of_week".into(), peak_point.get("day_of_week").cloned().unwrap_or(Value::Null));
-        o.insert("peak_hour_of_day".into(), peak_point.get("hour_of_day").cloned().unwrap_or(Value::Null));
+        o.insert(
+            "peak_day_of_week".into(),
+            peak_point
+                .get("day_of_week")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        o.insert(
+            "peak_hour_of_day".into(),
+            peak_point
+                .get("hour_of_day")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
     }
 
-    let peak_day = match peak_point.get("day_of_week").and_then(|v| v.as_i64()).unwrap_or(0) {
-        0 => "Sunday", 1 => "Monday", 2 => "Tuesday", 3 => "Wednesday",
-        4 => "Thursday", 5 => "Friday", _ => "Saturday",
+    let peak_day = match peak_point
+        .get("day_of_week")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0)
+    {
+        0 => "Sunday",
+        1 => "Monday",
+        2 => "Tuesday",
+        3 => "Wednesday",
+        4 => "Thursday",
+        5 => "Friday",
+        _ => "Saturday",
     };
-    let peak_hour = format!("{}:00", peak_point.get("hour_of_day").and_then(|v| v.as_i64()).unwrap_or(12));
+    let peak_hour = format!(
+        "{}:00",
+        peak_point
+            .get("hour_of_day")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(12)
+    );
 
     let pricing_reference = {
-        let p = report_pricing.lock().map_err(|_| "Could not lock the pricing state".to_string())?;
+        let p = report_pricing
+            .lock()
+            .map_err(|_| "Could not lock the pricing state".to_string())?;
         serde_json::to_value(get_pricing_reference(&p)).unwrap_or(Value::Null)
     };
     let methodology = Methodology {
@@ -1345,7 +1703,9 @@ pub fn get_full_analytics(
     });
 
     if let Ok(mut cache) = state.cache.lock() {
-        if cache.len() >= 32 { cache.clear(); }
+        if cache.len() >= 32 {
+            cache.clear();
+        }
         if state.revision.load(Ordering::SeqCst) == revision {
             cache.insert(cache_key, (Instant::now(), result.clone()));
         }

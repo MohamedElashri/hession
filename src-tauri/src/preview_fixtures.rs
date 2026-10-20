@@ -103,13 +103,23 @@ fn claude_lines(spec: &Spec, id: &str) -> Vec<Value> {
     let mut out = Vec::new();
     for (i, turn) in spec.turns.iter().enumerate() {
         let m = i as i64 * 6;
-        out.push(line("user", m, format!("{id}-u{i}"), json!({"role": "user", "content": turn.user})));
+        out.push(line(
+            "user",
+            m,
+            format!("{id}-u{i}"),
+            json!({"role": "user", "content": turn.user}),
+        ));
         let mut content = vec![json!({"type": "text", "text": turn.reply})];
         if let Some(tool) = &turn.tool {
             content.push(json!({"type": "tool_use", "id": format!("toolu_{i}"), "name": tool.name, "input": tool.input}));
         }
         let usage = json!({"input_tokens": 1800 + 900 * i, "output_tokens": 420 + 130 * i, "cache_read_input_tokens": 12000 * (i + 1)});
-        out.push(line("assistant", m + 1, format!("{id}-a{i}"), json!({"role": "assistant", "model": spec.model, "content": content, "usage": usage})));
+        out.push(line(
+            "assistant",
+            m + 1,
+            format!("{id}-a{i}"),
+            json!({"role": "assistant", "model": spec.model, "content": content, "usage": usage}),
+        ));
         if let Some(tool) = &turn.tool {
             out.push(line("user", m + 2, format!("{id}-r{i}"), json!({"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": format!("toolu_{i}"), "content": tool.output, "is_error": tool.failed}
@@ -121,16 +131,28 @@ fn claude_lines(spec: &Spec, id: &str) -> Vec<Value> {
 
 fn codex_lines(spec: &Spec, id: &str) -> Vec<Value> {
     let line = |minute: i64, kind: &str, payload: Value| json!({"timestamp": ts(spec.hours_ago, minute), "type": kind, "payload": payload});
-    let mut out = vec![line(0, "session_meta", json!({"id": id, "cwd": spec.cwd, "model": spec.model, "gitBranch": spec.branch, "timestamp": ts(spec.hours_ago, 0)}))];
+    let mut out = vec![line(
+        0,
+        "session_meta",
+        json!({"id": id, "cwd": spec.cwd, "model": spec.model, "gitBranch": spec.branch, "timestamp": ts(spec.hours_ago, 0)}),
+    )];
     let (mut input, mut output) = (0, 0);
     for (i, turn) in spec.turns.iter().enumerate() {
         let m = i as i64 * 6 + 1;
-        out.push(line(m, "event_msg", json!({"type": "user_message", "message": turn.user})));
+        out.push(line(
+            m,
+            "event_msg",
+            json!({"type": "user_message", "message": turn.user}),
+        ));
         out.push(line(m + 1, "response_item", json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": turn.reply}]})));
         if let Some(tool) = &turn.tool {
             let call = format!("call_{i}");
             out.push(line(m + 2, "response_item", json!({"type": "function_call", "name": tool.name, "arguments": tool.input.to_string(), "call_id": call})));
-            out.push(line(m + 3, "response_item", json!({"type": "function_call_output", "call_id": call, "output": tool.output})));
+            out.push(line(
+                m + 3,
+                "response_item",
+                json!({"type": "function_call_output", "call_id": call, "output": tool.output}),
+            ));
         }
         input += 2400 + 700 * i;
         output += 380 + 90 * i;
@@ -150,7 +172,11 @@ fn write_jsonl(path: &Path, lines: &[Value]) {
 fn dump_preview_fixtures() {
     use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::tempdir().unwrap();
-    let (home, data, bin) = (tmp.path().join("home"), tmp.path().join("data"), tmp.path().join("bin"));
+    let (home, data, bin) = (
+        tmp.path().join("home"),
+        tmp.path().join("data"),
+        tmp.path().join("bin"),
+    );
     for dir in [&home, &data, &bin] {
         fs::create_dir_all(dir).unwrap();
     }
@@ -158,17 +184,37 @@ fn dump_preview_fixtures() {
     let ssh = bin.join("ssh");
     fs::write(&ssh, "#!/bin/sh\nexit 255\n").unwrap();
     fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
-    std::env::set_var("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()));
+    std::env::set_var(
+        "PATH",
+        format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
     std::env::set_var("HOME", &home);
     std::env::set_var(crate::brand::env_var("DATA_DIR"), &data);
 
     let mut hosts: Vec<&str> = Vec::new();
     for (n, spec) in specs().iter().enumerate() {
-        let id = format!("{:08x}-4b1e-4c2a-9f00-{:012x}", 0x5e55_0000u32 + n as u32, n);
+        let id = format!(
+            "{:08x}-4b1e-4c2a-9f00-{:012x}",
+            0x5e55_0000u32 + n as u32,
+            n
+        );
         let remote_home = format!("/home/{}", spec.host.map_or("dev", |_| "deploy"));
         let (store, lines) = match spec.family {
-            "claude" => (format!("{remote_home}/.claude/projects/{}/{id}.jsonl", spec.cwd.replace('/', "-")), claude_lines(spec, &id)),
-            _ => (format!("{remote_home}/.codex/sessions/2026/10/rollout-{id}.jsonl"), codex_lines(spec, &id)),
+            "claude" => (
+                format!(
+                    "{remote_home}/.claude/projects/{}/{id}.jsonl",
+                    spec.cwd.replace('/', "-")
+                ),
+                claude_lines(spec, &id),
+            ),
+            _ => (
+                format!("{remote_home}/.codex/sessions/2026/10/rollout-{id}.jsonl"),
+                codex_lines(spec, &id),
+            ),
         };
         let path = match spec.host {
             Some(host) => {
@@ -192,7 +238,14 @@ fn dump_preview_fixtures() {
     fs::write(data.join("remotes.json"), config.to_string()).unwrap();
 
     let summary = crate::importer::sync_all_with_progress(None, "incremental", &|_, _, _| {});
-    assert!(summary.errors.iter().all(|e| e.file.starts_with(crate::importer::HOST_ERROR_PREFIX)), "{:?}", summary.errors);
+    assert!(
+        summary
+            .errors
+            .iter()
+            .all(|e| e.file.starts_with(crate::importer::HOST_ERROR_PREFIX)),
+        "{:?}",
+        summary.errors
+    );
 
     let db = crate::db::db_path();
     // Stars and tags so the preview shows them.
@@ -204,7 +257,7 @@ fn dump_preview_fixtures() {
     ).unwrap();
     drop(conn);
 
-    let all = search_sessions_inner(&db, "", "", "", &[], "", &[], "", "recent", 100, 0, false, &[], "").unwrap();
+    let all = search_sessions_inner(&db, &SessionFilters::default(), 100, 0).unwrap();
     let mut details = serde_json::Map::new();
     for session in all["sessions"].as_array().unwrap() {
         let id = session["id"].to_string();

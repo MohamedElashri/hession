@@ -14,7 +14,7 @@ ifeq ($(shell uname -s),Linux)
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help setup deps dev preview preview-fixtures build deb appimage rpm run test check lint icons brand \
+.PHONY: help setup deps dev preview preview-fixtures build deb appimage rpm run test check lint fmt fmt-check icons brand \
         docker-test release-check clean desktop-entry desktop-entry-remove
 
 help: ## Show this help
@@ -66,9 +66,15 @@ test: setup ## Run Rust tests and the frontend build
 check: setup ## Build the frontend and cargo check the backend (no tests)
 	npm run check
 
-lint: setup ## Clippy on the Rust code
+lint: setup ## Clippy on all Rust code; any warning fails
 	npm run build
-	cd $(CARGO_DIR) && $(CARGO) clippy --lib
+	cd $(CARGO_DIR) && $(CARGO) clippy --all-targets -- -D warnings
+
+fmt: ## Format the Rust code
+	cd $(CARGO_DIR) && cargo fmt
+
+fmt-check: ## Fail if the Rust code is not formatted
+	cd $(CARGO_DIR) && cargo fmt --check
 
 icons: setup ## Regenerate icons and brand assets from branding/
 	npm run icons

@@ -121,7 +121,11 @@ pub fn start_sync(agent_filter: Option<String>, mode: &str) -> bool {
                 Ok(summary) => {
                     state.phase = if summary.cancelled {
                         "cancelled".to_string()
-                    } else if summary.errors.iter().any(|e| !e.file.starts_with(crate::importer::HOST_ERROR_PREFIX)) {
+                    } else if summary
+                        .errors
+                        .iter()
+                        .any(|e| !e.file.starts_with(crate::importer::HOST_ERROR_PREFIX))
+                    {
                         // An unreachable host keeps its last mirror; not a failed sync.
                         "failed".to_string()
                     } else {
@@ -175,7 +179,8 @@ pub fn is_running() -> bool {
     lock_state().running
 }
 
-pub const ANALYTICS_PAUSED_MESSAGE: &str = "Analytics calculation deferred while session data is being updated.";
+pub const ANALYTICS_PAUSED_MESSAGE: &str =
+    "Analytics calculation deferred while session data is being updated.";
 
 /// Background metric writes yield to imports/maintenance; report reads continue.
 pub fn ensure_analytics_writer_available() -> Result<(), String> {

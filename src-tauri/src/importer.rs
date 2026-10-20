@@ -15,10 +15,10 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[path = "import_formats.rs"]
-mod formats;
 #[path = "import_cline.rs"]
 mod cline;
+#[path = "import_formats.rs"]
+mod formats;
 use formats::{ContentPart, RecordContext, ToolCall, ToolResult};
 
 pub(crate) fn cline_resume_environment(file: &Path) -> Vec<(String, String)> {
@@ -166,7 +166,9 @@ fn hermes_home(home: &Path) -> PathBuf {
 fn all_sources() -> Vec<Source> {
     let mut out = local_sources();
     for (family, kind, root, sub) in crate::remote::mirrored_roots() {
-        let Some(local) = out.iter().find(|s| s.family == family) else { continue };
+        let Some(local) = out.iter().find(|s| s.family == family) else {
+            continue;
+        };
         let (family, product) = (local.family, local.product);
         let kind = match kind.as_str() {
             "jsonl" => SourceKind::Jsonl,
@@ -183,7 +185,13 @@ fn all_sources() -> Vec<Source> {
             "brain" | "opencode.db" => "",
             _ => continue,
         };
-        out.push(Source { family, product, root, sub, kind });
+        out.push(Source {
+            family,
+            product,
+            root,
+            sub,
+            kind,
+        });
     }
     out
 }
@@ -333,7 +341,11 @@ fn walk_jsonl(dir: &Path, acc: &mut Vec<PathBuf>) {
 
 fn sort_by_mtime_desc(paths: &mut [PathBuf]) {
     paths.sort_by_cached_key(|p| {
-        std::cmp::Reverse(fs::metadata(p).and_then(|s| s.modified()).unwrap_or(UNIX_EPOCH))
+        std::cmp::Reverse(
+            fs::metadata(p)
+                .and_then(|s| s.modified())
+                .unwrap_or(UNIX_EPOCH),
+        )
     });
 }
 
@@ -545,6 +557,18 @@ fn first_iso(obj: &serde_json::Value, keys: &[&str]) -> Option<String> {
     None
 }
 
+/// Per-record fields extracted by [`normalize_record`]: kind, role, content,
+/// timestamp, external id, parent id, and turn id.
+type RecordFields = (
+    String,
+    String,
+    serde_json::Value,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 /// Normalize an agent record without truncating transcript content.
 /// Returns `None` for non-object lines.
 pub fn normalize_record(
@@ -556,15 +580,7 @@ pub fn normalize_record(
     let typ = first_str(obj, &["type"]).unwrap_or_else(|| "event".to_string());
     let null = serde_json::Value::Null;
 
-    let (kind, role, content, occurred, external, parent, turn): (
-        String,
-        String,
-        serde_json::Value,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) = match family {
+    let (kind, role, content, occurred, external, parent, turn): RecordFields = match family {
         "codex" => {
             let p = m.get("payload").unwrap_or(obj);
             let (k, r, c) = match typ.as_str() {
@@ -725,13 +741,21 @@ pub fn normalize_record(
             let mut role = first_str(obj, &["role"]).unwrap_or_else(|| {
                 match event.as_str() {
                     "task" | "user_feedback" | "user_feedback_diff" => "user",
-                    "text" | "reasoning" | "completion_result" | "followup" | "plan_mode_respond" | "tool" | "command" => "assistant",
+                    "text" | "reasoning" | "completion_result" | "followup"
+                    | "plan_mode_respond" | "tool" | "command" => "assistant",
                     _ => "",
-                }.into()
+                }
+                .into()
             });
-            let mut content = m.get("content").or_else(|| m.get("text")).cloned().unwrap_or(null.clone());
-            if role == "user" && content.as_array().is_some_and(|items| !items.is_empty()
-                && items.iter().all(|part| part["type"] == "tool_result"))
+            let mut content = m
+                .get("content")
+                .or_else(|| m.get("text"))
+                .cloned()
+                .unwrap_or(null.clone());
+            if role == "user"
+                && content.as_array().is_some_and(|items| {
+                    !items.is_empty() && items.iter().all(|part| part["type"] == "tool_result")
+                })
             {
                 role = "tool".into();
             }
@@ -739,15 +763,27 @@ pub fn normalize_record(
                 let input = if event == "command" {
                     serde_json::json!({"command": content})
                 } else {
-                    content.as_str().and_then(|s| serde_json::from_str::<Value>(s).ok())
+                    content
+                        .as_str()
+                        .and_then(|s| serde_json::from_str::<Value>(s).ok())
                         .unwrap_or_else(|| serde_json::json!({"text": content}))
                 };
-                let name = if event == "command" { "execute_command".into() }
-                    else { first_str(&input, &["tool", "name"]).unwrap_or_else(|| "tool".into()) };
+                let name = if event == "command" {
+                    "execute_command".into()
+                } else {
+                    first_str(&input, &["tool", "name"]).unwrap_or_else(|| "tool".into())
+                };
                 content = serde_json::json!([{"type": "tool_use", "name": name, "input": input}]);
             }
-            (event, role, content, first_iso(obj, &["ts", "timestamp"]),
-                first_str(obj, &["id", "ts"]), None, None)
+            (
+                event,
+                role,
+                content,
+                first_iso(obj, &["ts", "timestamp"]),
+                first_str(obj, &["id", "ts"]),
+                None,
+                None,
+            )
         }
         "antigravity" => {
             let role = if typ == "USER_INPUT" {
@@ -762,7 +798,9 @@ pub fn normalize_record(
                 role,
                 m.get("content").cloned().unwrap_or(null.clone()),
                 first_iso(obj, &["created_at", "timestamp"]),
-                m.get("step_index").and_then(Value::as_i64).map(|n| n.to_string()),
+                m.get("step_index")
+                    .and_then(Value::as_i64)
+                    .map(|n| n.to_string()),
                 None,
                 None,
             )
@@ -789,10 +827,12 @@ pub fn normalize_record(
         }
     };
 
-    let (parts, tools, results, mut context) = formats::record_details(family, obj, &content, &role);
+    let (parts, tools, results, mut context) =
+        formats::record_details(family, obj, &content, &role);
     if family == "cline" {
         context.model = first_str(&obj["modelInfo"], &["id", "modelId"]).or(context.model);
-        context.provider = first_str(&obj["modelInfo"], &["provider", "providerId"]).or(context.provider);
+        context.provider =
+            first_str(&obj["modelInfo"], &["provider", "providerId"]).or(context.provider);
     }
     let mut searchable = parts
         .iter()
@@ -810,7 +850,7 @@ pub fn normalize_record(
     let body = searchable.join("\n");
     let role = match role.as_str() {
         "toolResult" | "tool_result" => Some("tool".to_string()),
-        r if r.is_empty() => None,
+        "" => None,
         r => Some(r.to_string()),
     };
     Some(NormalizedRecord {
@@ -847,15 +887,14 @@ fn get_file_state(conn: &Connection, source_uri: &str) -> rusqlite::Result<Optio
         "SELECT ss.size, ss.mtime, (s.metrics_json IS NOT NULL)
          FROM sync_state ss LEFT JOIN session s ON s.source_uri = ss.source_uri
          WHERE ss.source_uri = ?1",
-    )?.query_row(params![source_uri],
-        |row| {
-            Ok(FileState {
-                size: row.get(0)?,
-                mtime: row.get(1)?,
-                has_metrics: row.get::<_, Option<i64>>(2)?.unwrap_or(0) != 0,
-            })
-        },
-    )
+    )?
+    .query_row(params![source_uri], |row| {
+        Ok(FileState {
+            size: row.get(0)?,
+            mtime: row.get(1)?,
+            has_metrics: row.get::<_, Option<i64>>(2)?.unwrap_or(0) != 0,
+        })
+    })
     .optional()
 }
 
@@ -955,13 +994,19 @@ struct ImportPricing {
 
 impl ImportPricing {
     fn new() -> Self {
-        Self { state: Arc::new(Mutex::new(crate::pricing::PricingState::new())), revision: None }
+        Self {
+            state: Arc::new(Mutex::new(crate::pricing::PricingState::new())),
+            revision: None,
+        }
     }
 
     fn refresh(&mut self, conn: &Connection) -> Result<(), String> {
         let revision = crate::analytics::pricing_revision();
         if self.revision != Some(revision) {
-            let mut pricing = self.state.lock().map_err(|_| "Could not lock import pricing")?;
+            let mut pricing = self
+                .state
+                .lock()
+                .map_err(|_| "Could not lock import pricing")?;
             crate::pricing::load_pricing_cache(conn, &mut pricing)?;
             self.revision = Some(revision);
         }
@@ -980,15 +1025,29 @@ fn commit_batch(
     sessions: Vec<formats::SessionData>,
 ) -> Result<Vec<usize>, String> {
     let _writer = crate::db::background_write();
-    if stop_requested() { return Err("Import stopped".into()); }
+    if stop_requested() {
+        return Err("Import stopped".into());
+    }
     pricing.refresh(conn)?;
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let mut counts = Vec::with_capacity(sessions.len());
     for data in sessions {
-        counts.push(commit_session(&tx, family, product, root, data, &pricing.state)?);
+        counts.push(commit_session(
+            &tx,
+            family,
+            product,
+            root,
+            data,
+            &pricing.state,
+        )?);
     }
-    if stop_requested() { return Err("Import stopped".into()); }
-    tx.commit().map_err(|e| format!("commit import batch: {e}"))?;
+    if stop_requested() {
+        return Err("Import stopped".into());
+    }
+    tx.commit()
+        .map_err(|e| format!("commit import batch: {e}"))?;
     crate::analytics::shared_state().clear_cache();
     Ok(counts)
 }
@@ -1008,22 +1067,21 @@ fn import_file_with_conn(
         .ok_or_else(|| format!("unknown family: {family}"))?;
 
     if file.extension().and_then(|e| e.to_str()) == Some("db") {
-        return formats::import_database(
-            conn,
-            source_uri,
+        let source = formats::DbSource {
+            uri: source_uri,
             family,
-            &file,
-            &product,
-            &agent_root,
-            force,
-            on_session,
-            pricing,
-        );
+            file: &file,
+            product: &product,
+            root: &agent_root,
+        };
+        return formats::import_database(conn, source, force, on_session, pricing);
     }
     if family == "cline" {
         let (size, mtime) = cline::fingerprint(&file)?;
-        if !force && get_file_state(conn, source_uri).map_err(|e| e.to_string())?
-            .is_some_and(|st| st.size == size && st.mtime == mtime && st.has_metrics)
+        if !force
+            && get_file_state(conn, source_uri)
+                .map_err(|e| e.to_string())?
+                .is_some_and(|st| st.size == size && st.mtime == mtime && st.has_metrics)
         {
             return Ok(0);
         }
@@ -1031,7 +1089,11 @@ fn import_file_with_conn(
         if cline::fingerprint(&file)? != (size, mtime) {
             return Err("Cline source changed while reading; retry sync".into());
         }
-        return Ok(commit_batch(conn, family, &product, &agent_root, pricing, vec![data])?.into_iter().sum());
+        return Ok(
+            commit_batch(conn, family, &product, &agent_root, pricing, vec![data])?
+                .into_iter()
+                .sum(),
+        );
     }
     let stat = fs::metadata(&file).map_err(|e| format!("stat {}: {e}", file.display()))?;
     if !stat.is_file() {
@@ -1065,7 +1127,11 @@ fn import_file_with_conn(
         return Ok(0);
     }
     let data = formats::session_data(family, source_uri, &file, values, size, mtime)?;
-    Ok(commit_batch(conn, family, &product, &agent_root, pricing, vec![data])?.into_iter().sum())
+    Ok(
+        commit_batch(conn, family, &product, &agent_root, pricing, vec![data])?
+            .into_iter()
+            .sum(),
+    )
 }
 
 fn source_mtime(stat: &fs::Metadata) -> f64 {
@@ -1102,8 +1168,11 @@ fn commit_session(
         .find_map(crate::remote::from_mirror)
         .map(|(host, _)| host);
     let workspace_id = match (cwd.as_deref(), host.as_deref()) {
-        (Some(c), Some(h)) => crate::db::get_or_create_workspace(conn, &format!("{h}:{c}")).map_err(|e| e.to_string())?,
-        (Some(c), None) => crate::db::get_or_create_workspace(conn, c).map_err(|e| e.to_string())?,
+        (Some(c), Some(h)) => crate::db::get_or_create_workspace(conn, &format!("{h}:{c}"))
+            .map_err(|e| e.to_string())?,
+        (Some(c), None) => {
+            crate::db::get_or_create_workspace(conn, c).map_err(|e| e.to_string())?
+        }
         (None, _) => None,
     };
     let title = first_str(&data.metadata, &["title"]).or_else(|| {
@@ -1112,7 +1181,8 @@ fn commit_session(
             .filter(|r| r.role.as_deref() == Some("user"))
             .map(|r| {
                 let text = if family == "antigravity" {
-                    r.body.split_once("<USER_REQUEST>")
+                    r.body
+                        .split_once("<USER_REQUEST>")
                         .and_then(|(_, tail)| tail.split_once("</USER_REQUEST>"))
                         .map(|(request, _)| request)
                         .unwrap_or(&r.body)
@@ -1167,9 +1237,16 @@ fn commit_session(
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    for table in ["file_activity", "tool_invocation", "session_context", "entry"] {
+    for table in [
+        "file_activity",
+        "tool_invocation",
+        "session_context",
+        "entry",
+    ] {
         conn.prepare_cached(&format!("DELETE FROM {table} WHERE session_id=?"))
-            .map_err(|e| e.to_string())?.execute([session_id]).map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
+            .execute([session_id])
+            .map_err(|e| e.to_string())?;
     }
     for (ordinal, record) in data.records.iter().enumerate() {
         if stop_requested() {
@@ -1348,11 +1425,7 @@ pub fn sync_all_with_progress(
                     failed.insert(fam.clone());
                     push_error(
                         &mut summary,
-                        &path
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or(&uri)
-                            .to_string(),
+                        path.file_name().and_then(|s| s.to_str()).unwrap_or(&uri),
                         e,
                     );
                     top_up_units(&mut summary, expected, sessions_reported, progress);
@@ -1374,11 +1447,7 @@ pub fn sync_all_with_progress(
                     failed.insert(fam.clone());
                     push_error(
                         &mut summary,
-                        &path
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or(&uri)
-                            .to_string(),
+                        path.file_name().and_then(|s| s.to_str()).unwrap_or(&uri),
                         e,
                     );
                 }
@@ -1449,6 +1518,10 @@ fn top_up_units(
 
 fn sort_by_mtime_desc_vec(files: &mut [(String, PathBuf)]) {
     files.sort_by_cached_key(|(_, path)| {
-        std::cmp::Reverse(fs::metadata(path).and_then(|s| s.modified()).unwrap_or(UNIX_EPOCH))
+        std::cmp::Reverse(
+            fs::metadata(path)
+                .and_then(|s| s.modified())
+                .unwrap_or(UNIX_EPOCH),
+        )
     });
 }

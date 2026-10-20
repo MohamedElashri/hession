@@ -61,23 +61,125 @@ pub struct FamilyDef {
 /// Model family definitions. The `test` patterns are implemented by
 /// [`family_matches`] (no regex crate needed).
 pub static FAMILY_DEFS: &[FamilyDef] = &[
-    FamilyDef { id: "claude-opus", display_name: "Claude Opus (3 / 4)", in_per_1m: 15.0, out_per_1m: 75.0, cache_per_1m: 1.5 },
-    FamilyDef { id: "claude-sonnet", display_name: "Claude 3.7 / 3.5 Sonnet", in_per_1m: 3.0, out_per_1m: 15.0, cache_per_1m: 0.3 },
-    FamilyDef { id: "claude-haiku", display_name: "Claude 3.5 Haiku", in_per_1m: 0.8, out_per_1m: 4.0, cache_per_1m: 0.08 },
-    FamilyDef { id: "o-series", display_name: "OpenAI o1 / o3", in_per_1m: 15.0, out_per_1m: 60.0, cache_per_1m: 3.75 },
-    FamilyDef { id: "o-mini", display_name: "OpenAI o1 / o3 Mini", in_per_1m: 1.1, out_per_1m: 4.4, cache_per_1m: 0.55 },
-    FamilyDef { id: "gpt-4o", display_name: "GPT-4o", in_per_1m: 2.5, out_per_1m: 10.0, cache_per_1m: 1.25 },
-    FamilyDef { id: "gpt-4o-mini", display_name: "GPT-4o Mini", in_per_1m: 0.15, out_per_1m: 0.6, cache_per_1m: 0.075 },
-    FamilyDef { id: "gpt-5-6", display_name: "GPT-5 / GPT-6 Series", in_per_1m: 2.0, out_per_1m: 8.0, cache_per_1m: 0.5 },
-    FamilyDef { id: "gpt-4-legacy", display_name: "GPT-4 Series", in_per_1m: 10.0, out_per_1m: 30.0, cache_per_1m: 2.5 },
-    FamilyDef { id: "gemini-flash", display_name: "Gemini 2.0 / 3.5 Flash", in_per_1m: 0.1, out_per_1m: 0.4, cache_per_1m: 0.025 },
-    FamilyDef { id: "gemini-pro", display_name: "Gemini 1.5 / 2.5 Pro", in_per_1m: 1.25, out_per_1m: 5.0, cache_per_1m: 0.3 },
-    FamilyDef { id: "deepseek", display_name: "DeepSeek V3 / R1 / Flash", in_per_1m: 0.14, out_per_1m: 0.28, cache_per_1m: 0.014 },
-    FamilyDef { id: "qwen", display_name: "Qwen 2.5 / 3 / 3.6", in_per_1m: 0.2, out_per_1m: 0.6, cache_per_1m: 0.05 },
-    FamilyDef { id: "muse-spark", display_name: "Muse Spark", in_per_1m: 0.5, out_per_1m: 1.5, cache_per_1m: 0.1 },
-    FamilyDef { id: "minimax-mimo", display_name: "MiniMax / MiMo / Step", in_per_1m: 0.4, out_per_1m: 1.2, cache_per_1m: 0.1 },
-    FamilyDef { id: "free-tier", display_name: "Free / Local Models", in_per_1m: 0.0, out_per_1m: 0.0, cache_per_1m: 0.0 },
-    FamilyDef { id: "standard", display_name: "Standard Coding Model", in_per_1m: 1.5, out_per_1m: 6.0, cache_per_1m: 0.375 },
+    FamilyDef {
+        id: "claude-opus",
+        display_name: "Claude Opus (3 / 4)",
+        in_per_1m: 15.0,
+        out_per_1m: 75.0,
+        cache_per_1m: 1.5,
+    },
+    FamilyDef {
+        id: "claude-sonnet",
+        display_name: "Claude 3.7 / 3.5 Sonnet",
+        in_per_1m: 3.0,
+        out_per_1m: 15.0,
+        cache_per_1m: 0.3,
+    },
+    FamilyDef {
+        id: "claude-haiku",
+        display_name: "Claude 3.5 Haiku",
+        in_per_1m: 0.8,
+        out_per_1m: 4.0,
+        cache_per_1m: 0.08,
+    },
+    FamilyDef {
+        id: "o-series",
+        display_name: "OpenAI o1 / o3",
+        in_per_1m: 15.0,
+        out_per_1m: 60.0,
+        cache_per_1m: 3.75,
+    },
+    FamilyDef {
+        id: "o-mini",
+        display_name: "OpenAI o1 / o3 Mini",
+        in_per_1m: 1.1,
+        out_per_1m: 4.4,
+        cache_per_1m: 0.55,
+    },
+    FamilyDef {
+        id: "gpt-4o",
+        display_name: "GPT-4o",
+        in_per_1m: 2.5,
+        out_per_1m: 10.0,
+        cache_per_1m: 1.25,
+    },
+    FamilyDef {
+        id: "gpt-4o-mini",
+        display_name: "GPT-4o Mini",
+        in_per_1m: 0.15,
+        out_per_1m: 0.6,
+        cache_per_1m: 0.075,
+    },
+    FamilyDef {
+        id: "gpt-5-6",
+        display_name: "GPT-5 / GPT-6 Series",
+        in_per_1m: 2.0,
+        out_per_1m: 8.0,
+        cache_per_1m: 0.5,
+    },
+    FamilyDef {
+        id: "gpt-4-legacy",
+        display_name: "GPT-4 Series",
+        in_per_1m: 10.0,
+        out_per_1m: 30.0,
+        cache_per_1m: 2.5,
+    },
+    FamilyDef {
+        id: "gemini-flash",
+        display_name: "Gemini 2.0 / 3.5 Flash",
+        in_per_1m: 0.1,
+        out_per_1m: 0.4,
+        cache_per_1m: 0.025,
+    },
+    FamilyDef {
+        id: "gemini-pro",
+        display_name: "Gemini 1.5 / 2.5 Pro",
+        in_per_1m: 1.25,
+        out_per_1m: 5.0,
+        cache_per_1m: 0.3,
+    },
+    FamilyDef {
+        id: "deepseek",
+        display_name: "DeepSeek V3 / R1 / Flash",
+        in_per_1m: 0.14,
+        out_per_1m: 0.28,
+        cache_per_1m: 0.014,
+    },
+    FamilyDef {
+        id: "qwen",
+        display_name: "Qwen 2.5 / 3 / 3.6",
+        in_per_1m: 0.2,
+        out_per_1m: 0.6,
+        cache_per_1m: 0.05,
+    },
+    FamilyDef {
+        id: "muse-spark",
+        display_name: "Muse Spark",
+        in_per_1m: 0.5,
+        out_per_1m: 1.5,
+        cache_per_1m: 0.1,
+    },
+    FamilyDef {
+        id: "minimax-mimo",
+        display_name: "MiniMax / MiMo / Step",
+        in_per_1m: 0.4,
+        out_per_1m: 1.2,
+        cache_per_1m: 0.1,
+    },
+    FamilyDef {
+        id: "free-tier",
+        display_name: "Free / Local Models",
+        in_per_1m: 0.0,
+        out_per_1m: 0.0,
+        cache_per_1m: 0.0,
+    },
+    FamilyDef {
+        id: "standard",
+        display_name: "Standard Coding Model",
+        in_per_1m: 1.5,
+        out_per_1m: 6.0,
+        cache_per_1m: 0.375,
+    },
 ];
 
 fn is_word_byte(b: u8) -> bool {
@@ -135,7 +237,10 @@ pub fn family_matches(family_id: &str, model: &str) -> bool {
             hay.contains("gpt-4o-mini")
                 || hay.contains("gpt-4.1-mini")
                 || (hay.contains("mini")
-                    && hay.find("mini").map(|p| hay[p..].contains("free")).unwrap_or(false))
+                    && hay
+                        .find("mini")
+                        .map(|p| hay[p..].contains("free"))
+                        .unwrap_or(false))
         }
         // /(gpt-5|gpt-6|sol|terra|luna|astra)/i
         "gpt-5-6" => {
@@ -319,8 +424,14 @@ pub fn build_pricing_index(raw: &Value) -> (Vec<LiveRecord>, HashMap<String, usi
             let Some(cost) = model.get("cost") else {
                 continue;
             };
-            let input = cost.get("input").and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
-            let output = cost.get("output").and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
+            let input = cost
+                .get("input")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(f64::NAN);
+            let output = cost
+                .get("output")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(f64::NAN);
             if !input.is_finite() || !output.is_finite() {
                 continue;
             }
@@ -343,7 +454,11 @@ pub fn build_pricing_index(raw: &Value) -> (Vec<LiveRecord>, HashMap<String, usi
                     .to_string(),
                 input,
                 output,
-                cache_read: if cache_read.is_finite() { cache_read } else { 0.0 },
+                cache_read: if cache_read.is_finite() {
+                    cache_read
+                } else {
+                    0.0
+                },
                 last_updated: model
                     .get("last_updated")
                     .and_then(|v| v.as_str())
@@ -424,7 +539,8 @@ fn find_family_record(state: &PricingState, family_id: &str) -> Option<usize> {
     // Test the model id first so key-style patterns (e.g. gpt-4o vs -mini,
     // mini.*free, sol/terra/luna) can't over-match display names; only fall
     // back to name/family text when no id matches.
-    let hays: [Box<dyn Fn(&LiveRecord) -> String>; 2] = [
+    type Haystack = Box<dyn Fn(&LiveRecord) -> String>;
+    let hays: [Haystack; 2] = [
         Box::new(|r| r.model_id.clone()),
         Box::new(|r| format!("{} {} {}", r.model_id, r.name, r.family)),
     ];
@@ -436,7 +552,9 @@ fn find_family_record(state: &PricingState, family_id: &str) -> Option<usize> {
             }
             let better = match best {
                 None => true,
-                Some(cur) => compare_family(&state.live_records, i, cur) == std::cmp::Ordering::Less,
+                Some(cur) => {
+                    compare_family(&state.live_records, i, cur) == std::cmp::Ordering::Less
+                }
             };
             if better {
                 best = Some(i);
@@ -555,7 +673,11 @@ fn reload_overrides_memory(state: &mut PricingState, rows: Vec<OverrideRow>) {
                 .custom_specific_by_key
                 .insert(format!("{provider_lower}/{model_lower}"), i);
         }
-        state.custom_by_model.entry(model_lower).or_default().push(i);
+        state
+            .custom_by_model
+            .entry(model_lower)
+            .or_default()
+            .push(i);
     }
     state.match_memo.clear();
 }
@@ -622,19 +744,6 @@ pub fn find_custom_override(state: &PricingState, model_key: &str) -> Option<usi
     sorted.into_iter().next()
 }
 
-fn to_pricing(
-    id: String,
-    display_name: String,
-    in_per_1m: f64,
-    out_per_1m: f64,
-    cache_per_1m: f64,
-    source: String,
-    matched_model: Option<String>,
-    provider: Option<String>,
-) -> ModelPricing {
-    ModelPricing { id, display_name, in_per_1m, out_per_1m, cache_per_1m, source, matched_model, provider }
-}
-
 /// Resolve pricing for a session model key: user override first, then the
 /// live match, then the built-in fallback table.
 pub fn get_model_pricing(state: &mut PricingState, model_key: &str) -> ModelPricing {
@@ -646,20 +755,37 @@ pub fn get_model_pricing(state: &mut PricingState, model_key: &str) -> ModelPric
         } else {
             format!("{}/{}", row.provider, row.model_id)
         };
-        let name = if row.display_name.is_empty() { label.clone() } else { row.display_name.clone() };
-        return to_pricing(
-            format!("custom:{label}"),
-            name,
-            row.in_per_1m,
-            row.out_per_1m,
-            row.cache_per_1m,
-            PRICING_SOURCE_CUSTOM.to_string(),
-            Some(label),
-            if row.provider.is_empty() { None } else { Some(row.provider) },
-        );
+        let name = if row.display_name.is_empty() {
+            label.clone()
+        } else {
+            row.display_name.clone()
+        };
+        return ModelPricing {
+            id: format!("custom:{label}"),
+            display_name: name,
+            in_per_1m: row.in_per_1m,
+            out_per_1m: row.out_per_1m,
+            cache_per_1m: row.cache_per_1m,
+            source: PRICING_SOURCE_CUSTOM.to_string(),
+            matched_model: Some(label),
+            provider: if row.provider.is_empty() {
+                None
+            } else {
+                Some(row.provider)
+            },
+        };
     }
     if family_matches("free-tier", &key) {
-        return to_pricing("free-tier".into(), "Free / Local Models".into(), 0.0, 0.0, 0.0, "fallback".into(), None, None);
+        return ModelPricing {
+            id: "free-tier".into(),
+            display_name: "Free / Local Models".into(),
+            in_per_1m: 0.0,
+            out_per_1m: 0.0,
+            cache_per_1m: 0.0,
+            source: "fallback".into(),
+            matched_model: None,
+            provider: None,
+        };
     }
     if !state.live_records.is_empty() {
         let hit = match state.match_memo.get(&key) {
@@ -672,32 +798,32 @@ pub fn get_model_pricing(state: &mut PricingState, model_key: &str) -> ModelPric
         };
         if let Some(hit) = hit {
             let r = state.live_records[hit].clone();
-            return to_pricing(
-                format!("live:{}/{}", r.provider, r.model_id),
-                r.name.clone(),
-                r.input,
-                r.output,
-                r.cache_read,
-                PRICING_SOURCE_LABEL.to_string(),
-                Some(format!("{}/{}", r.provider, r.model_id)),
-                Some(r.provider),
-            );
+            return ModelPricing {
+                id: format!("live:{}/{}", r.provider, r.model_id),
+                display_name: r.name.clone(),
+                in_per_1m: r.input,
+                out_per_1m: r.output,
+                cache_per_1m: r.cache_read,
+                source: PRICING_SOURCE_LABEL.to_string(),
+                matched_model: Some(format!("{}/{}", r.provider, r.model_id)),
+                provider: Some(r.provider),
+            };
         }
     }
     let fam = FAMILY_DEFS
         .iter()
         .find(|f| family_matches(f.id, &key))
         .unwrap_or(&FAMILY_DEFS[FAMILY_DEFS.len() - 1]);
-    to_pricing(
-        fam.id.to_string(),
-        fam.display_name.to_string(),
-        fam.in_per_1m,
-        fam.out_per_1m,
-        fam.cache_per_1m,
-        "fallback".to_string(),
-        None,
-        None,
-    )
+    ModelPricing {
+        id: fam.id.to_string(),
+        display_name: fam.display_name.to_string(),
+        in_per_1m: fam.in_per_1m,
+        out_per_1m: fam.out_per_1m,
+        cache_per_1m: fam.cache_per_1m,
+        source: "fallback".to_string(),
+        matched_model: None,
+        provider: None,
+    }
 }
 
 /// Prorate cached input tokens at the cache rate. Rounded to 4 decimals.
@@ -720,8 +846,13 @@ pub fn calculate_cost(
 /// Estimate token counts from text length when `token_usage_json` is missing.
 /// Input from user + 0.7×tool chars, output from
 /// assistant chars, at [`TOKEN_CHARS_PER_TOKEN`] chars per token.
-pub fn estimate_tokens_from_chars(user_chars: i64, assistant_chars: i64, tool_chars: i64) -> (i64, i64) {
-    let input = ((user_chars as f64 + tool_chars as f64 * 0.7) / TOKEN_CHARS_PER_TOKEN).round() as i64;
+pub fn estimate_tokens_from_chars(
+    user_chars: i64,
+    assistant_chars: i64,
+    tool_chars: i64,
+) -> (i64, i64) {
+    let input =
+        ((user_chars as f64 + tool_chars as f64 * 0.7) / TOKEN_CHARS_PER_TOKEN).round() as i64;
     let output = (assistant_chars as f64 / TOKEN_CHARS_PER_TOKEN).round() as i64;
     (input.max(0), output.max(0))
 }
@@ -732,15 +863,17 @@ pub fn get_pricing_reference(state: &PricingState) -> Vec<PricingReferenceRow> {
     FAMILY_DEFS
         .iter()
         .map(|fam| {
-            let live = if state.live_records.is_empty() || fam.id == "standard" || fam.id == "free-tier" {
-                None
-            } else {
-                find_family_record(state, fam.id)
-            };
+            let live =
+                if state.live_records.is_empty() || fam.id == "standard" || fam.id == "free-tier" {
+                    None
+                } else {
+                    find_family_record(state, fam.id)
+                };
             if let Some(idx) = live {
                 let rec = &state.live_records[idx];
-                let overridden = find_custom_override(state, &format!("{}/{}", rec.provider, rec.model_id))
-                    .or_else(|| find_custom_override(state, &rec.model_id));
+                let overridden =
+                    find_custom_override(state, &format!("{}/{}", rec.provider, rec.model_id))
+                        .or_else(|| find_custom_override(state, &rec.model_id));
                 if let Some(oi) = overridden {
                     let row = &state.custom_overrides[oi];
                     let label = if row.provider.is_empty() {
@@ -918,14 +1051,24 @@ pub fn list_price_overrides(
 }
 
 fn invalid_override_message(input: &Value) -> Option<String> {
-    let model = input.get("modelId").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let model = input
+        .get("modelId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if model.is_empty() {
         return Some("Invalid override: model id is required.".to_string());
     }
     if model.len() > 200 {
         return Some("Invalid override: model id is too long (max 200 chars).".to_string());
     }
-    let provider = input.get("provider").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let provider = input
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if provider.len() > 100 {
         return Some("Invalid override: provider is too long (max 100 chars).".to_string());
     }
@@ -940,7 +1083,11 @@ fn invalid_override_message(input: &Value) -> Option<String> {
             _ => false,
         };
         let num = if missing {
-            if required { f64::NAN } else { 0.0 }
+            if required {
+                f64::NAN
+            } else {
+                0.0
+            }
         } else {
             input.get(key).and_then(|v| v.as_f64()).unwrap_or(f64::NAN)
         };
@@ -948,7 +1095,9 @@ fn invalid_override_message(input: &Value) -> Option<String> {
             return Some(format!("Invalid override: {label} must be a number >= 0."));
         }
         if num > 100000.0 {
-            return Some(format!("Invalid override: {label} looks unreasonable (max 100000)."));
+            return Some(format!(
+                "Invalid override: {label} looks unreasonable (max 100000)."
+            ));
         }
     }
     None
@@ -964,14 +1113,39 @@ pub fn upsert_price_override(
     if let Some(err) = invalid_override_message(input) {
         return Err(err);
     }
-    let provider = input.get("provider").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
-    let model_id = input.get("modelId").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let provider = input
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    let model_id = input
+        .get("modelId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let display_name = {
-        let d = input.get("displayName").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-        if d.is_empty() { model_id.clone() } else { d }
+        let d = input
+            .get("displayName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if d.is_empty() {
+            model_id.clone()
+        } else {
+            d
+        }
     };
-    let in_per_1m = input.get("inPer1M").and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
-    let out_per_1m = input.get("outPer1M").and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
+    let in_per_1m = input
+        .get("inPer1M")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(f64::NAN);
+    let out_per_1m = input
+        .get("outPer1M")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(f64::NAN);
     let cache_per_1m = match input.get("cachePer1M") {
         None | Some(Value::Null) => 0.0,
         Some(Value::String(s)) if s.is_empty() => 0.0,
@@ -985,7 +1159,14 @@ pub fn upsert_price_override(
            display_name = excluded.display_name, in_per_1m = excluded.in_per_1m,
            out_per_1m = excluded.out_per_1m, cache_per_1m = excluded.cache_per_1m,
            updated_at = CURRENT_TIMESTAMP",
-        rusqlite::params![provider, model_id, display_name, in_per_1m, out_per_1m, cache_per_1m],
+        rusqlite::params![
+            provider,
+            model_id,
+            display_name,
+            in_per_1m,
+            out_per_1m,
+            cache_per_1m
+        ],
     )
     .map_err(|e| format!("Could not save the price override: {e}"))?;
     load_pricing_cache(db, state)?;
@@ -997,7 +1178,9 @@ pub fn upsert_price_override(
             Ok(PriceOverride {
                 provider: row.get(0)?,
                 model_id: row.get(1)?,
-                display_name: row.get::<_, Option<String>>(2)?.unwrap_or_else(|| model_id.clone()),
+                display_name: row
+                    .get::<_, Option<String>>(2)?
+                    .unwrap_or_else(|| model_id.clone()),
                 in_per_1m: row.get(3)?,
                 out_per_1m: row.get(4)?,
                 cache_per_1m: row.get(5)?,
@@ -1016,14 +1199,33 @@ pub fn delete_price_overrides(
     state: &mut PricingState,
     scope: &Value,
 ) -> Result<i64, String> {
-    let provider = scope.get("provider").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
-    let model_id = scope.get("modelId").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let provider = scope
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    let model_id = scope
+        .get("modelId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let deleted = if !provider.is_empty() && !model_id.is_empty() {
-        db.execute("DELETE FROM model_price_overrides WHERE provider = ?1 AND model_id = ?2", rusqlite::params![provider, model_id])
+        db.execute(
+            "DELETE FROM model_price_overrides WHERE provider = ?1 AND model_id = ?2",
+            rusqlite::params![provider, model_id],
+        )
     } else if !provider.is_empty() {
-        db.execute("DELETE FROM model_price_overrides WHERE provider = ?1", [provider])
+        db.execute(
+            "DELETE FROM model_price_overrides WHERE provider = ?1",
+            [provider],
+        )
     } else if !model_id.is_empty() {
-        db.execute("DELETE FROM model_price_overrides WHERE lower(model_id) = lower(?1)", [model_id])
+        db.execute(
+            "DELETE FROM model_price_overrides WHERE lower(model_id) = lower(?1)",
+            [model_id],
+        )
     } else {
         db.execute("DELETE FROM model_price_overrides", [])
     }

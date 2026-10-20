@@ -9,7 +9,9 @@ fn main() {
         ("slug", "BRAND_SLUG"),
         ("envPrefix", "BRAND_ENV_PREFIX"),
     ] {
-        let value = brand[key].as_str().unwrap_or_else(|| panic!("brand.json: missing \"{key}\""));
+        let value = brand[key]
+            .as_str()
+            .unwrap_or_else(|| panic!("brand.json: missing \"{key}\""));
         println!("cargo:rustc-env={var}={value}");
     }
     tauri_build::build()

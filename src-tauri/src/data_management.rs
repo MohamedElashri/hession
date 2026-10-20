@@ -175,7 +175,7 @@ fn selection(conn: &Connection, f: &DataFilters) -> Result<Vec<i64>, String> {
             .replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_");
-        values.extend(std::iter::repeat(Value::Text(format!("%{escaped}%"))).take(3));
+        values.extend(std::iter::repeat_n(Value::Text(format!("%{escaped}%")), 3));
     }
     let condition = if conditions.is_empty() {
         String::new()
@@ -294,8 +294,8 @@ fn different_file(file: &Path, database: &Path) -> Result<(), String> {
             .join(file.file_name().ok_or("Invalid file path")?)
     };
     if candidate == existing_db
-        || candidate == PathBuf::from(format!("{}-wal", existing_db.display()))
-        || candidate == PathBuf::from(format!("{}-shm", existing_db.display()))
+        || candidate.as_os_str() == format!("{}-wal", existing_db.display()).as_str()
+        || candidate.as_os_str() == format!("{}-shm", existing_db.display()).as_str()
     {
         return Err(
             "Choose a backup file separate from the active database and its journal files.".into(),
@@ -314,9 +314,10 @@ fn open_backup(path: &Path, destination: &Connection) -> Result<Connection, Stri
     let app_id: i64 = sql(source.query_row("PRAGMA application_id", [], |r| r.get(0)))?;
     let version: i64 = sql(source.query_row("PRAGMA user_version", [], |r| r.get(0)))?;
     if app_id != BACKUP_ID || version != BACKUP_VERSION {
-        return Err(
-            format!("Choose a SQLite backup created by {}’s Manage saved data export.", crate::brand::NAME),
-        );
+        return Err(format!(
+            "Choose a SQLite backup created by {}’s Manage saved data export.",
+            crate::brand::NAME
+        ));
     }
     for table in TABLES
         .iter()
@@ -473,11 +474,15 @@ fn matching_session(
         [] => Ok(None), [id] => Ok(Some(*id)), _ => Err(format!("More than one saved session matches {external}. Resolve the duplicate before importing.")),
     }
 }
+/// Incoming rows paired with the saved session they replace, plus a token
+/// that detects changes between preview and import.
+type ImportPlan = (Vec<(Row, Option<i64>)>, String);
+
 fn import_plan(
     destination: &Connection,
     source: &Connection,
     ids: &[i64],
-) -> Result<(Vec<(Row, Option<i64>)>, String), String> {
+) -> Result<ImportPlan, String> {
     let selected = rows(
         source,
         "session",

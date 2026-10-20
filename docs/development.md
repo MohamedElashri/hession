@@ -30,7 +30,8 @@ directly, set `PKG_CONFIG=/usr/bin/pkg-config` yourself.
 | `make desktop-entry` | Per-user launcher and dock icon for `make dev` (Linux) |
 | `make test` | Frontend build and Rust tests |
 | `make docker-test` | The same tests in a container, with no system libraries needed |
-| `make check` / `make lint` | Frontend build + `cargo check` / clippy |
+| `make check` / `make lint` | Frontend build + `cargo check` / clippy (warnings fail) |
+| `make fmt` / `make fmt-check` | Format the Rust code / fail if it isn't formatted |
 | `make build` | Installers for this OS; `make deb`, `appimage`, `rpm` for one format |
 | `make run` | Run the release binary |
 | `make icons` | Regenerate icons and brand assets from `branding/` |

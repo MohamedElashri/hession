@@ -330,11 +330,14 @@ pub(super) fn session_data(
                     .iter()
                     .find(|task| first_str(task, &["id"]).as_deref() == Some(&id))
                 {
-                    metadata.as_object_mut().ok_or("Invalid Cline task metadata")?.extend(
-                        task.as_object()
-                            .ok_or("Invalid Cline task metadata")?
-                            .clone(),
-                    );
+                    metadata
+                        .as_object_mut()
+                        .ok_or("Invalid Cline task metadata")?
+                        .extend(
+                            task.as_object()
+                                .ok_or("Invalid Cline task metadata")?
+                                .clone(),
+                        );
                     break;
                 }
             }

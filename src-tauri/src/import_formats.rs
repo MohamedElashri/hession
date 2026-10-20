@@ -246,13 +246,12 @@ pub(super) fn record_details(
     if matches!(
         item_type.as_str(),
         "function_call" | "custom_tool_call" | "tool_call" | "tool_use" | "toolcall"
-    ) {
-        if !parts.iter().any(|p| p.kind == "tool_call") {
-            let mut call = item.clone();
-            // Codex custom tools use a string input; preserve it verbatim.
-            call["type"] = json!("tool_call");
-            content_parts(&call, &mut parts);
-        }
+    ) && !parts.iter().any(|p| p.kind == "tool_call")
+    {
+        let mut call = item.clone();
+        // Codex custom tools use a string input; preserve it verbatim.
+        call["type"] = json!("tool_call");
+        content_parts(&call, &mut parts);
     }
     if let Some(calls) = source.get("tool_calls").and_then(Value::as_array) {
         for call in calls {
@@ -531,14 +530,20 @@ fn reported_usage(family: &str, values: &[Value]) -> Option<Value> {
 fn antigravity_metadata(file: &Path) -> Result<Map<String, Value>, String> {
     let mut metadata = Map::new();
     let Some(conversation) = file.ancestors().find(|path| {
-        path.parent().and_then(Path::file_name).is_some_and(|name| name == "brain")
+        path.parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "brain")
     }) else {
         return Ok(metadata);
     };
-    let id = conversation.file_name().and_then(|name| name.to_str())
+    let id = conversation
+        .file_name()
+        .and_then(|name| name.to_str())
         .ok_or("Invalid Antigravity conversation directory")?;
     metadata.insert("id".into(), json!(id));
-    let root = conversation.parent().and_then(Path::parent)
+    let root = conversation
+        .parent()
+        .and_then(Path::parent)
         .ok_or("Invalid Antigravity source root")?;
     let db = root.join("conversation_summaries.db");
     if !db.is_file() {
@@ -546,21 +551,27 @@ fn antigravity_metadata(file: &Path) -> Result<Map<String, Value>, String> {
     }
     let source = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("open Antigravity summaries: {e}"))?;
-    source.busy_timeout(std::time::Duration::from_secs(5))
+    source
+        .busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|e| e.to_string())?;
-    let summary: Option<(String, String)> = source.query_row(
-        "SELECT title,workspace_uris FROM conversation_summaries WHERE conversation_id=?1",
-        [id], |row| Ok((row.get(0)?, row.get(1)?)),
-    ).optional().map_err(|e| format!("read Antigravity title: {e}"))?;
+    let summary: Option<(String, String)> = source
+        .query_row(
+            "SELECT title,workspace_uris FROM conversation_summaries WHERE conversation_id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("read Antigravity title: {e}"))?;
     if let Some((title, workspaces)) = summary {
         if !title.trim().is_empty() {
             metadata.insert("title".into(), json!(title));
         }
         let uris: Vec<String> = serde_json::from_str(&workspaces)
             .map_err(|e| format!("read Antigravity workspaces: {e}"))?;
-        if let Some(path) = uris.iter().find_map(|uri| {
-            reqwest::Url::parse(uri).ok()?.to_file_path().ok()
-        }) {
+        if let Some(path) = uris
+            .iter()
+            .find_map(|uri| reqwest::Url::parse(uri).ok()?.to_file_path().ok())
+        {
             metadata.insert("cwd".into(), json!(path.to_string_lossy()));
         }
     }
@@ -720,9 +731,22 @@ fn insert_paths(
                 {
                     if let Some(path) = value.as_str().filter(|s| !s.is_empty()) {
                         let name = tool_name.to_lowercase();
-                        let action = if ["write", "edit", "patch", "delete", "create_file", "str_replace"].iter().any(|part| name.contains(part)) {
+                        let action = if [
+                            "write",
+                            "edit",
+                            "patch",
+                            "delete",
+                            "create_file",
+                            "str_replace",
+                        ]
+                        .iter()
+                        .any(|part| name.contains(part))
+                        {
                             "write"
-                        } else if ["read", "view", "open_file"].iter().any(|part| name.contains(part)) {
+                        } else if ["read", "view", "open_file"]
+                            .iter()
+                            .any(|part| name.contains(part))
+                        {
                             "read"
                         } else {
                             "unknown"
@@ -740,11 +764,22 @@ fn insert_paths(
                 insert_paths(conn, session_id, entry_id, tool_id, item, tool_name)?;
             }
         }
-        Value::String(patch) if tool_name.to_lowercase().contains("patch") && patch.contains("*** Begin Patch") => {
+        Value::String(patch)
+            if tool_name.to_lowercase().contains("patch") && patch.contains("*** Begin Patch") =>
+        {
             // Patch text supplies explicit targets even without a structured path argument.
             for line in patch.lines() {
-                for prefix in ["*** Update File: ", "*** Add File: ", "*** Delete File: ", "*** Move to: "] {
-                    if let Some(path) = line.strip_prefix(prefix).map(str::trim).filter(|p| !p.is_empty()) {
+                for prefix in [
+                    "*** Update File: ",
+                    "*** Add File: ",
+                    "*** Delete File: ",
+                    "*** Move to: ",
+                ] {
+                    if let Some(path) = line
+                        .strip_prefix(prefix)
+                        .map(str::trim)
+                        .filter(|p| !p.is_empty())
+                    {
                         conn.prepare_cached("INSERT INTO file_activity(session_id,entry_id,tool_invocation_id,path,action,evidence,confidence)
                             VALUES (?1,?2,?3,?4,'write','patch target','reported')").map_err(|e| e.to_string())?
                             .execute(params![session_id,entry_id,tool_id,path]).map_err(|e| e.to_string())?;
@@ -777,7 +812,11 @@ pub(super) fn session_metrics(conn: &Connection, id: i64) -> Result<Value, Strin
 
 /// Convert SQLite rows dynamically so optional columns can vary by version.
 /// SQL identifiers are fixed by the adapters, never supplied by a source row.
-pub(super) fn rows(conn: &Connection, sql: &str, session: Option<&str>) -> Result<Vec<Value>, String> {
+pub(super) fn rows(
+    conn: &Connection,
+    sql: &str,
+    session: Option<&str>,
+) -> Result<Vec<Value>, String> {
     let mut stmt = conn
         .prepare_cached(sql)
         .map_err(|e| format!("read source schema: {e}"))?;
@@ -900,17 +939,31 @@ fn session_fresh(
         .is_some_and(|st| st.size == count && st.mtime == stamp && st.has_metrics))
 }
 
+/// A SQLite session store being imported: its source URI, agent family, file,
+/// and the product name and root recorded for the agent.
+#[derive(Clone, Copy)]
+pub(super) struct DbSource<'a> {
+    pub uri: &'a str,
+    pub family: &'a str,
+    pub file: &'a Path,
+    pub product: &'a str,
+    pub root: &'a str,
+}
+
 pub(super) fn import_database(
     dest: &mut Connection,
-    uri: &str,
-    family: &str,
-    file: &Path,
-    product: &str,
-    root: &str,
+    source: DbSource<'_>,
     force: bool,
     mut on_session: Option<&mut dyn FnMut(usize)>,
     pricing: &mut super::ImportPricing,
 ) -> Result<usize, String> {
+    let DbSource {
+        uri,
+        family,
+        file,
+        product,
+        root,
+    } = source;
     if !matches!(family, "opencode" | "hermes") {
         return Err(format!("Unsupported database source: {family}"));
     }
@@ -955,20 +1008,30 @@ pub(super) fn import_database(
             }
             continue;
         }
-        let messages = rows(&snapshot, if family == "opencode" {
-            "SELECT * FROM message WHERE session_id=? ORDER BY time_created,id"
-        } else {
-            "SELECT * FROM messages WHERE session_id=? ORDER BY id"
-        }, Some(&id))?;
+        let messages = rows(
+            &snapshot,
+            if family == "opencode" {
+                "SELECT * FROM message WHERE session_id=? ORDER BY time_created,id"
+            } else {
+                "SELECT * FROM messages WHERE session_id=? ORDER BY id"
+            },
+            Some(&id),
+        )?;
         let parts = if family == "opencode" {
-            rows(&snapshot,
+            rows(
+                &snapshot,
                 "SELECT p.* FROM part p JOIN message m ON m.id=p.message_id
-                 WHERE m.session_id=? ORDER BY p.time_created,p.id", Some(&id))?
-        } else { Vec::new() };
+                 WHERE m.session_id=? ORDER BY p.time_created,p.id",
+                Some(&id),
+            )?
+        } else {
+            Vec::new()
+        };
         let data = if family == "opencode" {
             let mut by_message: HashMap<String, Vec<Value>> = HashMap::new();
             for part in parts {
-                let message_id = first_str(&part, &["message_id"]).ok_or("Invalid OpenCode part message ID")?;
+                let message_id =
+                    first_str(&part, &["message_id"]).ok_or("Invalid OpenCode part message ID")?;
                 by_message.entry(message_id).or_default().push(part);
             }
             opencode_session(uri, session, &id, messages, by_message)?
@@ -979,13 +1042,23 @@ pub(super) fn import_database(
         batch.push(data);
         // Parse sources outside the writer gate. Bound both memory and time;
         // waiting interactive writes also trigger an early batch boundary.
-        if batch.len() >= 16 || batch_records >= 5000
+        if batch.len() >= 16
+            || batch_records >= 5000
             || batch_start.elapsed() >= std::time::Duration::from_millis(40)
             || crate::db::user_write_pending()
         {
-            for count in super::commit_batch(dest, family, product, root, pricing, std::mem::take(&mut batch))? {
+            for count in super::commit_batch(
+                dest,
+                family,
+                product,
+                root,
+                pricing,
+                std::mem::take(&mut batch),
+            )? {
                 total += count;
-                if let Some(report) = on_session.as_deref_mut() { report(count); }
+                if let Some(report) = on_session.as_deref_mut() {
+                    report(count);
+                }
             }
             batch_records = 0;
             batch_start = std::time::Instant::now();
@@ -998,11 +1071,15 @@ pub(super) fn import_database(
     if !batch.is_empty() {
         for count in super::commit_batch(dest, family, product, root, pricing, batch)? {
             total += count;
-            if let Some(report) = on_session.as_deref_mut() { report(count); }
+            if let Some(report) = on_session.as_deref_mut() {
+                report(count);
+            }
         }
     }
     let _writer = crate::db::background_write();
-    if stop_requested() { return Err("Import stopped".into()); }
+    if stop_requested() {
+        return Err("Import stopped".into());
+    }
     super::set_file_state(dest, uri, size, mtime).map_err(|e| e.to_string())?;
     Ok(total)
 }

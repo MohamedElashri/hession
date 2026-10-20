@@ -66,7 +66,8 @@ fn save_hosts(hosts: &[HostConfig]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("Could not create data directory: {e}"))?;
     }
-    let text = serde_json::to_string_pretty(&json!({ "hosts": hosts })).map_err(|e| e.to_string())?;
+    let text =
+        serde_json::to_string_pretty(&json!({ "hosts": hosts })).map_err(|e| e.to_string())?;
     let temp = path.with_extension("json.tmp");
     fs::write(&temp, text).map_err(|e| format!("Could not save remote hosts: {e}"))?;
     fs::rename(&temp, &path).map_err(|e| format!("Could not save remote hosts: {e}"))
@@ -80,7 +81,9 @@ pub fn validate_host(name: &str) -> Result<(), String> {
         && !name.starts_with('-')
         && name != "."
         && name != ".."
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-@:[]".contains(c));
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-@:[]".contains(c));
     if ok {
         Ok(())
     } else {
@@ -91,7 +94,13 @@ pub fn validate_host(name: &str) -> Result<(), String> {
 /// Filesystem-safe directory name for a host's mirror.
 fn host_dir_name(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || "._-@".contains(c) { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "._-@".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -174,9 +183,18 @@ exit 0
 "#;
 
 /// Run a child to completion, killing it on timeout or a sync stop request.
-fn run_bounded(mut cmd: Command, input: Option<&str>, timeout: Duration, what: &str) -> Result<String, String> {
+fn run_bounded(
+    mut cmd: Command,
+    input: Option<&str>,
+    timeout: Duration,
+    what: &str,
+) -> Result<String, String> {
     let mut child = cmd
-        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -224,7 +242,12 @@ fn run_bounded(mut cmd: Command, input: Option<&str>, timeout: Duration, what: &
     if status.success() {
         Ok(stdout)
     } else {
-        let detail = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+        let detail = stderr
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim();
         Err(match status.code() {
             Some(255) => format!("SSH connection failed: {detail}"),
             Some(code) => format!("{what} exited with status {code}: {detail}"),
@@ -252,14 +275,27 @@ fn parse_probe(host: &str, text: &str) -> Result<(Probe, bool), String> {
                 family: family.to_string(),
                 kind: kind.to_string(),
                 root: root.trim_end_matches('/').to_string(),
-                sub: if *sub == "." { String::new() } else { sub.to_string() },
+                sub: if *sub == "." {
+                    String::new()
+                } else {
+                    sub.to_string()
+                },
             }),
             // Login banners and shell noise are ignored.
             _ => {}
         }
     }
-    let home = home.ok_or("The host did not report a home directory (is its login shell POSIX-compatible?)")?;
-    Ok((Probe { host: host.to_string(), home, roots, synced_at: None }, has_rsync))
+    let home = home
+        .ok_or("The host did not report a home directory (is its login shell POSIX-compatible?)")?;
+    Ok((
+        Probe {
+            host: host.to_string(),
+            home,
+            roots,
+            synced_at: None,
+        },
+        has_rsync,
+    ))
 }
 
 fn probe(host: &str) -> Result<(Probe, bool), String> {
@@ -302,7 +338,11 @@ fn save_probe(probe: &Probe) -> Result<(), String> {
 /// missing ones are skipped (`--ignore-missing-args`).
 fn transfer_paths(root: &RemoteRoot) -> Vec<String> {
     let r = &root.root;
-    let with_sidecars = |db: String| ["", "-wal", "-shm", "-journal"].map(|s| format!("{db}{s}")).to_vec();
+    let with_sidecars = |db: String| {
+        ["", "-wal", "-shm", "-journal"]
+            .map(|s| format!("{db}{s}"))
+            .to_vec()
+    };
     match root.kind.as_str() {
         "opencode" => with_sidecars(format!("{r}/opencode.db")),
         "hermes" => {
@@ -343,13 +383,25 @@ fn mirror_host(host: &str) -> Result<Probe, String> {
     let paths: BTreeSet<String> = probe.roots.iter().flat_map(transfer_paths).collect();
     if !paths.is_empty() {
         let mut cmd = Command::new("rsync");
-        cmd.args(["-a", "-R", "-z", "-s", "--prune-empty-dirs", "--ignore-missing-args", "--timeout=120"])
-            .args(RSYNC_FILTERS)
-            .arg("-e")
-            .arg(format!("ssh {}", SSH_OPTS.join(" ")));
+        cmd.args([
+            "-a",
+            "-R",
+            "-z",
+            "-s",
+            "--prune-empty-dirs",
+            "--ignore-missing-args",
+            "--timeout=120",
+        ])
+        .args(RSYNC_FILTERS)
+        .arg("-e")
+        .arg(format!("ssh {}", SSH_OPTS.join(" ")));
         for (i, path) in paths.iter().enumerate() {
             // `host:/a :/b` pulls several paths over one connection.
-            cmd.arg(if i == 0 { format!("{host}:{path}") } else { format!(":{path}") });
+            cmd.arg(if i == 0 {
+                format!("{host}:{path}")
+            } else {
+                format!(":{path}")
+            });
         }
         cmd.arg(format!("{}/", dest.display()));
         if let Err(error) = run_bounded(cmd, None, MIRROR_TIMEOUT, "rsync") {
@@ -368,14 +420,23 @@ fn mirror_host(host: &str) -> Result<Probe, String> {
 /// Mirror every enabled host in parallel. Returns `(host, error)` failures;
 /// a failed host keeps its previous mirror so its sessions stay importable.
 pub fn mirror_enabled_hosts(on_host_done: &(dyn Fn(&str) + Sync)) -> Vec<(String, String)> {
-    let hosts: Vec<String> = load_hosts().into_iter().filter(|h| h.enabled).map(|h| h.name).collect();
+    let hosts: Vec<String> = load_hosts()
+        .into_iter()
+        .filter(|h| h.enabled)
+        .map(|h| h.name)
+        .collect();
     if hosts.is_empty() {
         return Vec::new();
     }
     if which("ssh").is_none() || which("rsync").is_none() {
         return hosts
             .into_iter()
-            .map(|h| (h, "Remote sync needs `ssh` and `rsync` installed on this computer.".to_string()))
+            .map(|h| {
+                (
+                    h,
+                    "Remote sync needs `ssh` and `rsync` installed on this computer.".to_string(),
+                )
+            })
             .collect();
     }
     std::thread::scope(|scope| {
@@ -389,7 +450,10 @@ pub fn mirror_enabled_hosts(on_host_done: &(dyn Fn(&str) + Sync)) -> Vec<(String
                 })
             })
             .collect();
-        workers.into_iter().filter_map(|w| w.join().ok().flatten()).collect()
+        workers
+            .into_iter()
+            .filter_map(|w| w.join().ok().flatten())
+            .collect()
     })
 }
 
@@ -398,10 +462,17 @@ pub fn mirror_enabled_hosts(on_host_done: &(dyn Fn(&str) + Sync)) -> Vec<(String
 pub fn mirrored_roots() -> Vec<(String, String, PathBuf, String)> {
     let mut out = Vec::new();
     for host in load_hosts().into_iter().filter(|h| h.enabled) {
-        let Some(probe) = load_probe(&host.name) else { continue };
+        let Some(probe) = load_probe(&host.name) else {
+            continue;
+        };
         for root in probe.roots {
             if root.kind != "aux" {
-                out.push((root.family, root.kind, to_mirror(&host.name, &root.root), root.sub));
+                out.push((
+                    root.family,
+                    root.kind,
+                    to_mirror(&host.name, &root.root),
+                    root.sub,
+                ));
             }
         }
     }
@@ -431,7 +502,12 @@ pub fn shell_quote(s: &str) -> String {
 /// interactive shell so PATH additions from rc files (nvm, conda, ~/.local/bin)
 /// apply; csh variants get `-c` only because they reject `-l` with other flags.
 /// Afterwards a login shell keeps the session open in the project directory.
-pub fn resume_command(cwd: &str, env: &[(String, String)], binary: &str, args: &[String]) -> String {
+pub fn resume_command(
+    cwd: &str,
+    env: &[(String, String)],
+    binary: &str,
+    args: &[String],
+) -> String {
     let mut agent = shell_quote(binary);
     for arg in args {
         agent.push(' ');
@@ -455,7 +531,10 @@ pub fn resume_command(cwd: &str, env: &[(String, String)], binary: &str, args: &
 /// cannot be reached.
 pub fn remote_command_exists(host: &str, binary: &str) -> Result<bool, String> {
     validate_host(host)?;
-    let lookup = format!("command -v {0} >/dev/null 2>&1 || which {0} >/dev/null 2>&1", shell_quote(binary));
+    let lookup = format!(
+        "command -v {0} >/dev/null 2>&1 || which {0} >/dev/null 2>&1",
+        shell_quote(binary)
+    );
     let script = format!(
         "c={}; case \"${{SHELL:-}}\" in '') sh -c \"$c\";; *csh) \"$SHELL\" -c \"$c\";; *) \"$SHELL\" -lic \"$c\" </dev/null;; esac && echo __FOUND__; exit 0\n",
         shell_quote(&lookup)
@@ -504,16 +583,24 @@ fn read_ssh_config(path: &Path, out: &mut Vec<String>, seen: &mut BTreeSet<PathB
     if depth > 8 || !seen.insert(path.to_path_buf()) {
         return;
     }
-    let Ok(text) = fs::read_to_string(path) else { return };
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
     for line in text.lines() {
         let line = line.trim();
         let (key, rest) = match line.split_once(|c: char| c.is_whitespace() || c == '=') {
-            Some((k, r)) => (k, r.trim_start_matches(|c: char| c.is_whitespace() || c == '=')),
+            Some((k, r)) => (
+                k,
+                r.trim_start_matches(|c: char| c.is_whitespace() || c == '='),
+            ),
             None => continue,
         };
         if key.eq_ignore_ascii_case("Host") {
             for name in rest.split_whitespace() {
-                if !name.contains(['*', '?', '!']) && validate_host(name).is_ok() && !out.iter().any(|h| h == name) {
+                if !name.contains(['*', '?', '!'])
+                    && validate_host(name).is_ok()
+                    && !out.iter().any(|h| h == name)
+                {
                     out.push(name.to_string());
                 }
             }
@@ -541,7 +628,9 @@ fn glob_simple(path: &Path) -> Vec<PathBuf> {
         return vec![path.to_path_buf()];
     }
     let (prefix, suffix) = name.split_once('*').unwrap_or((name, ""));
-    let Some(dir) = path.parent() else { return Vec::new() };
+    let Some(dir) = path.parent() else {
+        return Vec::new();
+    };
     let mut files: Vec<PathBuf> = fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -563,9 +652,13 @@ fn vscode_state_dbs() -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
     let base = home().join("Library/Application Support");
     #[cfg(windows)]
-    let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| home().join("AppData/Roaming"));
+    let base = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join("AppData/Roaming"));
     #[cfg(not(any(target_os = "macos", windows)))]
-    let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config"));
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".config"));
     ["Code", "Code - Insiders", "VSCodium", "Cursor", "Windsurf"]
         .iter()
         .map(|editor| base.join(editor).join("User/globalStorage/state.vscdb"))
@@ -577,7 +670,9 @@ fn vscode_state_dbs() -> Vec<PathBuf> {
 fn vscode_recent_hosts() -> Vec<String> {
     let mut out = Vec::new();
     for db in vscode_state_dbs() {
-        let Ok(conn) = rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        let Ok(conn) =
+            rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        else {
             continue;
         };
         let _ = conn.busy_timeout(Duration::from_secs(2));
@@ -602,7 +697,10 @@ fn remote_hosts_in(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for marker in ["ssh-remote%2B", "ssh-remote+"] {
         for chunk in text.split(marker).skip(1) {
-            let authority: String = chunk.chars().take_while(|c| !"/\"?#".contains(*c)).collect();
+            let authority: String = chunk
+                .chars()
+                .take_while(|c| !"/\"?#".contains(*c))
+                .collect();
             if let Some(host) = decode_remote_authority(&percent_decode(&authority)) {
                 if validate_host(&host).is_ok() && !out.contains(&host) {
                     out.push(host);
@@ -616,7 +714,11 @@ fn remote_hosts_in(text: &str) -> Vec<String> {
 /// Remote-SSH writes plain hosts, or hex-encoded JSON `{"hostName": …}`
 /// when the destination contains characters invalid in a URI authority.
 fn decode_remote_authority(authority: &str) -> Option<String> {
-    if authority.len() > 2 && authority.len() % 2 == 0 && authority.starts_with("7b") && authority.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if authority.len() > 2
+        && authority.len() % 2 == 0
+        && authority.starts_with("7b")
+        && authority.bytes().all(|b| b.is_ascii_hexdigit())
+    {
         let bytes: Option<Vec<u8>> = (0..authority.len())
             .step_by(2)
             .map(|i| u8::from_str_radix(&authority[i..i + 2], 16).ok())
@@ -738,7 +840,10 @@ mod tests {
         assert_eq!(probe.roots.len(), 2);
         assert_eq!(probe.roots[1].root, "/home/u/.hermes");
         assert_eq!(probe.roots[1].sub, "");
-        assert_eq!(transfer_paths(&probe.roots[0]), vec!["/home/u/.claude/projects"]);
+        assert_eq!(
+            transfer_paths(&probe.roots[0]),
+            vec!["/home/u/.claude/projects"]
+        );
     }
 
     #[test]
@@ -758,7 +863,10 @@ mod tests {
         let text = format!(
             r#"{{"entries":[{{"folderUri":"vscode-remote://ssh-remote%2Bdevbox/home/u/p"}},{{"folderUri":"vscode-remote://ssh-remote%2B{hex}/srv"}},{{"folderUri":"file:///tmp"}}]}}"#
         );
-        assert_eq!(remote_hosts_in(&text), vec!["devbox".to_string(), "me@box.example".to_string()]);
+        assert_eq!(
+            remote_hosts_in(&text),
+            vec!["devbox".to_string(), "me@box.example".to_string()]
+        );
     }
 
     #[test]
@@ -775,7 +883,11 @@ mod tests {
         let work = dir.path().join("my 'proj' $x");
         fs::create_dir(&work).unwrap();
         let agent = dir.path().join("agent");
-        fs::write(&agent, "#!/bin/sh\nprintf '%s|%s|%s\\n' \"$PWD\" \"$1\" \"$HERMES_HOME\"\n").unwrap();
+        fs::write(
+            &agent,
+            "#!/bin/sh\nprintf '%s|%s|%s\\n' \"$PWD\" \"$1\" \"$HERMES_HOME\"\n",
+        )
+        .unwrap();
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).unwrap();
         let line = resume_command(
@@ -793,7 +905,10 @@ mod tests {
             .output()
             .unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
-        assert!(text.contains(&format!("{}|--resume=a'b|/h o", work.display())), "{text}");
+        assert!(
+            text.contains(&format!("{}|--resume=a'b|/h o", work.display())),
+            "{text}"
+        );
     }
 
     /// End to end: probe, rsync mirror, and import through a stand-in `ssh`
@@ -809,8 +924,12 @@ mod tests {
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
-        let (bin, local_home, remote_home, data) =
-            (tmp.path().join("bin"), tmp.path().join("local"), tmp.path().join("remote"), tmp.path().join("data"));
+        let (bin, local_home, remote_home, data) = (
+            tmp.path().join("bin"),
+            tmp.path().join("local"),
+            tmp.path().join("remote"),
+            tmp.path().join("data"),
+        );
         for dir in [&bin, &local_home, &data] {
             fs::create_dir_all(dir).unwrap();
         }
@@ -834,13 +953,21 @@ mod tests {
         // Not an importer format; must not be mirrored.
         fs::write(project.join("notes.txt"), "skip").unwrap();
 
-        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
         std::env::set_var("PATH", path);
         std::env::set_var("HOME", &local_home);
         std::env::set_var("FAKE_REMOTE_HOME", &remote_home);
         std::env::set_var(crate::brand::env_var("DATA_DIR"), &data);
 
-        set_remote_hosts(vec![HostConfig { name: "box".into(), enabled: true }]).unwrap();
+        set_remote_hosts(vec![HostConfig {
+            name: "box".into(),
+            enabled: true,
+        }])
+        .unwrap();
         let sync = || crate::importer::sync_all_with_progress(None, "incremental", &|_, _, _| {});
         let summary = sync();
         assert!(summary.errors.is_empty(), "{:?}", summary.errors);
@@ -849,7 +976,10 @@ mod tests {
         let mirrored = to_mirror("box", remote_file.to_str().unwrap());
         assert!(mirrored.is_file());
         assert!(!to_mirror("box", project.join("notes.txt").to_str().unwrap()).exists());
-        assert_eq!(from_mirror(&mirrored), Some(("box".into(), remote_file.display().to_string())));
+        assert_eq!(
+            from_mirror(&mirrored),
+            Some(("box".into(), remote_file.display().to_string()))
+        );
 
         let conn = crate::db::open_db(&crate::db::db_path()).unwrap();
         let (host, cwd, workspace): (String, String, String) = conn
@@ -859,7 +989,10 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
-        assert_eq!((host.as_str(), cwd.as_str(), workspace.as_str()), ("box", "/work/proj", "box:/work/proj"));
+        assert_eq!(
+            (host.as_str(), cwd.as_str(), workspace.as_str()),
+            ("box", "/work/proj", "box:/work/proj")
+        );
 
         // Unchanged remote files are skipped on the next sync.
         let again = sync();
@@ -869,6 +1002,9 @@ mod tests {
 
     #[test]
     fn builds_vscode_uri() {
-        assert_eq!(vscode_folder_uri("devbox", "/home/u/my proj"), "vscode-remote://ssh-remote+devbox/home/u/my%20proj");
+        assert_eq!(
+            vscode_folder_uri("devbox", "/home/u/my proj"),
+            "vscode-remote://ssh-remote+devbox/home/u/my%20proj"
+        );
     }
 }

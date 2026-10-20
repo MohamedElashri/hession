@@ -141,8 +141,7 @@ fn validate_resume_key(key: &str) -> Result<(), String> {
 fn looks_like_uuid(s: &str) -> bool {
     let t = s.trim();
     (8..=64).contains(&t.len())
-        && t.chars()
-            .all(|c| c.is_ascii_hexdigit() || c == '-')
+        && t.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
         && t.contains('-')
 }
 
@@ -151,9 +150,10 @@ fn posix_quote(s: &str) -> String {
     if s.is_empty() {
         return "''".to_string();
     }
-    let safe = s
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '@' | '%' | '+' | '=' | ':' | ',' | '.' | '/' | '-'));
+    let safe = s.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '_' | '@' | '%' | '+' | '=' | ':' | ',' | '.' | '/' | '-')
+    });
     if safe {
         return s.to_string();
     }
@@ -325,7 +325,7 @@ fn login_shell_path() -> Option<String> {
             continue;
         }
         let text = String::from_utf8_lossy(&out.stdout).to_string();
-        if let Some(line) = text.lines().filter(|l| !l.trim().is_empty()).last() {
+        if let Some(line) = text.lines().rfind(|l| !l.trim().is_empty()) {
             let line = line.trim();
             if line.contains('/') && line.len() < 32 * 1024 {
                 return Some(line.to_string());
@@ -425,12 +425,7 @@ fn augmented_path() -> String {
                 // Only add tool dirs that exist, except the system defaults
                 // which are required for `cd`/`exec` even in odd environments.
                 let s = d.to_string_lossy().to_string();
-                if d.is_dir()
-                    || matches!(
-                        s.as_str(),
-                        "/usr/bin" | "/bin" | "/usr/sbin" | "/sbin"
-                    )
-                {
+                if d.is_dir() || matches!(s.as_str(), "/usr/bin" | "/bin" | "/usr/sbin" | "/sbin") {
                     push(&s);
                 }
             }
@@ -564,7 +559,9 @@ fn is_terminal_available(id: &str) -> bool {
                         || PathBuf::from("/usr/bin/osascript").is_file())
             }
             "ghostty" => mac_app_dir("Ghostty.app").is_some(),
-            "wezterm" => mac_bundle_cli("WezTerm.app", "Contents/MacOS/wezterm", "wezterm").is_some(),
+            "wezterm" => {
+                mac_bundle_cli("WezTerm.app", "Contents/MacOS/wezterm", "wezterm").is_some()
+            }
             "kitty" => mac_bundle_cli("kitty.app", "Contents/MacOS/kitty", "kitty").is_some(),
             "alacritty" => {
                 mac_bundle_cli("Alacritty.app", "Contents/MacOS/alacritty", "alacritty").is_some()
@@ -621,64 +618,47 @@ fn linux_terminal_candidates() -> Vec<String> {
 /// Every choice shown in the picker, with live availability.
 fn available_terminals() -> Vec<Value> {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    {
-        return KNOWN_TERMINAL_IDS
-            .iter()
-            .map(|id| {
-                json!({
-                    "id": id,
-                    "label": terminal_label(id),
-                    "available": is_terminal_available(id),
-                })
-            })
-            .collect();
-    }
+    let choices: Vec<(String, bool)> = KNOWN_TERMINAL_IDS
+        .iter()
+        .map(|id| (id.to_string(), is_terminal_available(id)))
+        .collect();
+    // Linux candidates are only the emulators found on PATH.
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        return linux_terminal_candidates()
-            .into_iter()
-            .map(|id| {
-                json!({
-                    "id": id,
-                    "label": terminal_label(&id),
-                    "available": true,
-                })
-            })
-            .collect();
-    }
+    let choices: Vec<(String, bool)> = linux_terminal_candidates()
+        .into_iter()
+        .map(|id| (id, true))
+        .collect();
+    choices
+        .into_iter()
+        .map(|(id, available)| json!({ "id": id, "label": terminal_label(&id), "available": available }))
+        .collect()
 }
 
 fn first_available_terminal() -> Option<String> {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    {
-        return KNOWN_TERMINAL_IDS
-            .iter()
-            .find(|id| is_terminal_available(id))
-            .map(|s| s.to_string());
-    }
+    let first = KNOWN_TERMINAL_IDS
+        .iter()
+        .find(|id| is_terminal_available(id))
+        .map(|s| s.to_string());
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        return linux_terminal_candidates().into_iter().next();
-    }
+    let first = linux_terminal_candidates().into_iter().next();
+    first
 }
 
 /// Built-in default when nothing is saved.
 fn default_terminal_id() -> String {
     #[cfg(target_os = "macos")]
-    {
-        return "terminal".to_string();
-    }
+    let id = "terminal".to_string();
     #[cfg(target_os = "windows")]
-    {
-        if is_terminal_available("wt") {
-            return "wt".to_string();
-        }
-        return "cmd".to_string();
+    let id = if is_terminal_available("wt") {
+        "wt"
+    } else {
+        "cmd"
     }
+    .to_string();
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        return first_available_terminal().unwrap_or_default();
-    }
+    let id = first_available_terminal().unwrap_or_default();
+    id
 }
 
 fn terminal_pref_path() -> PathBuf {
@@ -727,7 +707,8 @@ fn save_terminal_pref(id: &str) -> Result<(), String> {
     validate_terminal_id(id)?;
     let id = id.trim().to_string();
     let dir = db::data_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not save terminal preference: {e}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Could not save terminal preference: {e}"))?;
     let path = terminal_pref_path();
     std::fs::write(&path, format!("{{\"terminal\":{}}}", json!(id)))
         .map_err(|e| format!("Could not save terminal preference: {e}"))?;
@@ -876,7 +857,10 @@ fn derive_resume_key(
     let ext = external_id.trim().to_string();
     match family {
         "cline" => {
-            if !source_file.file_name().is_some_and(|n| n.to_string_lossy().ends_with(".messages.json")) {
+            if !source_file
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().ends_with(".messages.json"))
+            {
                 return Err("Resume this Cline task from History in its original editor. The current Cline CLI resumes SDK sessions, not editor task files.".into());
             }
             validate_resume_key(&ext)?;
@@ -918,7 +902,10 @@ fn derive_resume_key(
             Ok(uuid)
         }
         "antigravity" => {
-            if looks_like_uuid(&ext) || (!ext.is_empty() && !ext.eq_ignore_ascii_case("transcript") && !ext.starts_with('-'))
+            if looks_like_uuid(&ext)
+                || (!ext.is_empty()
+                    && !ext.eq_ignore_ascii_case("transcript")
+                    && !ext.starts_with('-'))
             {
                 // Prefer stored id, but it must be UUID-shaped when present.
                 if looks_like_uuid(&ext) {
@@ -1032,13 +1019,30 @@ fn build_plan(row: &SessionRow) -> Result<ResumePlan, String> {
             .unwrap_or_else(|| source_file.clone()),
         None => source_file.clone(),
     };
-    let resume_key = derive_resume_key(&row.family, &row.external_id, &key_file, fragment.as_deref())?;
+    let resume_key = derive_resume_key(
+        &row.family,
+        &row.external_id,
+        &key_file,
+        fragment.as_deref(),
+    )?;
 
     // Binary + args per family (verbatim flag dialects).
     let (binary, args, profile): (String, Vec<String>, Option<String>) = match row.family.as_str() {
-        "cline" => ("cline".into(), vec!["--id".into(), resume_key.clone(), "--tui".into()], None),
-        "codex" => ("codex".into(), vec!["resume".into(), resume_key.clone()], None),
-        "claude" => ("claude".into(), vec!["--resume".into(), resume_key.clone()], None),
+        "cline" => (
+            "cline".into(),
+            vec!["--id".into(), resume_key.clone(), "--tui".into()],
+            None,
+        ),
+        "codex" => (
+            "codex".into(),
+            vec!["resume".into(), resume_key.clone()],
+            None,
+        ),
+        "claude" => (
+            "claude".into(),
+            vec!["--resume".into(), resume_key.clone()],
+            None,
+        ),
         "opencode" => (
             "opencode".into(),
             vec!["--session".into(), resume_key.clone()],
@@ -1064,13 +1068,21 @@ fn build_plan(row: &SessionRow) -> Result<ResumePlan, String> {
             };
             ("hermes".into(), a, prof)
         }
-        "pi" => ("pi".into(), vec!["--session".into(), resume_key.clone()], None),
+        "pi" => (
+            "pi".into(),
+            vec!["--session".into(), resume_key.clone()],
+            None,
+        ),
         "commandcode" => (
             "commandcode".into(),
             vec!["--session".into(), resume_key.clone()],
             None,
         ),
-        "muse" => ("muse".into(), vec!["resume".into(), resume_key.clone()], None),
+        "muse" => (
+            "muse".into(),
+            vec!["resume".into(), resume_key.clone()],
+            None,
+        ),
         "antigravity" => (
             "agy".into(),
             vec!["--conversation".into(), resume_key.clone()],
@@ -1080,7 +1092,16 @@ fn build_plan(row: &SessionRow) -> Result<ResumePlan, String> {
     };
 
     if let Some(host) = &row.host {
-        return Ok(remote_plan(row, host, &key_file, binary, args, profile, source_file, resume_key));
+        return Ok(remote_plan(
+            row,
+            host,
+            &key_file,
+            binary,
+            args,
+            profile,
+            source_file,
+            resume_key,
+        ));
     }
 
     // Working directory: recorded cwd → workspace → HOME.
@@ -1213,10 +1234,15 @@ fn remote_plan(
     // Workspace paths of remote sessions are stored as `host:/path`.
     let project = row.project.trim();
     let project = project.strip_prefix(&format!("{host}:")).unwrap_or(project);
-    let cwd = Some(row.cwd.trim()).filter(|c| !c.is_empty()).unwrap_or(project);
+    let cwd = Some(row.cwd.trim())
+        .filter(|c| !c.is_empty())
+        .unwrap_or(project);
     let mut warnings = Vec::new();
     if cwd.is_empty() {
-        warnings.push("Workspace folder is unknown; the session opens in the home directory on the host.".to_string());
+        warnings.push(
+            "Workspace folder is unknown; the session opens in the home directory on the host."
+                .to_string(),
+        );
     }
     // Only Hermes is pinned explicitly: for the other agents, the host's own
     // environment already points at the store the session was mirrored from.
@@ -1262,7 +1288,10 @@ fn remote_plan(
         source_file,
         resume_key,
         profile,
-        remote: Some(RemoteTarget { host: host.to_string(), agent }),
+        remote: Some(RemoteTarget {
+            host: host.to_string(),
+            agent,
+        }),
     }
 }
 
@@ -1303,7 +1332,10 @@ fn preflight(db_path: &Path, id: i64, terminal: Option<&str>) -> Result<Value, S
         }
         match crate::remote::remote_command_exists(&remote.host, &remote.agent) {
             Ok(true) => {}
-            Ok(false) => warnings.push(format!("`{}` was not found on {}.", remote.agent, remote.host)),
+            Ok(false) => warnings.push(format!(
+                "`{}` was not found on {}.",
+                remote.agent, remote.host
+            )),
             Err(error) => warnings.push(format!("Could not check {}: {error}", remote.host)),
         }
     } else if let Some(ref p) = cli_path {
@@ -1494,10 +1526,7 @@ fn spawn_iterm(plan: &ResumePlan, cli_path: &Path) -> Result<String, String> {
         return Ok("iTerm2".to_string());
     }
     let err = String::from_utf8_lossy(&out.stderr).to_string();
-    if err.contains("-1743")
-        || err.contains("Not authorised")
-        || err.contains("not authorized")
-    {
+    if err.contains("-1743") || err.contains("Not authorised") || err.contains("not authorized") {
         return Err("iTerm2 blocked automation. Allow it in System Settings → Privacy & Security → Automation, then try again.".to_string());
     }
     let short: String = err.trim().chars().take(200).collect();
@@ -1705,7 +1734,7 @@ fn spawn_plan(plan: &ResumePlan, cli_path: &Path, terminal_id: &str) -> Result<S
         cmd.env("PATH", augmented_path());
         cmd.spawn()
             .map_err(|e| format!("Could not open {label}: {e}"))?;
-        return Ok(label);
+        Ok(label)
     }
 }
 
@@ -1752,7 +1781,11 @@ fn resume_inner(db_path: &Path, id: i64, terminal: Option<&str>) -> Result<Value
 
     // The CLI exists but may not run (deleted conda env, missing node, …).
     // Fail here with the underlying error instead of opening a dead terminal.
-    let cli_error = if plan.remote.is_none() { cli_check(&cli).1 } else { None };
+    let cli_error = if plan.remote.is_none() {
+        cli_check(&cli).1
+    } else {
+        None
+    };
     if let Some(err) = cli_error {
         return Ok(json!({
             "ok": false,
@@ -1830,10 +1863,15 @@ pub async fn get_resume_info(
     terminal: Option<String>,
 ) -> Result<Value, String> {
     let db_path = db_path_of(&state)?;
-    let session_id: i64 = id.trim().parse().map_err(|_| "Session not found".to_string())?;
-    tauri::async_runtime::spawn_blocking(move || preflight(&db_path, session_id, terminal.as_deref()))
-        .await
-        .map_err(|e| format!("get_resume_info failed: {e}"))?
+    let session_id: i64 = id
+        .trim()
+        .parse()
+        .map_err(|_| "Session not found".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        preflight(&db_path, session_id, terminal.as_deref())
+    })
+    .await
+    .map_err(|e| format!("get_resume_info failed: {e}"))?
 }
 
 /// Launch the native CLI in a visible terminal.
@@ -1844,10 +1882,15 @@ pub async fn resume_session(
     terminal: Option<String>,
 ) -> Result<Value, String> {
     let db_path = db_path_of(&state)?;
-    let session_id: i64 = id.trim().parse().map_err(|_| "Session not found".to_string())?;
-    tauri::async_runtime::spawn_blocking(move || resume_inner(&db_path, session_id, terminal.as_deref()))
-        .await
-        .map_err(|e| format!("resume_session failed: {e}"))?
+    let session_id: i64 = id
+        .trim()
+        .parse()
+        .map_err(|_| "Session not found".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        resume_inner(&db_path, session_id, terminal.as_deref())
+    })
+    .await
+    .map_err(|e| format!("resume_session failed: {e}"))?
 }
 
 /// Terminal choices with live availability for the picker.
@@ -1892,7 +1935,9 @@ fn open_in_editor_inner(db_path: &Path, id: i64) -> Result<Value, String> {
     let target = match &row.host {
         Some(host) => {
             let project = project.strip_prefix(&format!("{host}:")).unwrap_or(project);
-            let folder = Some(row.cwd.trim()).filter(|c| !c.is_empty()).unwrap_or(project);
+            let folder = Some(row.cwd.trim())
+                .filter(|c| !c.is_empty())
+                .unwrap_or(project);
             if folder.is_empty() {
                 return Err("This session has no recorded workspace folder.".into());
             }
@@ -1901,7 +1946,9 @@ fn open_in_editor_inner(db_path: &Path, id: i64) -> Result<Value, String> {
             uri
         }
         None => {
-            let folder = Some(row.cwd.trim()).filter(|c| !c.is_empty()).unwrap_or(project);
+            let folder = Some(row.cwd.trim())
+                .filter(|c| !c.is_empty())
+                .unwrap_or(project);
             if folder.is_empty() || !Path::new(folder).is_dir() {
                 return Err("The session's workspace folder is unavailable.".into());
             }
@@ -1909,7 +1956,8 @@ fn open_in_editor_inner(db_path: &Path, id: i64) -> Result<Value, String> {
             folder.to_string()
         }
     };
-    cmd.spawn().map_err(|e| format!("Could not start VS Code: {e}"))?;
+    cmd.spawn()
+        .map_err(|e| format!("Could not start VS Code: {e}"))?;
     Ok(json!({ "ok": true, "target": target }))
 }
 
@@ -1918,7 +1966,10 @@ fn open_in_editor_inner(db_path: &Path, id: i64) -> Result<Value, String> {
 #[tauri::command]
 pub async fn open_in_editor(state: State<'_, AppState>, id: String) -> Result<Value, String> {
     let db_path = db_path_of(&state)?;
-    let session_id: i64 = id.trim().parse().map_err(|_| "Session not found".to_string())?;
+    let session_id: i64 = id
+        .trim()
+        .parse()
+        .map_err(|_| "Session not found".to_string())?;
     tauri::async_runtime::spawn_blocking(move || open_in_editor_inner(&db_path, session_id))
         .await
         .map_err(|e| format!("open_in_editor failed: {e}"))?

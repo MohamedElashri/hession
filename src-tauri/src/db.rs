@@ -112,7 +112,12 @@ pub(crate) fn background_write() -> WriteGuard {
 }
 
 pub(crate) fn user_write_pending() -> bool {
-    writers().0.lock().unwrap_or_else(|e| e.into_inner()).users_waiting > 0
+    writers()
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .users_waiting
+        > 0
 }
 
 /// Imported/derived data can be rebuilt. NORMAL avoids an fsync per source;
@@ -295,7 +300,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     conn.pragma_update(None, "wal_autocheckpoint", 4096)
         .map_err(|e| sqlite_err("configure WAL checkpoint interval", e))?;
     let key = fs::canonicalize(path)?;
-    if !initialized.contains_key(&key) {
+    if let std::collections::hash_map::Entry::Vacant(slot) = initialized.entry(key) {
         let mode: String = conn
             .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
             .map_err(|e| sqlite_err("enable WAL", e))?;
@@ -311,7 +316,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
         keepalive
             .query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0))
             .map_err(|e| sqlite_err("attach idle WAL connection", e))?;
-        initialized.insert(key, (database_identity(path)?, keepalive));
+        slot.insert((database_identity(path)?, keepalive));
     }
     drop(initialized);
 
