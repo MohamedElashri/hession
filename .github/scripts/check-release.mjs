@@ -38,10 +38,6 @@ if (tag !== undefined) {
 const suffixes = [
   'darwin-aarch64-dmg.dmg',
   'darwin-x64-dmg.dmg',
-  'windows-x64-nsis-setup.exe',
-  'windows-x64-msi.msi',
-  'windows-arm64-nsis-setup.exe',
-  'windows-arm64-msi.msi',
   'linux-amd64-appimage.AppImage',
   'linux-amd64-deb.deb',
   'linux-x86_64-rpm.rpm',
@@ -63,7 +59,7 @@ if (assetsPath) {
       `Release is missing a complete installer: ${name}`,
     );
   }
-  console.log('All twelve release installers are uploaded and nonempty.');
+  console.log('All eight release installers are uploaded and nonempty.');
 }
 
 console.log(`Release metadata matches v${version}.`);

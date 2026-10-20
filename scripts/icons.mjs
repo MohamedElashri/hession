@@ -1,12 +1,12 @@
 // Regenerates every derived brand asset from branding/*.svg and brand.json:
-//   src-tauri/icons/*        platform app icons (tauri icon, from branding/icon.svg)
+//   src-tauri/icons/*        Linux and macOS app icons (tauri icon, from branding/icon.svg)
 //   public/logo.svg          boot-screen logo (copy of branding/icon.svg)
 //   public/favicon.svg       small-size icon (copy of branding/favicon.svg)
 //   public/favicon-32x32.png, public/icon.png
 //   branding/wordmark*.svg   mark + name, dark and light (from brand.json wordmark)
 //   branding/social.svg/png  1280×640 repository social preview
 // Run after editing branding/ or renaming in brand.json: `npm run icons`.
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,6 +27,13 @@ const FONT = "Inter, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif";
 
 console.log('icons: platform icons');
 tauri('icon', 'branding/icon.svg', '-o', 'src-tauri/icons');
+// `tauri icon` also writes Windows, Android and iOS icons; only Linux and macOS ship.
+for (const path of ['icon.ico', 'StoreLogo.png', 'android', 'ios']) {
+  rmSync(at(`src-tauri/icons/${path}`), { recursive: true, force: true });
+}
+for (const file of readdirSync(at('src-tauri/icons'))) {
+  if (/^Square\d+x\d+Logo\.png$/.test(file)) rmSync(at(`src-tauri/icons/${file}`));
+}
 
 console.log('icons: web assets');
 copyFileSync(at('branding/icon.svg'), at('public/logo.svg'));

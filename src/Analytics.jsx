@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   TrendingUp, Coins, Terminal, Activity, Flame, AlertTriangle, CheckCircle2,
   Clock, ArrowUpRight, RefreshCw, SlidersHorizontal, DollarSign, Copy, Check,
@@ -35,20 +35,16 @@ const formatDuration = (ms) => {
   return `${mins}m ${secs}s`;
 };
 
-const shortPath = (p) => String(p ?? '').replace(/\\/g, '/').split('/').filter(Boolean).at(-1) || 'Local workspace';
-
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export default function AnalyticsView({
-  theme,
   agents = [],
   projects = [],
   metadataState = {},
   navigationState = {},
   onNavigationChange,
   onSelectSession,
-  onClose,
   onOpenNav,
   refreshKey = 0,
   syncRunning = false
@@ -67,6 +63,9 @@ export default function AnalyticsView({
   const [error, setError] = useState('');
   const [copiedCmd, setCopiedCmd] = useState(null);
   const analyticsRequestId = useRef(0);
+  // Whether a report is shown, so refetches keep it visible (a ref, so the
+  // fetch callback doesn't depend on the data it loads).
+  const hasData = useRef(false);
 
   // Filters (date uses the same dropdown UX as the sessions page:
   // presets + custom from-date with Apply. Internally a custom date is
@@ -87,17 +86,12 @@ export default function AnalyticsView({
   const fetchAnalytics = useCallback(async (isRefresh = false) => {
     const reqId = ++analyticsRequestId.current;
     if (isRefresh) setRefreshing(true);
-    else if (!data) setLoading(true);
+    else if (!hasData.current) setLoading(true);
     else setFilterLoading(true);
     setError('');
 
     try {
-      const params = new URLSearchParams({ timezone: navigationState.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone });
       const since = dateFilter === 'custom' ? customSince : dateFilter;
-      if (since) params.set('since', filterSince(since));
-      if (agentFilter) params.set('agent', agentFilter);
-      if (workspaceFilter) params.set('workspace', workspaceFilter);
-      if (modelFilter) params.set('model', modelFilter);
 
       const analyticsParams = {
         timezone: navigationState.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -110,6 +104,7 @@ export default function AnalyticsView({
       const json = await api('get_analytics', analyticsParams);
       if (reqId === analyticsRequestId.current) {
         setData(json);
+        hasData.current = true;
         if (json.refreshError) setError(json.refreshError);
       }
     } catch (e) {
@@ -123,12 +118,13 @@ export default function AnalyticsView({
         setRefreshing(false);
       }
     }
-  }, [dateFilter, customSince, agentFilter, workspaceFilter, modelFilter, navigationState.timezone, data, syncRunning]);
+  }, [dateFilter, customSince, agentFilter, workspaceFilter, modelFilter, navigationState.timezone]);
 
+  // Refetch when filters change (via fetchAnalytics), the tab changes, or data is synced.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching shows a loading state
     fetchAnalytics();
-    return () => { analyticsRequestId.current++; };
-  }, [activeTab, dateFilter, customSince, agentFilter, workspaceFilter, modelFilter, navigationState.timezone, refreshKey, syncRunning]);
+  }, [fetchAnalytics, activeTab, refreshKey, syncRunning]);
 
   useEffect(() => {
     if (!syncRunning && !data?.refreshing) return;
@@ -166,6 +162,7 @@ export default function AnalyticsView({
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching shows a loading state
     fetchPricingStatus();
     fetchOverrides();
   }, [fetchPricingStatus, fetchOverrides, syncRunning]);
@@ -383,7 +380,6 @@ export default function AnalyticsView({
               kpis={kpis}
               tokensAndCosts={tokensAndCosts}
               toolMetrics={toolMetrics}
-              productivity={productivity}
               trendMetric={trendMetric}
               setTrendMetric={setTrendMetric}
               hoveredTrendPoint={hoveredTrendPoint}
@@ -398,10 +394,6 @@ export default function AnalyticsView({
             <TokenCostSection
               kpis={kpis}
               tokensAndCosts={tokensAndCosts}
-              trendMetric={trendMetric}
-              setTrendMetric={setTrendMetric}
-              hoveredTrendPoint={hoveredTrendPoint}
-              setHoveredTrendPoint={setHoveredTrendPoint}
             />
           )}
 
@@ -521,7 +513,6 @@ function OverviewSection({
   kpis,
   tokensAndCosts,
   toolMetrics,
-  productivity,
   trendMetric,
   setTrendMetric,
   hoveredTrendPoint,
@@ -699,14 +690,7 @@ function OverviewSection({
 // -------------------------------------------------------------
 // 2. TOKEN & COST TRACKING SECTION
 // -------------------------------------------------------------
-function TokenCostSection({
-  kpis,
-  tokensAndCosts,
-  trendMetric,
-  setTrendMetric,
-  hoveredTrendPoint,
-  setHoveredTrendPoint
-}) {
+function TokenCostSection({ kpis, tokensAndCosts }) {
   const byModel = tokensAndCosts.by_model || [];
   const byAgent = tokensAndCosts.by_agent || [];
   const byWorkspace = tokensAndCosts.by_workspace || [];

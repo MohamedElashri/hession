@@ -1,5 +1,5 @@
 import { BRAND } from './brand.js';
-const escape = value => String(value ?? '').replace(/[\\`*_{}\[\]<>#|]/g, '\\$&').replace(/[\r\n]+/g, ' ');
+const escape = value => String(value ?? '').replace(/[\\`*_{}[\]<>#|]/g, '\\$&').replace(/[\r\n]+/g, ' ');
 const pretty = value => { try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return String(value ?? ''); } };
 const code = (value, language = 'text') => {
   const text = String(value ?? '');

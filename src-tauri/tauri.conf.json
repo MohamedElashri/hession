@@ -37,8 +37,7 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
+      "icons/icon.icns"
     ],
     "category": "Productivity",
     "shortDescription": "A local-first home for your coding agent sessions, local and remote.",

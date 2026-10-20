@@ -134,14 +134,10 @@ struct Source {
 }
 
 fn home_dir() -> PathBuf {
-    for key in ["HOME", "USERPROFILE"] {
-        if let Ok(v) = std::env::var(key) {
-            if !v.trim().is_empty() {
-                return PathBuf::from(v.trim());
-            }
-        }
+    match std::env::var("HOME") {
+        Ok(v) if !v.trim().is_empty() => PathBuf::from(v.trim()),
+        _ => PathBuf::from("."),
     }
-    PathBuf::from(".")
 }
 
 fn env_path(key: &str, default: PathBuf) -> PathBuf {
@@ -152,14 +148,8 @@ fn env_path(key: &str, default: PathBuf) -> PathBuf {
 }
 
 fn hermes_home(home: &Path) -> PathBuf {
-    #[cfg(windows)]
-    let base = env_path("LOCALAPPDATA", home.join("AppData").join("Local"));
-    #[cfg(not(windows))]
-    let base = home.to_path_buf();
-
     let suffix = std::env::var("HERMES_DATA_DIR_SUFFIX").unwrap_or_default();
-    let directory = if cfg!(windows) { "hermes" } else { ".hermes" };
-    env_path("HERMES_HOME", base.join(format!("{directory}{suffix}")))
+    env_path("HERMES_HOME", home.join(format!(".hermes{suffix}")))
 }
 
 /// Local sources followed by mirrored remote-host sources (see `remote`).

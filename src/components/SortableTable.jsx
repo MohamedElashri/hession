@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 
 export const numericSortValue = (row, key) => {

@@ -27,8 +27,8 @@ both the ones on this computer and the ones on the SSH hosts you work on
 
 ## Install
 
-There are no prebuilt releases yet. Build it from source (Linux shown; see
-[development](docs/development.md) for macOS and Windows):
+Hession runs on Linux and macOS. There are no prebuilt releases yet. Build it
+from source (Linux shown; see [development](docs/development.md) for macOS):
 
 ```sh
 git clone https://github.com/MohamedElashri/hession && cd hession

@@ -141,12 +141,6 @@ pub fn data_dir() -> PathBuf {
             return PathBuf::from(home).join(&leaf);
         }
     }
-    // Windows fallback (`HOME` is usually unset there).
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        if !profile.trim().is_empty() {
-            return PathBuf::from(profile).join(&leaf);
-        }
-    }
     PathBuf::from(leaf)
 }
 
@@ -172,8 +166,6 @@ fn ensure_dir_permissions(dir: &Path) -> Result<()> {
 fn ensure_file_permissions(file: &Path) -> Result<()> {
     #[cfg(unix)]
     chmod_path(file, 0o600)?;
-    #[cfg(not(unix))]
-    let _ = file;
     Ok(())
 }
 
@@ -183,74 +175,17 @@ fn ensure_file_permissions(file: &Path) -> Result<()> {
 
 #[derive(PartialEq, Eq)]
 struct DatabaseIdentity {
-    #[cfg(unix)]
     device: u64,
-    #[cfg(unix)]
     inode: u64,
-    #[cfg(windows)]
-    volume: u64,
-    #[cfg(windows)]
-    file_id: [u8; 16],
-    #[cfg(not(any(unix, windows)))]
-    created: std::time::SystemTime,
 }
 
 fn database_identity(path: &Path) -> Result<DatabaseIdentity> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let metadata = fs::metadata(path)?;
-        Ok(DatabaseIdentity {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-        })
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsRawHandle;
-        #[repr(C)]
-        struct FileIdInfo {
-            volume: u64,
-            file_id: [u8; 16],
-        }
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn GetFileInformationByHandleEx(
-                file: *mut std::ffi::c_void,
-                class: i32,
-                info: *mut std::ffi::c_void,
-                size: u32,
-            ) -> i32;
-        }
-        let file = fs::File::open(path)?;
-        let mut info = FileIdInfo {
-            volume: 0,
-            file_id: [0; 16],
-        };
-        // SAFETY: the handle remains open and info is an aligned, writable
-        // FILE_ID_INFO buffer. FileIdInfo is FILE_INFO_BY_HANDLE_CLASS 18.
-        let ok = unsafe {
-            GetFileInformationByHandleEx(
-                file.as_raw_handle(),
-                18,
-                (&mut info as *mut FileIdInfo).cast(),
-                std::mem::size_of::<FileIdInfo>() as u32,
-            )
-        };
-        if ok == 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        Ok(DatabaseIdentity {
-            volume: info.volume,
-            file_id: info.file_id,
-        })
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        Ok(DatabaseIdentity {
-            created: fs::metadata(path)?.created()?,
-        })
-    }
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::metadata(path)?;
+    Ok(DatabaseIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
 }
 
 /// Open (creating parents as needed), configure pragmas, init schema.

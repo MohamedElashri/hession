@@ -127,16 +127,6 @@ jobs:
             os: linux
             rust_target: aarch64-unknown-linux-gnu
             bundles: appimage,deb,rpm
-          - name: Windows x64
-            runner: windows-2025
-            os: windows
-            rust_target: x86_64-pc-windows-msvc
-            bundles: nsis,msi
-          - name: Windows ARM64
-            runner: windows-11-arm
-            os: windows
-            rust_target: aarch64-pc-windows-msvc
-            bundles: nsis,msi
     steps:
       - name: Check out the validated source commit
         uses: actions/checkout@v7
@@ -196,7 +186,7 @@ jobs:
           args: --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }} -- --locked
 
   verify-release:
-    name: Verify all twelve draft installers
+    name: Verify all eight draft installers
     needs: [prepare, build]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -251,6 +241,6 @@ jobs:
           {
             echo "### ${{ needs.prepare.outputs.brand_name }} ${RELEASE_TAG} published"
             echo "Source commit: ${SOURCE_SHA}"
-            echo 'All six native builds succeeded and all twelve installers are present.'
+            echo 'All four native builds succeeded and all eight installers are present.'
             echo "Release: ${release_url}"
           } >> "$GITHUB_STEP_SUMMARY"

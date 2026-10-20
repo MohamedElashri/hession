@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { LoaderCircle, Terminal, ChevronDown, Search, X } from 'lucide-react';
 
 export default function ToolFilter({ tools = [], selected = [], onChange, loading = false, error = false, onRetry }) {

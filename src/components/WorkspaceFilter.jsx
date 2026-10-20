@@ -1,11 +1,10 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { LoaderCircle, Layers, ChevronDown, Check, Search, X } from 'lucide-react';
 
 const shortPath = (p) => String(p ?? '').replace(/\\/g, '/').split('/').filter(Boolean).at(-1) || 'Local workspace';
 
-export default function WorkspaceFilter({ projects = [], workspaces, value = '', selected, onChange, loading = false, error = false, onRetry }) {
-  const list = workspaces ?? projects ?? [];
-  const current = selected ?? value ?? '';
+export default function WorkspaceFilter({ projects, value = '', onChange, loading = false, error = false, onRetry }) {
+  const current = value;
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const anchorRef = useRef(null);
@@ -28,15 +27,12 @@ export default function WorkspaceFilter({ projects = [], workspaces, value = '',
     };
   }, [open ]);
 
-  const normalized = useMemo(() => {
-    return (list || [])
-      .map((p) => {
-        if (typeof p === 'string') return { path: p, display_name: shortPath(p) };
-        const path = p.path || p.value || '';
-        return { path, display_name: p.display_name || shortPath(path) };
-      })
-      .filter((p) => p.path);
-  }, [list]);
+  const normalized = useMemo(
+    () => (projects || [])
+      .filter((p) => p.path)
+      .map((p) => ({ path: p.path, display_name: p.display_name || shortPath(p.path) })),
+    [projects],
+  );
 
   const filtered = useMemo(() => {
     if (!search.trim()) return normalized;

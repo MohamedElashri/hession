@@ -21,7 +21,6 @@ serde_json = "1"
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
-tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
@@ -31,4 +30,3 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 thiserror = "2"
 rusqlite = { version = "0.40.2", features = ["bundled", "functions", "hooks", "backup"] }
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }

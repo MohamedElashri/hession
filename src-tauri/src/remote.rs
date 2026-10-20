@@ -566,7 +566,6 @@ pub fn vscode_folder_uri(host: &str, path: &str) -> String {
 
 fn home() -> PathBuf {
     std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
 }
@@ -651,11 +650,7 @@ fn glob_simple(path: &Path) -> Vec<PathBuf> {
 fn vscode_state_dbs() -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
     let base = home().join("Library/Application Support");
-    #[cfg(windows)]
-    let base = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join("AppData/Roaming"));
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(target_os = "macos"))]
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".config"));

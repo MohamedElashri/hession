@@ -29,7 +29,6 @@ pub fn run() {
     let db_path_for_setup = db_path.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
         .manage(commands::ExportState::default())
         .manage(AppState {
             db_path: Mutex::new(db_path),

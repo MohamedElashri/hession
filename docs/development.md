@@ -2,6 +2,7 @@
 
 Hession is a [Tauri 2](https://tauri.app) app: a React (JSX) frontend in `src/`
 and a Rust backend in `src-tauri/src/`. The two communicate over Tauri IPC.
+It supports Linux and macOS.
 
 ## Setup
 
@@ -12,7 +13,6 @@ libraries:
 | --- | --- |
 | Debian/Ubuntu, Fedora, Arch | `make deps` (uses sudo) |
 | macOS | `xcode-select --install` |
-| Windows | Microsoft C++ Build Tools and WebView2 |
 
 Then run `make dev`.
 
@@ -30,7 +30,9 @@ directly, set `PKG_CONFIG=/usr/bin/pkg-config` yourself.
 | `make desktop-entry` | Per-user launcher and dock icon for `make dev` (Linux) |
 | `make test` | Frontend build and Rust tests |
 | `make docker-test` | The same tests in a container, with no system libraries needed |
-| `make check` / `make lint` | Frontend build + `cargo check` / clippy (warnings fail) |
+| `make check` | Frontend build + `cargo check` |
+| `make lint` | ESLint + Clippy; any warning fails (`make lint-js` for ESLint only) |
+| `make unused` | Unused files, exports, and npm dependencies (knip) |
 | `make fmt` / `make fmt-check` | Format the Rust code / fail if it isn't formatted |
 | `make build` | Installers for this OS; `make deb`, `appimage`, `rpm` for one format |
 | `make run` | Run the release binary |
@@ -115,5 +117,6 @@ has no unit tests; the Vite build is its check.
 1. Run `python3 bump_version.py` to set the version in every manifest.
 2. Run `make release-check VERSION=x.y.z`.
 3. Commit, then push a `vX.Y.Z` tag. The workflow in
-   `.github/workflows/release.yml` builds installers for macOS, Windows, and
-   Linux (x64 and ARM64) into a draft release, checks them, and publishes it.
+   `.github/workflows/release.yml` builds installers for macOS (Intel and
+   Apple silicon) and Linux (x64 and ARM64) into a draft release, checks
+   them, and publishes it.

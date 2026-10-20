@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Calendar, ChevronDown, Check, X } from 'lucide-react';
 
 import { localDateKey } from '../dates.js';
@@ -30,13 +30,13 @@ export default function DateFilter({ value, onChange, presets = DEFAULT_PRESETS 
   const [customDate, setCustomDate] = useState(value && !isPresetValue(value) ? value : '');
   const anchorRef = useRef(null);
 
-  useEffect(() => {
-    if (value && !isPresetValue(value)) {
-      setCustomDate(value);
-    } else if (!value) {
-      setCustomDate('');
-    }
-  }, [value]);
+  // Follow outside changes to the value (adjusting state during render).
+  const [seenValue, setSeenValue] = useState(value);
+  if (seenValue !== value) {
+    setSeenValue(value);
+    if (value && !isPresetValue(value)) setCustomDate(value);
+    else if (!value) setCustomDate('');
+  }
 
   useEffect(() => {
     if (!open) return;

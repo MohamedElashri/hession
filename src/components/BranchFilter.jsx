@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { LoaderCircle, GitBranch, ChevronDown, Check, Search, X } from 'lucide-react';
 
 export default function BranchFilter({ branches = [], selected = '', onChange, loading = false, error = false, onRetry }) {

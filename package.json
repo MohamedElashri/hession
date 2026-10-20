@@ -9,14 +9,15 @@
     "tauri": "node scripts/brand.mjs && tauri",
     "check": "node scripts/brand.mjs && npm run build && cargo check --manifest-path src-tauri/Cargo.toml",
     "brand": "node scripts/brand.mjs",
-    "icons": "node scripts/icons.mjs"
+    "icons": "node scripts/icons.mjs",
+    "lint": "eslint .",
+    "unused": "knip"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "^2.4.0",
-    "@tauri-apps/plugin-opener": "^2.4.0",
     "lucide-react": "^0.468.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
@@ -24,12 +25,14 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@tauri-apps/cli": "^2.8.0",
-    "@types/node": "^24.0.0",
-    "@types/react": "^19.1.0",
-    "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.7.0",
-    "typescript": "^5.9.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
+    "knip": "^6.42.1",
     "vite": "^7.0.0"
   }
 }

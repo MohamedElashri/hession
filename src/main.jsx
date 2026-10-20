@@ -47,7 +47,6 @@ const META_COMMANDS={
 };
 const agentColors={codex:'lime',claude:'peach',opencode:'blue',pi:'violet',commandcode:'mint',muse:'pink',hermes:'amber',antigravity:'blue',cline:'mint'};
 const agentNames={codex:'Codex',claude:'Claude Code',opencode:'OpenCode',pi:'Pi',commandcode:'Command Code',muse:'Muse',hermes:'Hermes Agent',antigravity:'Antigravity',cline:'Cline'};
-const agentMark={codex:'C',claude:'✳',opencode:'⌘',pi:'π',commandcode:'⌁',muse:'M',hermes:'H',antigravity:'A',cline:'CL'};
 const shortPath=(p)=>String(p??'').replace(/\\/g,'/').split('/').filter(Boolean).at(-1)||'Local workspace';
 const relativeAgo=(value,now=Date.now())=>{if(!value)return 'never';const d=parseDate(value);if(!d||isNaN(d.getTime()))return 'never';const minutes=Math.max(0,Math.floor((now-d.getTime())/60000));if(minutes<1)return 'just now';if(minutes<60)return `${minutes} minute${minutes===1?'':'s'} ago`;const hours=Math.floor(minutes/60);if(hours<24)return `${hours} hour${hours===1?'':'s'} ago`;const days=Math.floor(hours/24);return `${days} day${days===1?'':'s'} ago`;};
 const formatSyncTime=(value,now)=>{if(!value)return 'Never';const d=parseDate(value);if(!d||isNaN(d.getTime()))return 'Never';return `${d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})} (${relativeAgo(d,now)})`;};
@@ -96,7 +95,7 @@ function App(){
   const [dataManagementOpen,setDataManagementOpen]=useState(false);
   const [resumeOpen,setResumeOpen]=useState(false),[resumeBusy,setResumeBusy]=useState(false),[resumeInfo,setResumeInfo]=useState(null),[resumeError,setResumeError]=useState(''),[resumeCopied,setResumeCopied]=useState(false),[resumeTerminals,setResumeTerminals]=useState([]),[resumeTerminal,setResumeTerminal]=useState('');
   const resumeDialogRef=useRef(null);
-  const [loading,setLoading]=useState(true),[detailLoading,setDetailLoading]=useState(false),[metaLoaded,setMetaLoaded]=useState(false),[notice,setNotice]=useState('');
+  const [loading,setLoading]=useState(true),[detailLoading,setDetailLoading]=useState(false),[notice,setNotice]=useState('');
   const [detailError,setDetailError]=useState('');
   const [entryFilter,setEntryFilter]=useState('all'); // 'all' | 'user' | 'assistant' | 'tool' | 'event'
   const [detailPage,setDetailPage]=useState(1); // 1-based transcript page
@@ -104,7 +103,7 @@ function App(){
   const [collapsedEntries,setCollapsedEntries]=useState(()=>new Set());
   const [copiedEntry,setCopiedEntry]=useState(null);
   const [theme,setTheme]=useState(()=>localStorage.getItem(storageKey('theme'))==='light'?'light':'dark');
-  const [currentTime,setCurrentTime]=useState(Date.now());
+  const [currentTime,setCurrentTime]=useState(()=>Date.now());
   const [reportRevision,setReportRevision]=useState(0);
   const [navigation,setNavigation]=useState(readNavigation);
   const navigationRef=useRef(navigation);
@@ -114,6 +113,18 @@ function App(){
   const syncActiveRef=useRef(false);
   useEffect(()=>{syncActiveRef.current=sync.running||syncStarting;});
   const {view,selected}=navigation;
+  // Reset per-session UI when the selection changes, during render rather than
+  // in an effect (https://react.dev/learn/you-might-not-need-an-effect).
+  const [shownSelection,setShownSelection]=useState(selected);
+  if(shownSelection!==selected){
+    setShownSelection(selected);
+    setResumeOpen(false);setResumeInfo(null);setResumeError('');setResumeCopied(false);setResumeTerminals([]);setResumeTerminal('');
+    setCollapsedEntries(new Set());setDetailPage(1);setDetailJump('');setTagDraft('');
+  }
+  // Back to the first page whenever the filters change.
+  const filterKey=JSON.stringify([query,hostFilter,agentFilter,projectFilter,modelFilters,branchFilter,toolFilters,timeFilter,sortOrder,starredOnly,tagFilters]);
+  const [pageFilterKey,setPageFilterKey]=useState(filterKey);
+  if(pageFilterKey!==filterKey){setPageFilterKey(filterKey);setPage(0);}
   const navigate=useCallback((patch,{replace=false}={})=>{
     const next={...navigationRef.current,...patch};
     writeNavigation(next,{replace});
@@ -220,7 +231,6 @@ function App(){
     try{await navigator.clipboard.writeText(text);setResumeCopied(true);setTimeout(()=>setResumeCopied(false),1400);}
     catch{setNotice('Could not access the clipboard. Check browser permissions and try again.');}
   };
-  useEffect(()=>{setResumeOpen(false);setResumeInfo(null);setResumeError('');setResumeCopied(false);setResumeTerminals([]);setResumeTerminal('');},[selected]);
 
   const [metadataState,setMetadataState]=useState({agents:'loading',projects:'loading',stats:'loading',facets:'loading','sync/checkpoints':'loading'});
   const metadataRequest=useRef(0);
@@ -237,7 +247,7 @@ function App(){
     };
     await Promise.all([
       update('agents',setAgents),update('projects',setProjects),update('stats',setStats),
-      update('facets',setFacets),update('sync/checkpoints',data=>{setSyncCheckpoints(data);setMetaLoaded(true);}),
+      update('facets',setFacets),update('sync/checkpoints',setSyncCheckpoints),
     ]);
   },[]);
   const loadSessions=useCallback(async({silent=false}={})=>{
@@ -262,7 +272,6 @@ function App(){
 
   useEffect(()=>{loadMeta();},[loadMeta]);
   useEffect(()=>{const timer=setInterval(()=>setCurrentTime(Date.now()),60000);return()=>clearInterval(timer);},[]);
-  useEffect(()=>{setPage(0);},[query,hostFilter,agentFilter,projectFilter,modelFilters,branchFilter,toolFilters,timeFilter,sortOrder,starredOnly,tagFilters]);
   useEffect(()=>{const t=setTimeout(loadSessions,query?180:0);return()=>clearTimeout(t);},[loadSessions,query]);
   const loadDetail=useCallback(async({silent=false,page=detailPage}={})=>{
     const id=++detailRequest.current;
@@ -276,8 +285,8 @@ function App(){
     catch(e){if(id===detailRequest.current&&!silent){setDetail(null);setDetailError(e.message||'Could not load this session.');}}
     finally{if(id===detailRequest.current)setDetailLoading(false);}
   },[selected,detailPage,view]);
-  useEffect(()=>{loadDetail();return()=>{detailRequest.current++;};},[loadDetail]);
-  useEffect(()=>{setCollapsedEntries(new Set());setDetailPage(1);setDetailJump('');setTagDraft('');},[selected]);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching shows a loading state
+  useEffect(()=>{loadDetail();},[loadDetail]);
   useEffect(()=>{let cancelled=false;api('get_sync_status').then(data=>{if(!cancelled){if(!syncLaunchPending.current)setSync(data);setSyncStatusReady(true);}}).catch(()=>{});return()=>{cancelled=true;};},[]);
   useEffect(()=>{
     if(!sync.running)return;
@@ -295,7 +304,7 @@ function App(){
           if(now-lastRefresh>=2500){lastRefresh=now;loadSessions({silent:true});loadDetail({silent:true});}
           if(now-lastMeta>=10000){lastMeta=now;loadMeta({silent:true});}
         }
-      }catch{}finally{busy=false;}
+      }catch{/* the next poll retries */}finally{busy=false;}
     },500);
     return()=>{active=false;clearInterval(timer);};
   },[sync.running,loadMeta,loadSessions,loadDetail]);
@@ -384,7 +393,7 @@ function App(){
     }catch(e){await job.stopPromise;setNotice(job.cancelled?'Export stopped.':e.message);}finally{
       await job.stopPromise;
       job.worker?.terminate();unlisten?.();
-      try{await api('finish_export',{jobId:job.id});}catch{}
+      try{await api('finish_export',{jobId:job.id});}catch{/* already released by the backend */}
       if(job.cancelled&&!job.saved)setNotice('Export stopped.');
       exportJobRef.current=null;setExportBusy(false);setExportStopping(false);
     }
@@ -547,7 +556,6 @@ function App(){
     <main className="main-panel">
       {view === 'analytics' ? (
         <AnalyticsView
-          theme={theme}
           agents={agents}
           projects={projects}
           metadataState={metadataState}
@@ -556,7 +564,6 @@ function App(){
           navigationState={navigation.analytics}
           onNavigationChange={updateAnalyticsNavigation}
           onSelectSession={selectSession}
-          onClose={() => setView('sessions')}
           onOpenNav={() => setMobileNav(true)}
         />
       ) : (
@@ -589,6 +596,7 @@ function App(){
               </div>
               <div className="session-list">
                 {loading&&<div className="session-loading" role="status" aria-live="polite">{[0,1,2,3].map(item=><div className="session-skeleton" key={item}><span className="skeleton-line skeleton-agent"/><span className="skeleton-line skeleton-title"/><span className="skeleton-line skeleton-meta"/></div>)}</div>}
+                {/* eslint-disable-next-line react-hooks/refs -- selectSession reads a ref when clicked, not during render */}
                 {!loading&&groups.map(g=><div className="date-group" key={g.label}><div className="date-label">{g.label}</div>{g.items.map(s=><div key={s.id} className="session-card-wrap"><button type="button" className={`session-card ${String(selected)===String(s.id)?'session-selected':''}`} aria-current={String(selected)===String(s.id)?'true':undefined} onClick={()=>selectSession(s.id)}>
                   <div className="card-top"><span className={`agent-dot ${agentColors[s.agent]||'gray'}`}/><span className="card-agent">{s.product||familyLabel(s.agent)}</span>{s.host&&<span className="host-chip" title={`Recorded on ${s.host}`}><Server size={10}/>{s.host}</span>}<span className="card-time">{parseDate(s.last_event_at||s.started_at)?.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})||'—'}</span></div>
                   <strong className="session-title">{s.title||'Untitled session'}</strong>

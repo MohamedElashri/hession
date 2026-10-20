@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { LoaderCircle, Sparkles, ChevronDown, Search, X } from 'lucide-react';
 
 export default function ModelFilter({ models = [], selected = [], onChange, loading = false, error = false, onRetry }) {

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Database, Download, Upload, Trash2, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
@@ -45,11 +45,12 @@ export default function DataManagement({ onClose, onChanged, syncRunning }) {
     const previous = document.activeElement;
     dialog.current.showModal();
     dialog.current.querySelector('button')?.focus();
-    return () => { requestId.current++; if (previous?.isConnected) previous.focus(); };
+    return () => { if (previous?.isConnected) previous.focus(); };
   }, []);
 
   useEffect(() => {
     const id = ++requestId.current;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching shows a loading state
     setPreview(null); setError(''); setPreviewLoading(true);
     if (!desktop) { setError('Manage saved data is available in the desktop app.'); setPreviewLoading(false); return; }
     if (tab === 'import' && !importPath) { setPreviewLoading(false); return; }
@@ -62,7 +63,7 @@ export default function DataManagement({ onClose, onChanged, syncRunning }) {
       } catch (error) { if (id === requestId.current) setError(errorMessage(error)); }
       finally { if (id === requestId.current) setPreviewLoading(false); }
     }, filters.query ? 250 : 0);
-    return () => { clearTimeout(timer); requestId.current++; };
+    return () => clearTimeout(timer);
   }, [tab, importPath, filters, revision, desktop]);
 
   const changeFilters = patch => {

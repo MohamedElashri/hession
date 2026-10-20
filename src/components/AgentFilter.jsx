@@ -1,8 +1,8 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { LoaderCircle, Cpu, ChevronDown, Check, Search, X } from 'lucide-react';
 
-export default function AgentFilter({ agents = [], value = '', selected, onChange, loading = false, error = false, onRetry }) {
-  const current = selected ?? value ?? '';
+export default function AgentFilter({ agents = [], value = '', onChange, loading = false, error = false, onRetry }) {
+  const current = value;
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const anchorRef = useRef(null);

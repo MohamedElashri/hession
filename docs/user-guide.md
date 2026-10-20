@@ -47,7 +47,6 @@ left in a shell on that host. The dialog warns if the agent isn't installed
 there. Use **Copy command** to paste the command into your own terminal.
 
 The terminal you pick is remembered (on Linux, `$TERMINAL` is the default).
-Remote resume works from Linux and macOS.
 
 **VS Code** opens the session's folder: locally with `code <folder>`, and on a
 remote host through Remote-SSH. This needs the `code` command on your `PATH`;

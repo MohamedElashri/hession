@@ -2,7 +2,7 @@
 //!
 //! Backend for the "Resume" action: maps a stored session row
 //! (`family`, `external_id`, `source_uri`, `cwd`) to the correct native
-//! resume invocation, then spawns a user-visible terminal cross-platform.
+//! resume invocation, then spawns a user-visible terminal on Linux or macOS.
 //!
 //! Design notes:
 //! - All spawning happens in backend `std::process::Command` (never frontend
@@ -45,11 +45,7 @@ fn cli_candidates(family: &str) -> &'static [&'static str] {
         "claude" => &["claude"],
         "opencode" => &["opencode"],
         "pi" => &["pi"],
-        #[cfg(not(windows))]
         "commandcode" => &["commandcode", "cmd"],
-        // Windows cmd.exe is the OS shell, not a CommandCode CLI.
-        #[cfg(windows)]
-        "commandcode" => &["commandcode", "cmd.cmd", "cmd.bat"],
         "muse" => &["muse"],
         "hermes" => &["hermes"],
         "antigravity" => &["agy", "antigravity"],
@@ -58,14 +54,10 @@ fn cli_candidates(family: &str) -> &'static [&'static str] {
 }
 
 fn home_dir() -> PathBuf {
-    for key in ["HOME", "USERPROFILE"] {
-        if let Ok(v) = std::env::var(key) {
-            if !v.trim().is_empty() {
-                return PathBuf::from(v.trim());
-            }
-        }
+    match std::env::var("HOME") {
+        Ok(v) if !v.trim().is_empty() => PathBuf::from(v.trim()),
+        _ => PathBuf::from("."),
     }
-    PathBuf::from(".")
 }
 
 fn default_codex_home() -> PathBuf {
@@ -160,91 +152,15 @@ fn posix_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\"'\"'"))
 }
 
-/// Literal value in a Windows batch file. Delayed expansion is disabled by
-/// the launcher; percent signs must be doubled in batch source. Quotes and
-/// control characters cannot be safely passed through npm batch shims.
-#[cfg(windows)]
-fn batch_value(s: &str) -> Result<String, String> {
-    if s.chars().any(|c| c == '"' || c.is_control()) {
-        return Err(
-            "The resume command contains characters that Windows batch shims cannot safely handle."
-                .into(),
-        );
-    }
-    Ok(s.replace('%', "%%"))
-}
-
-#[cfg(windows)]
-fn write_windows_launcher(plan: &ResumePlan, cli_path: &Path) -> Result<PathBuf, String> {
-    use std::io::Write;
-    let mut script =
-        String::from("@echo off\r\nsetlocal DisableDelayedExpansion\r\nchcp 65001 >nul\r\n");
-    script.push_str(&format!(
-        "cd /d \"{}\"\r\nif errorlevel 1 exit /b 1\r\n",
-        batch_value(&plan.cwd.to_string_lossy())?
-    ));
-    script.push_str(&format!(
-        "set \"PATH={}\"\r\n",
-        batch_value(&augmented_path())?
-    ));
-    let mut env: Vec<_> = plan.env.iter().collect();
-    env.sort_by(|a, b| a.0.cmp(b.0));
-    for (key, value) in env {
-        script.push_str(&format!(
-            "set \"{}={}\"\r\n",
-            batch_value(key)?,
-            batch_value(value)?
-        ));
-    }
-    script.push_str(&format!(
-        "\"{}\"",
-        batch_value(&cli_path.to_string_lossy())?
-    ));
-    for arg in &plan.args {
-        script.push_str(&format!(" \"{}\"", batch_value(arg)?));
-    }
-    script.push_str("\r\n");
-    // Keep the file until the terminal has read it; filenames are unique and
-    // created exclusively rather than overwriting predictable temp paths.
-    let mut file = tempfile::Builder::new()
-        .prefix(&format!("{}-resume-", crate::brand::SLUG))
-        .suffix(".cmd")
-        .tempfile()
-        .map_err(|e| format!("Could not create launcher script: {e}"))?;
-    file.write_all(script.as_bytes())
-        .map_err(|e| format!("Could not write launcher script: {e}"))?;
-    let (_, path) = file
-        .keep()
-        .map_err(|e| format!("Could not keep launcher script: {e}"))?;
-    Ok(path)
-}
-
 /// Copyable command shown in the UI.
 fn display_command(cwd: &Path, binary: &str, args: &[String]) -> String {
-    #[cfg(windows)]
-    {
-        // PowerShell literal strings preserve Windows paths, spaces and shell
-        // metacharacters in the clipboard command. The terminal launcher uses
-        // a separate batch wrapper for Command Prompt.
-        let quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
-        let mut invocation = vec![quote(binary)];
-        invocation.extend(args.iter().map(|s| quote(s)));
-        return format!(
-            "Set-Location -LiteralPath {}; if ($?) {{ & {} }}",
-            quote(&cwd.to_string_lossy()),
-            invocation.join(" ")
-        );
-    }
-    #[cfg(not(windows))]
-    {
-        let mut invocation = vec![posix_quote(binary)];
-        invocation.extend(args.iter().map(|s| posix_quote(s)));
-        format!(
-            "cd {} && {}",
-            posix_quote(&cwd.to_string_lossy()),
-            invocation.join(" ")
-        )
-    }
+    let mut invocation = vec![posix_quote(binary)];
+    invocation.extend(args.iter().map(|s| posix_quote(s)));
+    format!(
+        "cd {} && {}",
+        posix_quote(&cwd.to_string_lossy()),
+        invocation.join(" ")
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -258,36 +174,20 @@ fn path_dirs() -> Vec<PathBuf> {
 fn find_cli_binary(candidates: &[&str]) -> Option<PathBuf> {
     let dirs = path_dirs();
     for name in candidates {
-        #[cfg(windows)]
-        let names: Vec<String> = if Path::new(name).extension().is_some() {
-            vec![name.to_string()]
-        } else {
-            vec![
-                format!("{name}.exe"),
-                format!("{name}.com"),
-                format!("{name}.cmd"),
-                format!("{name}.bat"),
-                name.to_string(),
-            ]
-        };
-        #[cfg(not(windows))]
-        let names: Vec<String> = vec![name.to_string()];
         for d in &dirs {
-            for n in &names {
-                let p = d.join(n);
-                if p.is_file() {
-                    #[cfg(unix)]
+            let p = d.join(name);
+            if p.is_file() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if !p
+                        .metadata()
+                        .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
                     {
-                        use std::os::unix::fs::PermissionsExt;
-                        if !p
-                            .metadata()
-                            .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
-                        {
-                            continue;
-                        }
+                        continue;
                     }
-                    return Some(p);
                 }
+                return Some(p);
             }
         }
         // Bare lookup as last resort (relies on OS search).
@@ -379,28 +279,16 @@ fn augmented_path() -> String {
             };
             #[cfg(unix)]
             if let Some(p) = login_shell_path() {
-                #[cfg(windows)]
-                let sep = ';';
-                #[cfg(not(windows))]
-                let sep = ':';
-                for d in p.split(sep) {
+                for d in p.split(':') {
                     push(d);
                 }
             }
             if let Ok(p) = std::env::var("PATH") {
-                #[cfg(windows)]
-                let sep = ';';
-                #[cfg(not(windows))]
-                let sep = ':';
-                for d in p.split(sep) {
+                for d in p.split(':') {
                     push(d);
                 }
             }
             let home = home_dir();
-            #[cfg(windows)]
-            if let Ok(appdata) = std::env::var("APPDATA") {
-                push(&PathBuf::from(appdata).join("npm").to_string_lossy());
-            }
             let mut extras = vec![
                 PathBuf::from("/opt/homebrew/bin"),
                 PathBuf::from("/opt/homebrew/sbin"),
@@ -429,16 +317,7 @@ fn augmented_path() -> String {
                     push(&s);
                 }
             }
-            out.join(
-                #[cfg(windows)]
-                {
-                    ";"
-                },
-                #[cfg(not(windows))]
-                {
-                    ":"
-                },
-            )
+            out.join(":")
         })
         .clone()
 }
@@ -484,8 +363,7 @@ fn cli_check(cli: &Path) -> (Option<String>, Option<String>) {
 
 /// (terminal_label, terminal_binary)
 /// Resolved user terminal choice. IDs are stable per OS: macOS uses
-/// `terminal|iterm|wezterm|kitty|alacritty|ghostty`, Windows uses `wt|cmd`,
-/// Linux uses the emulator binary name. The choice persists in
+/// `terminal|iterm|wezterm|kitty|alacritty|ghostty`, Linux uses the emulator binary name. The choice persists in
 /// `<data_dir>/terminal-preference.json` so future invocations reuse it.
 #[cfg(target_os = "macos")]
 const KNOWN_TERMINAL_IDS: &[&str] = &[
@@ -496,8 +374,6 @@ const KNOWN_TERMINAL_IDS: &[&str] = &[
     "alacritty",
     "ghostty",
 ];
-#[cfg(target_os = "windows")]
-const KNOWN_TERMINAL_IDS: &[&str] = &["wt", "cmd"];
 
 fn terminal_label(id: &str) -> String {
     match id {
@@ -507,8 +383,6 @@ fn terminal_label(id: &str) -> String {
         "kitty" => "Kitty".to_string(),
         "alacritty" => "Alacritty".to_string(),
         "ghostty" => "Ghostty".to_string(),
-        "wt" => "Windows Terminal".to_string(),
-        "cmd" => "Command Prompt".to_string(),
         "gnome-terminal" => "GNOME Terminal".to_string(),
         "konsole" => "Konsole".to_string(),
         "xfce4-terminal" => "Xfce Terminal".to_string(),
@@ -569,15 +443,7 @@ fn is_terminal_available(id: &str) -> bool {
             _ => false,
         }
     }
-    #[cfg(target_os = "windows")]
-    {
-        match id {
-            "wt" => find_cli_binary(&["wt"]).is_some(),
-            "cmd" => true,
-            _ => false,
-        }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(target_os = "macos"))]
     {
         if id.contains('/') {
             return PathBuf::from(id).is_file();
@@ -586,7 +452,7 @@ fn is_terminal_available(id: &str) -> bool {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(target_os = "macos"))]
 fn linux_terminal_candidates() -> Vec<String> {
     let mut ids = Vec::new();
     if let Ok(t) = std::env::var("TERMINAL") {
@@ -617,13 +483,13 @@ fn linux_terminal_candidates() -> Vec<String> {
 
 /// Every choice shown in the picker, with live availability.
 fn available_terminals() -> Vec<Value> {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     let choices: Vec<(String, bool)> = KNOWN_TERMINAL_IDS
         .iter()
         .map(|id| (id.to_string(), is_terminal_available(id)))
         .collect();
     // Linux candidates are only the emulators found on PATH.
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(target_os = "macos"))]
     let choices: Vec<(String, bool)> = linux_terminal_candidates()
         .into_iter()
         .map(|id| (id, true))
@@ -635,12 +501,12 @@ fn available_terminals() -> Vec<Value> {
 }
 
 fn first_available_terminal() -> Option<String> {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     let first = KNOWN_TERMINAL_IDS
         .iter()
         .find(|id| is_terminal_available(id))
         .map(|s| s.to_string());
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(target_os = "macos"))]
     let first = linux_terminal_candidates().into_iter().next();
     first
 }
@@ -649,14 +515,7 @@ fn first_available_terminal() -> Option<String> {
 fn default_terminal_id() -> String {
     #[cfg(target_os = "macos")]
     let id = "terminal".to_string();
-    #[cfg(target_os = "windows")]
-    let id = if is_terminal_available("wt") {
-        "wt"
-    } else {
-        "cmd"
-    }
-    .to_string();
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(target_os = "macos"))]
     let id = first_available_terminal().unwrap_or_default();
     id
 }
@@ -685,13 +544,13 @@ fn validate_terminal_id(id: &str) -> Result<(), String> {
     if t.is_empty() || t.len() > 64 || t.chars().any(|c| c.is_control()) {
         return Err("Unknown terminal.".to_string());
     }
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
         if !KNOWN_TERMINAL_IDS.contains(&t) {
             return Err("Unknown terminal.".to_string());
         }
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(target_os = "macos"))]
     {
         if !t
             .chars()
@@ -1637,47 +1496,7 @@ fn spawn_plan(plan: &ResumePlan, cli_path: &Path, terminal_id: &str) -> Result<S
         }
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        // Use the same batch wrapper for native executables and npm shims.
-        // It avoids interpolating session arguments into cmd /C start.
-        let wrapper = write_windows_launcher(plan, cli_path)?;
-        if terminal_id == "wt" {
-            let wt = find_cli_binary(&["wt"])
-                .ok_or_else(|| "Windows Terminal is not installed.".to_string())?;
-            let mut cmd = Command::new(&wt);
-            cmd.arg("-d").arg(&plan.cwd);
-            cmd.arg("cmd.exe")
-                .arg("/D")
-                .arg("/V:OFF")
-                .arg("/K")
-                .arg(&wrapper);
-            for (k, v) in &plan.env {
-                cmd.env(k, v);
-            }
-            cmd.env("PATH", augmented_path());
-            cmd.spawn()
-                .map_err(|e| format!("Could not open Windows Terminal: {e}"))?;
-            return Ok("Windows Terminal".to_string());
-        }
-        use std::os::windows::process::CommandExt;
-        let mut cmd = Command::new("cmd.exe");
-        cmd.arg("/D")
-            .arg("/V:OFF")
-            .arg("/K")
-            .arg(&wrapper)
-            .current_dir(&plan.cwd)
-            .creation_flags(0x00000010); // CREATE_NEW_CONSOLE
-        for (k, v) in &plan.env {
-            cmd.env(k, v);
-        }
-        cmd.env("PATH", augmented_path());
-        cmd.spawn()
-            .map_err(|e| format!("Could not open Command Prompt: {e}"))?;
-        return Ok("Command Prompt".to_string());
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(target_os = "macos"))]
     {
         if !is_terminal_available(terminal_id) {
             return Err("Selected terminal is not installed.".to_string());

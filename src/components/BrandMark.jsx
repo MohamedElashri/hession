@@ -1,4 +1,3 @@
-import React from 'react';
 // Single source: the mark's geometry lives in branding/mark.svg (currentColor).
 import mark from '../../branding/mark.svg?raw';
 

@@ -1,4 +1,3 @@
-import React from 'react';
 import DateFilter from './DateFilter.jsx';
 import AgentFilter from './AgentFilter.jsx';
 import WorkspaceFilter from './WorkspaceFilter.jsx';

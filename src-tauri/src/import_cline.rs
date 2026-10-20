@@ -25,9 +25,7 @@ pub(super) fn source_roots(home: &Path) -> Vec<PathBuf> {
     }
     #[cfg(target_os = "macos")]
     let editors = home.join("Library/Application Support");
-    #[cfg(windows)]
-    let editors = env_path("APPDATA", home.join("AppData/Roaming"));
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(target_os = "macos"))]
     let editors = env_path("XDG_CONFIG_HOME", home.join(".config"));
     for editor in [
         "Code",

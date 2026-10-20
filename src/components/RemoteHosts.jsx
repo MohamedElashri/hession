@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Server, Plus, Trash2, LoaderCircle, PlugZap, X } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { BRAND } from '../brand.js';
