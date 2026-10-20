@@ -1395,166 +1395,164 @@ fn spawn_iterm(plan: &ResumePlan, cli_path: &Path) -> Result<String, String> {
     Err(format!("Could not open iTerm2: {short}"))
 }
 
+/// Open a terminal running the plan. Spawning uses the resolved absolute CLI
+/// path; the displayed command keeps the plain binary name.
+#[cfg(target_os = "macos")]
 fn spawn_plan(plan: &ResumePlan, cli_path: &Path, terminal_id: &str) -> Result<String, String> {
-    // Spawn uses the resolved absolute CLI path; display keeps the binary name.
-
-    #[cfg(target_os = "macos")]
-    {
-        match terminal_id {
-            "iterm" => return spawn_iterm(plan, cli_path),
-            "wezterm" => {
-                let bin = mac_bundle_cli("WezTerm.app", "Contents/MacOS/wezterm", "wezterm")
-                    .ok_or_else(|| "WezTerm is not installed.".to_string())?;
-                let mut cmd = Command::new(&bin);
-                cmd.arg("start")
-                    .arg("--cwd")
-                    .arg(&plan.cwd)
-                    .arg("--")
-                    .arg(cli_path);
-                for a in &plan.args {
-                    cmd.arg(a);
-                }
-                for (k, v) in &plan.env {
-                    cmd.env(k, v);
-                }
-                cmd.env("PATH", augmented_path());
-                cmd.spawn()
-                    .map_err(|e| format!("Could not open WezTerm: {e}"))?;
-                return Ok("WezTerm".to_string());
+    match terminal_id {
+        "iterm" => spawn_iterm(plan, cli_path),
+        "wezterm" => {
+            let bin = mac_bundle_cli("WezTerm.app", "Contents/MacOS/wezterm", "wezterm")
+                .ok_or_else(|| "WezTerm is not installed.".to_string())?;
+            let mut cmd = Command::new(&bin);
+            cmd.arg("start")
+                .arg("--cwd")
+                .arg(&plan.cwd)
+                .arg("--")
+                .arg(cli_path);
+            for a in &plan.args {
+                cmd.arg(a);
             }
-            "kitty" => {
-                let bin = mac_bundle_cli("kitty.app", "Contents/MacOS/kitty", "kitty")
-                    .ok_or_else(|| "Kitty is not installed.".to_string())?;
-                let mut cmd = Command::new(&bin);
-                cmd.arg("--directory").arg(&plan.cwd).arg(cli_path);
-                for a in &plan.args {
-                    cmd.arg(a);
-                }
-                for (k, v) in &plan.env {
-                    cmd.env(k, v);
-                }
-                cmd.env("PATH", augmented_path());
-                cmd.spawn()
-                    .map_err(|e| format!("Could not open Kitty: {e}"))?;
-                return Ok("Kitty".to_string());
+            for (k, v) in &plan.env {
+                cmd.env(k, v);
             }
-            "alacritty" => {
-                let bin = mac_bundle_cli("Alacritty.app", "Contents/MacOS/alacritty", "alacritty")
-                    .ok_or_else(|| "Alacritty is not installed.".to_string())?;
-                let mut cmd = Command::new(&bin);
-                cmd.arg("--working-directory")
-                    .arg(&plan.cwd)
-                    .arg("-e")
-                    .arg(cli_path);
-                for a in &plan.args {
-                    cmd.arg(a);
-                }
-                for (k, v) in &plan.env {
-                    cmd.env(k, v);
-                }
-                cmd.env("PATH", augmented_path());
-                cmd.spawn()
-                    .map_err(|e| format!("Could not open Alacritty: {e}"))?;
-                return Ok("Alacritty".to_string());
+            cmd.env("PATH", augmented_path());
+            cmd.spawn()
+                .map_err(|e| format!("Could not open WezTerm: {e}"))?;
+            Ok("WezTerm".to_string())
+        }
+        "kitty" => {
+            let bin = mac_bundle_cli("kitty.app", "Contents/MacOS/kitty", "kitty")
+                .ok_or_else(|| "Kitty is not installed.".to_string())?;
+            let mut cmd = Command::new(&bin);
+            cmd.arg("--directory").arg(&plan.cwd).arg(cli_path);
+            for a in &plan.args {
+                cmd.arg(a);
             }
-            "ghostty" => {
-                let app = mac_app_dir("Ghostty.app")
-                    .ok_or_else(|| "Ghostty is not installed.".to_string())?;
-                // `open` cannot pass env, so env rides in the wrapper script.
-                let wrapper = write_launcher_file(plan, cli_path, "sh")?;
-                let open =
-                    find_cli_binary(&["open"]).unwrap_or_else(|| PathBuf::from("/usr/bin/open"));
-                Command::new(&open)
-                    .arg("-n")
-                    .arg("-a")
-                    .arg(&app)
-                    .arg("--args")
-                    .arg(format!(
-                        "--working-directory={}",
-                        plan.cwd.to_string_lossy()
-                    ))
-                    .arg("-e")
-                    .arg("/bin/sh")
-                    .arg(&wrapper)
-                    .spawn()
-                    .map_err(|e| format!("Could not open Ghostty: {e}"))?;
-                return Ok("Ghostty".to_string());
+            for (k, v) in &plan.env {
+                cmd.env(k, v);
             }
-            _ => {
-                // No AppleScript: a `.command` script opened with `open` needs no
-                // Automation permission (fixes -1743 "Not authorised to send Apple
-                // events to Terminal").
-                let file = write_macos_command_file(plan, cli_path)?;
-                let open =
-                    find_cli_binary(&["open"]).unwrap_or_else(|| PathBuf::from("/usr/bin/open"));
-                Command::new(&open)
-                    .arg(&file)
-                    .spawn()
-                    .map_err(|e| format!("Could not open Terminal: {e}"))?;
-                return Ok("Terminal".to_string());
+            cmd.env("PATH", augmented_path());
+            cmd.spawn()
+                .map_err(|e| format!("Could not open Kitty: {e}"))?;
+            Ok("Kitty".to_string())
+        }
+        "alacritty" => {
+            let bin = mac_bundle_cli("Alacritty.app", "Contents/MacOS/alacritty", "alacritty")
+                .ok_or_else(|| "Alacritty is not installed.".to_string())?;
+            let mut cmd = Command::new(&bin);
+            cmd.arg("--working-directory")
+                .arg(&plan.cwd)
+                .arg("-e")
+                .arg(cli_path);
+            for a in &plan.args {
+                cmd.arg(a);
             }
+            for (k, v) in &plan.env {
+                cmd.env(k, v);
+            }
+            cmd.env("PATH", augmented_path());
+            cmd.spawn()
+                .map_err(|e| format!("Could not open Alacritty: {e}"))?;
+            Ok("Alacritty".to_string())
+        }
+        "ghostty" => {
+            let app = mac_app_dir("Ghostty.app")
+                .ok_or_else(|| "Ghostty is not installed.".to_string())?;
+            // `open` cannot pass env, so env rides in the wrapper script.
+            let wrapper = write_launcher_file(plan, cli_path, "sh")?;
+            let open = find_cli_binary(&["open"]).unwrap_or_else(|| PathBuf::from("/usr/bin/open"));
+            Command::new(&open)
+                .arg("-n")
+                .arg("-a")
+                .arg(&app)
+                .arg("--args")
+                .arg(format!(
+                    "--working-directory={}",
+                    plan.cwd.to_string_lossy()
+                ))
+                .arg("-e")
+                .arg("/bin/sh")
+                .arg(&wrapper)
+                .spawn()
+                .map_err(|e| format!("Could not open Ghostty: {e}"))?;
+            Ok("Ghostty".to_string())
+        }
+        _ => {
+            // No AppleScript: a `.command` script opened with `open` needs no
+            // Automation permission (fixes -1743 "Not authorised to send Apple
+            // events to Terminal").
+            let file = write_macos_command_file(plan, cli_path)?;
+            let open = find_cli_binary(&["open"]).unwrap_or_else(|| PathBuf::from("/usr/bin/open"));
+            Command::new(&open)
+                .arg(&file)
+                .spawn()
+                .map_err(|e| format!("Could not open Terminal: {e}"))?;
+            Ok("Terminal".to_string())
         }
     }
+}
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        if !is_terminal_available(terminal_id) {
-            return Err("Selected terminal is not installed.".to_string());
-        }
-        let term = if terminal_id.contains('/') {
-            PathBuf::from(terminal_id)
-        } else {
-            find_cli_binary(&[terminal_id])
-                .ok_or_else(|| "Selected terminal is not installed.".to_string())?
-        };
-        let label = terminal_label(terminal_id);
-        let bin = cli_path.to_string_lossy().to_string();
-        let mut inner = format!(
-            "cd {} && exec {}",
-            posix_quote(&plan.cwd.to_string_lossy()),
-            posix_quote(&bin)
-        );
-        for a in &plan.args {
-            inner.push(' ');
-            inner.push_str(&posix_quote(a));
-        }
-        // Keep the window open after exit for error inspection.
-        let script = format!("{inner}; exec \"${{SHELL:-/bin/bash}}\"");
-        let mut cmd = Command::new(&term);
-        // Labels are presentation strings (e.g. "GNOME Terminal"). Match the
-        // executable name, including when $TERMINAL is an absolute path.
-        match term.file_name().and_then(|s| s.to_str()).unwrap_or("") {
-            "gnome-terminal" => {
-                cmd.arg("--").arg("bash").arg("-c").arg(&script);
-            }
-            "wezterm" => {
-                cmd.arg("start")
-                    .arg("--cwd")
-                    .arg(&plan.cwd)
-                    .arg("--")
-                    .arg("bash")
-                    .arg("-c")
-                    .arg(&script);
-            }
-            "kitty" | "foot" => {
-                cmd.arg("--").arg("bash").arg("-c").arg(&script);
-            }
-            "xfce4-terminal" => {
-                cmd.arg("--execute").arg("bash").arg("-c").arg(&script);
-            }
-            _ => {
-                cmd.arg("-e").arg("bash").arg("-c").arg(&script);
-            }
-        }
-        cmd.current_dir(&plan.cwd);
-        for (k, v) in &plan.env {
-            cmd.env(k, v);
-        }
-        cmd.env("PATH", augmented_path());
-        cmd.spawn()
-            .map_err(|e| format!("Could not open {label}: {e}"))?;
-        Ok(label)
+/// Open a terminal running the plan. Spawning uses the resolved absolute CLI
+/// path; the displayed command keeps the plain binary name.
+#[cfg(not(target_os = "macos"))]
+fn spawn_plan(plan: &ResumePlan, cli_path: &Path, terminal_id: &str) -> Result<String, String> {
+    if !is_terminal_available(terminal_id) {
+        return Err("Selected terminal is not installed.".to_string());
     }
+    let term = if terminal_id.contains('/') {
+        PathBuf::from(terminal_id)
+    } else {
+        find_cli_binary(&[terminal_id])
+            .ok_or_else(|| "Selected terminal is not installed.".to_string())?
+    };
+    let label = terminal_label(terminal_id);
+    let bin = cli_path.to_string_lossy().to_string();
+    let mut inner = format!(
+        "cd {} && exec {}",
+        posix_quote(&plan.cwd.to_string_lossy()),
+        posix_quote(&bin)
+    );
+    for a in &plan.args {
+        inner.push(' ');
+        inner.push_str(&posix_quote(a));
+    }
+    // Keep the window open after exit for error inspection.
+    let script = format!("{inner}; exec \"${{SHELL:-/bin/bash}}\"");
+    let mut cmd = Command::new(&term);
+    // Labels are presentation strings (e.g. "GNOME Terminal"). Match the
+    // executable name, including when $TERMINAL is an absolute path.
+    match term.file_name().and_then(|s| s.to_str()).unwrap_or("") {
+        "gnome-terminal" => {
+            cmd.arg("--").arg("bash").arg("-c").arg(&script);
+        }
+        "wezterm" => {
+            cmd.arg("start")
+                .arg("--cwd")
+                .arg(&plan.cwd)
+                .arg("--")
+                .arg("bash")
+                .arg("-c")
+                .arg(&script);
+        }
+        "kitty" | "foot" => {
+            cmd.arg("--").arg("bash").arg("-c").arg(&script);
+        }
+        "xfce4-terminal" => {
+            cmd.arg("--execute").arg("bash").arg("-c").arg(&script);
+        }
+        _ => {
+            cmd.arg("-e").arg("bash").arg("-c").arg(&script);
+        }
+    }
+    cmd.current_dir(&plan.cwd);
+    for (k, v) in &plan.env {
+        cmd.env(k, v);
+    }
+    cmd.env("PATH", augmented_path());
+    cmd.spawn()
+        .map_err(|e| format!("Could not open {label}: {e}"))?;
+    Ok(label)
 }
 
 fn resume_inner(db_path: &Path, id: i64, terminal: Option<&str>) -> Result<Value, String> {
