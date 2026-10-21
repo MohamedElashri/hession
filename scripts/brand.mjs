@@ -1,5 +1,5 @@
 // Applies brand.json to the static manifests that cannot read it at build time
-// (Tauri config, npm package name, Cargo metadata). Runtime code reads
+// (Tauri config, npm package name, Cargo metadata, install.sh). Runtime code reads
 // brand.json directly: Vite imports it, and src-tauri/build.rs exports it to Rust.
 // Idempotent; runs before every `npm run tauri …`.
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -45,3 +45,14 @@ cargo = /^\[\[bin\]\]\nname = ".*"\npath = "src\/main\.rs"\n/m.test(cargo)
   ? cargo.replace(/^\[\[bin\]\]\nname = ".*"\npath = "src\/main\.rs"\n/m, bin)
   : cargo.replace(/^\[build-dependencies\]$/m, `${bin}\n[build-dependencies]`);
 write(cargoPath, cargo);
+
+// install.sh runs standalone (piped from curl), so it carries its own copy.
+const installer = read('install.sh');
+const block = /# --- generated from brand\.json by scripts\/brand\.mjs; do not edit ---\n[\s\S]*?# --- end generated ---/;
+write('install.sh', installer.replace(block, [
+  '# --- generated from brand.json by scripts/brand.mjs; do not edit ---',
+  `APP_NAME=${JSON.stringify(brand.name)}`,
+  `APP_SLUG=${JSON.stringify(brand.slug)}`,
+  `REPO=${JSON.stringify(brand.repository)}`,
+  '# --- end generated ---',
+].join('\n')));

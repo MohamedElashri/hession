@@ -27,15 +27,29 @@ both the ones on this computer and the ones on the SSH hosts you work on
 
 ## Install
 
-Hession runs on Linux and macOS. There are no prebuilt releases yet. Build it
-from source (Linux shown; see [development](docs/development.md) for macOS):
+Hession runs on macOS (Apple silicon and Intel) and Linux (x64 and ARM64).
+Install or update to the latest release with:
 
 ```sh
-git clone https://github.com/MohamedElashri/hession && cd hession
-make deps      # system libraries (sudo)
-make deb       # or: make appimage, make rpm, make build
-sudo apt install ./target/release/bundle/deb/*.deb
+curl -fsSL https://raw.githubusercontent.com/MohamedElashri/hession/main/install.sh | sh
 ```
+
+The script picks the right package for your system, verifies its SHA-256
+checksum, and installs it:
+
+| System | Installs |
+| --- | --- |
+| macOS | `Hession.app` in `/Applications` (or `~/Applications`) |
+| Debian, Ubuntu | the `.deb` package (asks for `sudo`) |
+| Fedora, openSUSE, RHEL | the `.rpm` package (asks for `sudo`) |
+| Other Linux, or `--appimage` | the AppImage in `~/.local`, with a `hession` command and menu entry |
+
+Run the same command again to update. Options go after `sh -s --`, for example
+`... | sh -s -- --appimage`: `--version v0.1.0`, `--force`, `--uninstall`, and
+`--help`. Your session library in `~/.hession` is never touched. Installers are
+also on the [releases page](https://github.com/MohamedElashri/hession/releases).
+
+To build from source instead, see [development](docs/development.md).
 
 ## Quick start
 

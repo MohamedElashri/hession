@@ -31,7 +31,7 @@ directly, set `PKG_CONFIG=/usr/bin/pkg-config` yourself.
 | `make test` | Frontend build, Rust tests, and JS tests |
 | `make docker-test` | The same tests in a container, with no system libraries needed |
 | `make check` | Frontend build + `cargo check` |
-| `make lint` | ESLint + Clippy; any warning fails (`make lint-js` for ESLint only) |
+| `make lint` | ESLint + ShellCheck + Clippy; any warning fails (`make lint-js`, `make lint-sh` alone) |
 | `make unused` | Unused files, exports, and npm dependencies (knip) |
 | `make fmt` / `make fmt-check` | Format the Rust code / fail if it isn't formatted |
 | `make build` | Installers for this OS; `make deb`, `appimage`, `rpm` for one format |

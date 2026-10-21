@@ -6,6 +6,7 @@
     "sion"
   ],
   "identifier": "io.github.mohamedelashri.hession",
+  "repository": "MohamedElashri/hession",
   "envPrefix": "HESSION",
   "tagline": "A local-first home for your coding agent sessions, local and remote.",
   "author": "Mohamed Elashri"

@@ -21,7 +21,7 @@ ifeq ($(shell uname -s),Linux)
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help setup deps dev preview preview-fixtures build deb appimage rpm run test check lint lint-js unused fmt fmt-check icons brand \
+.PHONY: help setup deps dev preview preview-fixtures build deb appimage rpm run test check lint lint-js lint-sh unused fmt fmt-check icons brand \
         docker-test release-check clean desktop-entry desktop-entry-remove
 
 help: ## Show this help
@@ -79,12 +79,16 @@ test: setup ## Run Rust and JS tests and the frontend build
 check: setup ## Build the frontend and cargo check the backend (no tests)
 	npm run check
 
-lint: lint-js ## ESLint + Clippy; any warning fails
+lint: lint-js lint-sh ## ESLint + ShellCheck + Clippy; any warning fails
 	npm run build
 	cd $(CARGO_DIR) && $(CARGO) clippy --all-targets -- -D warnings
 
 lint-js: setup ## ESLint on the frontend and scripts
 	npm run lint
+
+lint-sh: ## ShellCheck the install script (skipped if shellcheck is missing)
+	@if command -v shellcheck >/dev/null; then shellcheck -s sh install.sh && echo "install.sh: shellcheck clean"; \
+	else echo "shellcheck not installed; skipping install.sh check"; fi
 
 unused: setup ## Report unused files, exports, and npm dependencies (knip)
 	npm run unused

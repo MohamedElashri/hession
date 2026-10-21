@@ -216,6 +216,23 @@ jobs:
             > "$RUNNER_TEMP/release-assets.json"
           node .github/scripts/check-release.mjs "$RELEASE_TAG" "$RUNNER_TEMP/release-assets.json"
 
+      # The install script verifies downloads against this file.
+      - name: Attach SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/installers" && cd "$RUNNER_TEMP/installers"
+          jq -r '.[][] | select(.name | test("\\.(dmg|deb|rpm|AppImage)$")) | "\(.id) \(.name)"' \
+            "$RUNNER_TEMP/release-assets.json" | while read -r id name; do
+            gh api -H 'Accept: application/octet-stream' "repos/${GITHUB_REPOSITORY}/releases/assets/${id}" > "$name"
+          done
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$RELEASE_TAG" SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+
   publish-release:
     name: Publish the complete release
     needs: [prepare, verify-release]
