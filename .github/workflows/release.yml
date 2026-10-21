@@ -259,3 +259,12 @@ jobs:
             echo 'All three native builds succeeded and all seven installers are present.'
             echo "Release: ${release_url}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  test-installer:
+    name: Test the install script
+    needs: publish-release
+    permissions:
+      contents: read
+    uses: ./.github/workflows/installer.yml
+    with:
+      version: ${{ github.ref_name }}

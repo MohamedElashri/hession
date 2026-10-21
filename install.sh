@@ -180,7 +180,8 @@ installed_version() {
     dmg)
       app=$(mac_app_path)
       if [ -n "$app" ]; then /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null || true; fi ;;
-    deb) dpkg-query -W -f='${Version}' "$APP_SLUG" 2>/dev/null || true ;;
+    # Only fully installed packages count (not "removed, config remains").
+    deb) dpkg-query -W -f='${db:Status-Status} ${Version}\n' "$APP_SLUG" 2>/dev/null | sed -n 's/^installed //p' || true ;;
     rpm) rpm -q --qf '%{VERSION}' "$APP_SLUG" 2>/dev/null | grep -v 'not installed' || true ;;
     appimage) if [ -f "$APPIMAGE_DIR/VERSION" ]; then cat "$APPIMAGE_DIR/VERSION"; fi ;;
   esac

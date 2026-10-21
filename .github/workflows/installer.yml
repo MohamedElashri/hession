@@ -1,0 +1,70 @@
+name: Install script
+
+# Runs install.sh against a published release on every supported path:
+# install, confirm the version, rerun (must be a no-op), and uninstall.
+# Called by release.yml after publishing, or run by hand.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release tag to install
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag to install (empty for the latest)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS (DMG), runner: macos-26, check: "/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/Hession.app/Contents/Info.plist" }
+          - { name: Ubuntu (deb), runner: ubuntu-24.04, check: "dpkg-query -W -f='${db:Status-Status} ${Version}' hession | sed -n 's/^installed //p' | grep ." }
+          - { name: Ubuntu (AppImage), runner: ubuntu-24.04, flags: --appimage, check: "cat ~/.local/share/hession/VERSION" }
+          - { name: Fedora (rpm), runner: ubuntu-24.04, container: "fedora:42", check: "rpm -q --qf '%{VERSION}' hession" }
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Prepare the Fedora container
+        if: matrix.container
+        run: dnf install -y --setopt=install_weak_deps=False git tar findutils which
+
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install
+        shell: sh
+        run: sh install.sh ${VERSION:+--version "$VERSION"} ${{ matrix.flags }}
+
+      - name: Check the installed version
+        shell: sh
+        run: |
+          installed=$(${{ matrix.check }})
+          echo "installed: $installed"
+          [ -n "$installed" ]
+          if [ -n "$VERSION" ]; then [ "v$installed" = "$VERSION" ]; fi
+
+      - name: Rerun (must report up to date)
+        shell: sh
+        run: sh install.sh ${VERSION:+--version "$VERSION"} ${{ matrix.flags }} | tee rerun.log && grep -q 'Already up to date' rerun.log
+
+      - name: Uninstall
+        shell: sh
+        run: |
+          sh install.sh --uninstall ${{ matrix.flags }}
+          if ${{ matrix.check }} >/dev/null 2>&1; then echo "still installed" >&2; exit 1; fi
