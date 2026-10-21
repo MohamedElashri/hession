@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   Bot, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Code2,
-  Copy, Database, Download, FileCode2, Folder, GitBranch, Laptop, Layers3,
+  Copy, Database, Download, FileCode2, Folder, GitBranch, Info, Laptop, Layers3,
   LoaderCircle, Menu, MessageSquareText, Moon, Plus, RefreshCw, Search,
   Server, Sparkles, Square, Star, Sun, Tag, Terminal, TrendingUp, User, X,
 } from 'lucide-react';
@@ -17,6 +17,7 @@ import ExportSelect from './components/ExportSelect.jsx';
 import SyncMenu from './components/SyncMenu.jsx';
 import DataManagement from './components/DataManagement.jsx';
 import RemoteHosts from './components/RemoteHosts.jsx';
+import AboutDialog from './components/AboutDialog.jsx';
 import BrandMark from './components/BrandMark.jsx';
 import { Conversation, PromptIndex } from './components/Conversation.jsx';
 import AnalyticsView from './Analytics.jsx';
@@ -63,7 +64,7 @@ function App(){
   const [stats,setStats]=useState({sessions:0,entries:0,agents:0,files:0}),[detail,setDetail]=useState(null);
   const [query,setQuery]=useState(''),[agentFilter,setAgentFilter]=useState(''),[projectFilter,setProjectFilter]=useState('');
   // '' = every machine, '@local' = this computer, otherwise an SSH host.
-  const [hostFilter,setHostFilter]=useState(''),[remoteHostsOpen,setRemoteHostsOpen]=useState(false);
+  const [hostFilter,setHostFilter]=useState(''),[remoteHostsOpen,setRemoteHostsOpen]=useState(false),[aboutOpen,setAboutOpen]=useState(false);
   const [starredOnly,setStarredOnly]=useState(false),[tagFilters,setTagFilters]=useState([]);
   const [tagDraft,setTagDraft]=useState(''),[annotationBusy,setAnnotationBusy]=useState(false);
   const [exportOpen,setExportOpen]=useState(false),[exportScope,setExportScope]=useState('filtered'),[exportFormat,setExportFormat]=useState('markdown'),[exportBusy,setExportBusy]=useState(false);
@@ -502,6 +503,7 @@ function App(){
 
   return <div className="app-shell" data-theme={theme}>
     {remoteHostsOpen&&<RemoteHosts onClose={()=>{setRemoteHostsOpen(false);loadMeta({silent:true});}} onSyncNow={()=>startSync()} syncRunning={sync.running||syncStarting}/>}
+    {aboutOpen&&<AboutDialog onClose={()=>setAboutOpen(false)}/>}
     {dataManagementOpen&&<DataManagement onClose={()=>setDataManagementOpen(false)} onChanged={refreshManagedData} syncRunning={sync.running||syncStarting}/>}
     {mobileNav&&<div className="sidebar-scrim" onClick={()=>setMobileNav(false)}/>}
     <aside className={`sidebar ${mobileNav?'sidebar-open':''}`}>
@@ -554,6 +556,7 @@ function App(){
         <div className="sidebar-tools">
           <button type="button" className="icon-button" onClick={()=>setRemoteHostsOpen(true)} title="Remote hosts" aria-label="Remote hosts"><Server size={16}/></button>
           <button type="button" className="icon-button" onClick={()=>{setSyncMenuOpen(false);setDataManagementOpen(true);}} title="Manage saved data" aria-label="Manage saved data" aria-haspopup="dialog"><Database size={16}/></button>
+          <button type="button" className="icon-button" onClick={()=>setAboutOpen(true)} title={`About ${BRAND.name} and updates`} aria-label={`About ${BRAND.name} and updates`} aria-haspopup="dialog"><Info size={16}/></button>
           <button type="button" className="icon-button" onClick={toggleTheme} title={`Switch to ${theme==='dark'?'light':'dark'} theme`} aria-label={`Switch to ${theme==='dark'?'light':'dark'} theme`}>{theme==='dark'?<Sun size={16}/>:<Moon size={16}/>}</button>
         </div>
       </div>

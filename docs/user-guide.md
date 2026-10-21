@@ -95,6 +95,22 @@ Long sessions are split into pages of 500 entries.
   whole library as Markdown or JSON. You can optionally include stats such as
   tokens, cost, and duration.
 
+## Updates
+
+Hession never checks for updates or updates itself on its own. Open the
+**info button** at the bottom of the sidebar and click **Check for updates**:
+that sends one request to GitHub for the latest release, and nothing about you
+or your library is included. If a newer version exists you see its release
+notes and can:
+
+- **Update in terminal**: opens a terminal running that release's install
+  script, which verifies the download's checksum before installing (it may ask
+  for your password to install a system package)
+- **Copy command**: the same command, to run yourself
+- **View release**: the release page on GitHub
+
+Running the [install command](../README.md#install) again also updates.
+
 ## Your data
 
 Everything lives in `~/.hession/` (set `HESSION_DATA_DIR` to change this):

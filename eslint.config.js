@@ -5,7 +5,7 @@ import reactHooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
 
 export default [
-  { ignores: ['dist/', 'node_modules/', 'src-tauri/', 'src/dev/fixtures.json'] },
+  { ignores: ['dist/', 'node_modules/', 'target/', 'src-tauri/', 'src/dev/fixtures.json', 'src/dev/fixtures.local.json'] },
   js.configs.recommended,
   {
     files: ['src/**/*.{js,jsx}'],

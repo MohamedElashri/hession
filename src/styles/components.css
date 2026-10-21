@@ -103,3 +103,15 @@
 .remote-tag { margin-left: 4px; padding: 0 5px; border-radius: 4px; background: var(--info-soft); color: var(--info); font: 500 10px/1.6 var(--font-sans); }
 .remote-footer { align-items: center; justify-content: flex-start; }
 @media (max-width: 560px) { .remote-list li { grid-template-columns: 1fr; } .remote-actions { grid-row: auto; grid-column: 1; } }
+
+/* ------------------------------------------------------------ about dialog */
+.about-dialog { width: min(520px, calc(100vw - 32px)); }
+.about-dialog .export-heading h2 { font-size: var(--text-xl); }
+.about-version { margin: -6px 0 6px !important; font: var(--text-sm) var(--font-mono); color: var(--text-3) !important; }
+.about-updates { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.about-updates > p { margin: 0 !important; }
+.about-updates .data-success, .about-updates .data-error, .about-updates .data-status { align-self: stretch; margin: 0; }
+.update-available { align-self: stretch; display: flex; flex-direction: column; gap: 6px; padding: 14px; border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); border-radius: var(--radius); background: var(--accent-soft); }
+.update-available > strong { font-size: var(--text-base); }
+.update-notes { max-height: 220px; overflow: auto; margin: 4px 0; padding: 10px 12px; border-radius: var(--radius); background: var(--surface); font-size: var(--text-md); }
+.update-available .data-actions { margin-top: 4px; justify-content: flex-start; }

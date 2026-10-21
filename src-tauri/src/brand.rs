@@ -5,6 +5,8 @@
 pub const NAME: &str = env!("BRAND_NAME");
 /// Lowercase identifier for file names, temp prefixes, and the data directory.
 pub const SLUG: &str = env!("BRAND_SLUG");
+/// GitHub `owner/repo` that publishes releases (used by the update check).
+pub const REPOSITORY: &str = env!("BRAND_REPOSITORY");
 /// Prefix for environment variables such as `<PREFIX>_DATA_DIR`.
 pub const ENV_PREFIX: &str = env!("BRAND_ENV_PREFIX");
 

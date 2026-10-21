@@ -86,6 +86,15 @@ const handlers = {
   get_resume_info: resumeInfo,
   resume_session: () => ({ ok: false, message: 'Resuming is disabled in the browser preview.' }),
   open_in_editor: () => Promise.reject('Opening VS Code is disabled in the browser preview.'),
+  app_version: () => ({ name: 'Hession', version: '0.1.0' }),
+  check_for_update: async () => {
+    await delay(600);
+    return { current: '0.1.0', latest: '0.2.0', tag: 'v0.2.0', newer: true, publishedAt: new Date().toISOString(), url: '#',
+      notes: '### Features\n- A sample release note for the preview.\n\n### Fixes\n- Another sample entry.' };
+  },
+  update_command: ({ tag }) => `curl -fsSL https://raw.githubusercontent.com/example/app/${tag}/install.sh | sh -s -- --version ${tag}`,
+  run_update: () => Promise.reject('Updating is disabled in the browser preview.'),
+  open_release_page: () => Promise.reject('Opening the browser is disabled in the preview.'),
   get_remote_hosts: () => ({ hosts: state.hosts, suggestions: [{ name: 'staging', source: 'vscode' }, { name: 'ci-runner', source: 'ssh-config' }], tools: { ssh: true, rsync: true } }),
   set_remote_hosts: ({ hosts }) => { state.hosts = hosts.map((h) => ({ ...h, lastSync: null, agents: [], ...state.hosts.find((x) => x.name === h.name), enabled: h.enabled })); return { ok: true }; },
   test_remote_host: async ({ name }) => { await delay(700); return { ok: true, home: `/home/${name}`, rsync: true, agents: ['claude'] }; },

@@ -18,7 +18,8 @@ both the ones on this computer and the ones on the SSH hosts you work on
 - **Resume** a session in its agent CLI, locally or over `ssh`, or **open
   its folder in VS Code**
 - **Analytics** for tokens, estimated cost, tools, and failures
-- **Local-first**: everything is stored in a SQLite database on your machine
+- **Local-first and private**: everything is stored in a SQLite database on
+  your machine; no telemetry, and updates are checked only when you ask
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/sessions-dark.png">
@@ -70,9 +71,10 @@ To build from source instead, see [development](docs/development.md).
   without password prompts. Their history files are copied with `rsync` into
   `~/.hession/remotes/<host>/` and then indexed like local files. Nothing on
   the host is changed.
-- **Nothing is uploaded.** Besides your SSH hosts, the only network request
-  is a model-price download from [models.dev](https://models.dev), and only
-  when you click it in Analytics.
+- **Nothing is uploaded.** Besides your SSH hosts, the app makes network
+  requests only when you click for them: a model-price download from
+  [models.dev](https://models.dev) in Analytics, and an update check against
+  GitHub releases in the About dialog.
 
 ## Documentation
 

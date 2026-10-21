@@ -16,6 +16,7 @@ pub mod pricing;
 pub mod remote;
 pub mod resume;
 pub mod sync;
+pub mod updates;
 
 /// Shared application state managed by Tauri.
 #[derive(Debug, Default)]
@@ -88,6 +89,11 @@ pub fn run() {
             remote::get_remote_hosts,
             remote::set_remote_hosts,
             remote::test_remote_host,
+            updates::app_version,
+            updates::check_for_update,
+            updates::update_command,
+            updates::run_update,
+            updates::open_release_page,
             data_management::preview_saved_data,
             data_management::export_saved_data,
             data_management::preview_data_import,

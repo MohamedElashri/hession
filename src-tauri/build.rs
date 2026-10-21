@@ -8,6 +8,7 @@ fn main() {
         ("name", "BRAND_NAME"),
         ("slug", "BRAND_SLUG"),
         ("envPrefix", "BRAND_ENV_PREFIX"),
+        ("repository", "BRAND_REPOSITORY"),
     ] {
         let value = brand[key]
             .as_str()

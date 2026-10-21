@@ -1791,3 +1791,28 @@ pub async fn open_in_editor(state: State<'_, AppState>, id: String) -> Result<Va
         .await
         .map_err(|e| format!("open_in_editor failed: {e}"))?
 }
+
+/// Run a program in a visible terminal (the user's preferred one, as for
+/// resume), starting in the home directory. The terminal stays open after
+/// the program exits so its output can be read.
+pub(crate) fn run_in_terminal(program: &str, args: Vec<String>) -> Result<String, String> {
+    let program_path =
+        find_cli_binary(&[program]).ok_or_else(|| format!("`{program}` was not found."))?;
+    let terminal = resolve_terminal(None)
+        .0
+        .ok_or("No terminal emulator found to launch.")?;
+    let plan = ResumePlan {
+        binary: program.to_string(),
+        args,
+        cwd: home_dir(),
+        cwd_fallback: false,
+        env: HashMap::new(),
+        display: String::new(),
+        warnings: Vec::new(),
+        source_file: PathBuf::new(),
+        resume_key: String::new(),
+        profile: None,
+        remote: None,
+    };
+    spawn_plan(&plan, &program_path, &terminal)
+}
