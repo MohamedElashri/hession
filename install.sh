@@ -253,7 +253,8 @@ if [ -n "$CURRENT" ]; then
     ok "Already up to date (version $CURRENT). Use --force to reinstall."
     exit 0
   fi
-  info "Updating from ${BOLD}$CURRENT${RESET} $ARROW ${BOLD}$LATEST${RESET}"
+  if [ "$CURRENT" = "$LATEST" ]; then info "Reinstalling ${BOLD}$LATEST${RESET}"
+  else info "Updating from ${BOLD}$CURRENT${RESET} $ARROW ${BOLD}$LATEST${RESET}"; fi
 fi
 
 # ---------------------------------------------------------------- download
@@ -342,7 +343,7 @@ EOF
     case ":$PATH:" in *":$BIN_DIR:"*) ;; *) warn "$BIN_DIR is not on your PATH; add it to start $APP_NAME from a terminal" ;; esac ;;
 esac
 
-printf '\n%s%s %s %s is ready.%s\n' "$BOLD" "$GREEN" "$APP_NAME" "$LATEST" "$RESET"
+printf '\n%s%s%s %s %s is ready.%s\n' "$BOLD" "$GREEN" "$OK_MARK" "$APP_NAME" "$LATEST" "$RESET"
 info "Start it from your applications menu, or run: ${BOLD}$LAUNCH${RESET}"
 info "${DIM}Run this installer again at any time to update.${RESET}"
 printf '\n'

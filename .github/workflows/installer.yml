@@ -59,6 +59,15 @@ jobs:
           [ -n "$installed" ]
           if [ -n "$VERSION" ]; then [ "v$installed" = "$VERSION" ]; fi
 
+      - name: Check the app is universal (Apple silicon and Intel)
+        if: runner.os == 'macOS'
+        shell: sh
+        run: |
+          archs=$(lipo -archs /Applications/Hession.app/Contents/MacOS/hession)
+          echo "architectures: $archs"
+          case " $archs " in *" arm64 "*) ;; *) exit 1 ;; esac
+          case " $archs " in *" x86_64 "*) ;; *) exit 1 ;; esac
+
       - name: Rerun (must report up to date)
         shell: sh
         run: sh install.sh ${VERSION:+--version "$VERSION"} ${{ matrix.flags }} | tee rerun.log && grep -q 'Already up to date' rerun.log
