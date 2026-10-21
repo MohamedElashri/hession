@@ -72,6 +72,20 @@ host, from that host's environment.
 Cline task folders created by the editor extension can't be resumed from the
 CLI; resume them from *Cline → History* in the editor.
 
+## Reading a session
+
+A session opens in **Conversation** view: each of your prompts in a blue card,
+followed by the agent's reply and a one-line entry per tool call it made
+(click one for the command and its output). Thinking, pasted text, and context
+that tools inject (system reminders, environment details) are collapsed, and
+bookkeeping such as mode changes is hidden. Long runs of tool calls and very
+long messages are shortened until you expand them.
+
+- **Prompts** lists every prompt on the page; click one to jump to it.
+- **Full log** shows every recorded entry, including events, with filters.
+
+Long sessions are split into pages of 500 entries.
+
 ## Bookmarks, tags, and export
 
 - **Star** a session with the icon on its card.

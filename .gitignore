@@ -5,4 +5,6 @@ target
 .DS_Store
 src-tauri/gen
 *.log
+# Preview of a real library (make preview-fixtures FROM=...): private data
+src/dev/fixtures.local.json
 

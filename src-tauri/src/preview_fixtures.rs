@@ -4,6 +4,7 @@
 //! functions, so the preview always matches the backend's response shapes.
 //!
 //! Run with `make preview-fixtures` (an ignored test; it rewrites the file).
+//! `make preview-fixtures FROM=<sessions.sqlite>` dumps a real library instead.
 
 use super::*;
 use chrono::{Duration, Utc};
@@ -257,11 +258,40 @@ fn dump_preview_fixtures() {
     ).unwrap();
     drop(conn);
 
-    let all = search_sessions_inner(&db, &SessionFilters::default(), 100, 0).unwrap();
+    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/dev/fixtures.json");
+    write_fixtures(&db, &out, 100);
+}
+
+/// Preview your own library: `make preview-fixtures FROM=~/.hession/sessions.sqlite`.
+/// Dumps the most recent sessions of a snapshot of that database to
+/// src/dev/fixtures.local.json (git-ignored), which the preview prefers.
+#[test]
+#[ignore = "reads PREVIEW_FROM; run with `make preview-fixtures FROM=<database>`"]
+fn dump_library_fixtures() {
+    let Ok(source) = std::env::var("PREVIEW_FROM") else {
+        panic!("set PREVIEW_FROM to a sessions.sqlite file");
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    std::env::set_var(crate::brand::env_var("DATA_DIR"), tmp.path());
+    // The online backup API gives a consistent copy even while the app runs.
+    let copy = tmp.path().join("sessions.sqlite");
+    rusqlite::Connection::open_with_flags(&source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .unwrap()
+        .backup(rusqlite::MAIN_DB, &copy, None)
+        .unwrap();
+    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/dev/fixtures.local.json");
+    write_fixtures(&copy, &out, 40);
+}
+
+/// Dump the newest `limit` sessions, their first transcript page, and the
+/// library-wide responses the preview's mock IPC serves.
+fn write_fixtures(db: &Path, out: &Path, limit: i64) {
+    let db = db.to_path_buf();
+    let all = search_sessions_inner(&db, &SessionFilters::default(), limit, 0).unwrap();
     let mut details = serde_json::Map::new();
     for session in all["sessions"].as_array().unwrap() {
         let id = session["id"].to_string();
-        details.insert(id.clone(), get_session_inner(&db, &id, 100, 1).unwrap());
+        details.insert(id.clone(), get_session_inner(&db, &id, 500, 1).unwrap());
     }
     let fixtures = json!({
         "generatedAt": Utc::now().to_rfc3339(),
@@ -276,7 +306,6 @@ fn dump_preview_fixtures() {
         "pricingStatus": get_pricing_status_inner(&db).unwrap(),
         "pricingOverrides": get_pricing_overrides_inner(&db).unwrap(),
     });
-    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/dev/fixtures.json");
     fs::create_dir_all(out.parent().unwrap()).unwrap();
-    fs::write(&out, serde_json::to_string(&fixtures).unwrap()).unwrap();
+    fs::write(out, serde_json::to_string(&fixtures).unwrap()).unwrap();
 }

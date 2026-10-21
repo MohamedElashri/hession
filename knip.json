@@ -1,6 +1,18 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["src/export-worker.js", "src/dev/mock-ipc.js", "scripts/*.mjs", ".github/scripts/*.mjs"],
-  "project": ["src/**/*.{js,jsx}", "scripts/**/*.mjs", ".github/scripts/**/*.mjs"],
-  "ignoreBinaries": ["rsvg-convert"]
+  "entry": [
+    "src/export-worker.js",
+    "src/dev/mock-ipc.js",
+    "scripts/*.mjs",
+    ".github/scripts/*.mjs",
+    "src/**/*.test.js"
+  ],
+  "project": [
+    "src/**/*.{js,jsx}",
+    "scripts/**/*.mjs",
+    ".github/scripts/**/*.mjs"
+  ],
+  "ignoreBinaries": [
+    "rsvg-convert"
+  ]
 }

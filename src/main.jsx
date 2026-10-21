@@ -18,6 +18,7 @@ import SyncMenu from './components/SyncMenu.jsx';
 import DataManagement from './components/DataManagement.jsx';
 import RemoteHosts from './components/RemoteHosts.jsx';
 import BrandMark from './components/BrandMark.jsx';
+import { Conversation, PromptIndex } from './components/Conversation.jsx';
 import AnalyticsView from './Analytics.jsx';
 import { readNavigation, writeNavigation } from './navigation.js';
 import DateFilter from './components/DateFilter.jsx';
@@ -31,12 +32,12 @@ import './styles/base.css';
 import './styles/app.css';
 import './styles/components.css';
 import './styles/analytics.css';
-import { hasToolActivity, isSessionEvent, transcriptParts } from './transcript.js';
+import { buildConversation, hasToolActivity, isSessionEvent, transcriptParts } from './transcript.js';
 
 import { parseDate, filterSince, calendarDayDifference } from './dates.js';
 
 const PAGE_SIZE=20;
-const DETAIL_PAGE_SIZE=100; // transcript entries per page
+const DETAIL_PAGE_SIZE=500; // transcript entries per page (the backend maximum)
 // Maps the metadata endpoint suffix used by loadMeta to its Tauri command.
 const META_COMMANDS={
   agents:'get_agents',
@@ -97,7 +98,10 @@ function App(){
   const resumeDialogRef=useRef(null);
   const [loading,setLoading]=useState(true),[detailLoading,setDetailLoading]=useState(false),[notice,setNotice]=useState('');
   const [detailError,setDetailError]=useState('');
-  const [entryFilter,setEntryFilter]=useState('all'); // 'all' | 'user' | 'assistant' | 'tool' | 'event'
+  const [entryFilter,setEntryFilter]=useState('all'); // full log: 'all' | 'user' | 'assistant' | 'tool' | 'event'
+  // 'conversation' (dialogue as turns) | 'prompts' (index of prompts) | 'log' (every entry)
+  const [transcriptView,setTranscriptViewState]=useState(()=>{try{return localStorage.getItem(storageKey('transcript-view'))||'conversation';}catch{return 'conversation';}});
+  const setTranscriptView=v=>{setTranscriptViewState(v);try{localStorage.setItem(storageKey('transcript-view'),v);}catch{/* preference only */}};
   const [detailPage,setDetailPage]=useState(1); // 1-based transcript page
   const [detailJump,setDetailJump]=useState('');
   const [collapsedEntries,setCollapsedEntries]=useState(()=>new Set());
@@ -459,6 +463,8 @@ function App(){
       return true;
     });
   },[detail,entryFilter]);
+  const turns=useMemo(()=>buildConversation(detail?.entries),[detail]);
+  const openTurn=id=>{setTranscriptView('conversation');requestAnimationFrame(()=>document.getElementById(`turn-${id}`)?.scrollIntoView({block:'start'}));};
   // Transcript pagination derived from the backend's total/limit/offset.
   const detailTotal=detail?.total??detail?.entries?.length??0;
   const detailLimit=detail?.limit||DETAIL_PAGE_SIZE;
@@ -624,17 +630,22 @@ function App(){
                   <div className="session-annotations">{(detail.session.tags||[]).map(tag=><button type="button" className="tag-chip removable" key={tag} disabled={annotationBusy} title={`Remove tag ${tag}`} aria-label={`Remove tag ${tag}`} onClick={()=>updateAnnotations({tags:detail.session.tags.filter(t=>t!==tag)})}>{tag}<X size={11}/></button>)}<form className="tag-form" onSubmit={e=>{e.preventDefault();if(tagDraft.trim())updateAnnotations({tags:[...(detail.session.tags||[]),tagDraft.trim()]});}}><Tag size={12}/><input value={tagDraft} onChange={e=>setTagDraft(e.target.value)} maxLength={80} placeholder="Add tag" aria-label="New session tag" disabled={annotationBusy}/></form></div>
                 </div>
                 <div className="transcript-toolbar">
-                  <div className="transcript-filters segmented" role="group" aria-label="Filter transcript entries">
-                    {[['all','All',null],['user','You',<User size={12} key="u"/>],['assistant','Agent',<Bot size={12} key="a"/>],['tool','Tools',<Terminal size={12} key="t"/>],['event','Events',<Layers3 size={12} key="e"/>]].map(([key,label,icon])=><button key={key} className={`transcript-toggle ${entryFilter===key?'active':''}`} aria-pressed={entryFilter===key} onClick={()=>setEntryFilter(c=>key==='all'||c===key?'all':key)}>{icon}{label}<b>{entryCounts[key]}</b></button>)}
+                  <div className="segmented" role="tablist" aria-label="Transcript view">
+                    {[['conversation','Conversation',<MessageSquareText size={12} key="c"/>],['prompts','Prompts',<User size={12} key="p"/>],['log','Full log',<Layers3 size={12} key="l"/>]].map(([key,label,icon])=><button key={key} role="tab" aria-selected={transcriptView===key} className={`transcript-toggle ${transcriptView===key?'active':''}`} onClick={()=>setTranscriptView(key)}>{icon}{label}{key==='prompts'&&<b>{turns.filter(t=>t.prompt).length}</b>}</button>)}
                   </div>
+                  {transcriptView==='log'&&<div className="transcript-filters segmented" role="group" aria-label="Filter transcript entries">
+                    {[['all','All',null],['user','You',<User size={12} key="u"/>],['assistant','Agent',<Bot size={12} key="a"/>],['tool','Tools',<Terminal size={12} key="t"/>],['event','Events',<Layers3 size={12} key="e"/>]].map(([key,label,icon])=><button key={key} className={`transcript-toggle ${entryFilter===key?'active':''}`} aria-pressed={entryFilter===key} onClick={()=>setEntryFilter(c=>key==='all'||c===key?'all':key)}>{icon}{label}<b>{entryCounts[key]}</b></button>)}
+                  </div>}
                   {detailTotalPages>1&&<nav className="transcript-pagination pagination-controls" aria-label="Transcript pages">
                     <button aria-label="Previous transcript page" disabled={detailSafePage<=1||isDetailLoading} onClick={()=>gotoDetailPage(detailSafePage-1)}><ChevronLeft size={14}/></button>
                     <form className="pagination-jump" onSubmit={submitDetailJump}><span aria-live="polite">{detailRangeStart}–{detailRangeEnd} of {detailTotal.toLocaleString()} · page <input value={detailJump} onChange={e=>setDetailJump(e.target.value.replace(/[^0-9]/g,''))} placeholder={String(detailSafePage)} aria-label={`Go to transcript page, current page ${detailSafePage} of ${detailTotalPages}`} inputMode="numeric" disabled={isDetailLoading}/> of {detailTotalPages}</span></form>
                     <button aria-label="Next transcript page" disabled={detailSafePage>=detailTotalPages||isDetailLoading} onClick={()=>gotoDetailPage(detailSafePage+1)}><ChevronRight size={14}/></button>
                   </nav>}
                 </div>
-                <div className="transcript-scroll">
-                  {detailEntries.map(e=>{
+                <div className={`transcript-scroll transcript-${transcriptView}`}>
+                  {transcriptView==='conversation'&&(turns.length?<Conversation turns={turns} agentName={detail.session.product||familyLabel(detail.session.agent)} agentColor={agentColors[detail.session.agent]||'gray'}/>:<div className="transcript-empty"><div className="empty-orb"><MessageSquareText size={20}/></div><strong>No conversation on this page</strong><span>Open the full log to see this page&apos;s events.</span></div>)}
+                  {transcriptView==='prompts'&&(turns.some(t=>t.prompt)?<PromptIndex turns={turns} onOpen={openTurn}/>:<div className="transcript-empty"><div className="empty-orb"><User size={20}/></div><strong>No prompts on this page</strong><span>The agent continued without a new prompt here.</span></div>)}
+                  {transcriptView==='log'&&detailEntries.map(e=>{
                     const role=e.role||'event';const isAssistant=role==='assistant';const isUser=role==='user';
                     const {tools:toolsVisible,text:textParts,special}=transcriptParts(e);
                     const isCollapsed=collapsedEntries.has(e.id);
@@ -660,7 +671,7 @@ function App(){
                       </div>}
                     </article>;
                   })}
-                  {!detailEntries.length&&<div className="transcript-empty"><div className="empty-orb"><FileCode2 size={20}/></div><strong>No {entryFilter==='all'?'displayable':entryFilter==='assistant'?'agent':entryFilter} entries on this page</strong><span>{entryFilter!=='all'?'Show all entries to see the rest.':'Session details are still shown above.'}</span></div>}
+                  {transcriptView==='log'&&!detailEntries.length&&<div className="transcript-empty"><div className="empty-orb"><FileCode2 size={20}/></div><strong>No {entryFilter==='all'?'displayable':entryFilter==='assistant'?'agent':entryFilter} entries on this page</strong><span>{entryFilter!=='all'?'Show all entries to see the rest.':'Session details are still shown above.'}</span></div>}
                   <div className="transcript-end">{detailSafePage>=detailTotalPages?'End of session':`Page ${detailSafePage} of ${detailTotalPages}`}</div>
                 </div>
               </>:isDetailLoading?<div className="detail-loading" role="status" aria-live="polite"><LoaderCircle className="spin" size={18}/><span>Loading session…</span></div>:<div className="detail-placeholder"><div className="empty-orb"><MessageSquareText size={22}/></div><h2>{detailError?'Could not load this session':'No session selected'}</h2><p>{detailError||'Pick a session from the list to read the full conversation.'}</p></div>}

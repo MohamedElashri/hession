@@ -1,8 +1,17 @@
 // Browser preview: stands in for the Tauri runtime so the UI runs in a normal
 // browser with realistic data (`make preview`, or `npm run dev` + `?mock`).
 // Responses come from fixtures.json, which the real backend generates
-// (`make preview-fixtures`). Loaded only in development builds.
-import fixtures from './fixtures.json';
+// (`make preview-fixtures`), or from your own library via
+// `make preview-fixtures FROM=~/.hession/sessions.sqlite` (fixtures.local.json,
+// git-ignored), which is preferred when present. Loaded only in development builds.
+import sample from './fixtures.json';
+
+// Fetched rather than imported: a real library can be tens of megabytes, more
+// than Vite will transform into a module.
+const local = await fetch(new URL('./fixtures.local.json', import.meta.url))
+  .then((response) => (response.ok ? response.json() : null))
+  .catch(() => null);
+const fixtures = local ?? sample;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const state = {
@@ -95,4 +104,4 @@ window.__TAURI_INTERNALS__ = {
     return handler(args);
   },
 };
-console.info('[preview] Using mock IPC with fixtures from', fixtures.generatedAt);
+console.info(`[preview] Mock IPC with ${local ? 'your library' : 'sample data'} from`, fixtures.generatedAt);

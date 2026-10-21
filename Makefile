@@ -53,8 +53,12 @@ preview: setup ## UI in a browser with sample data, no Rust build (http://127.0.
 	@echo "Open http://127.0.0.1:1420/?mock"
 	npm run dev
 
-preview-fixtures: ## Regenerate the preview's sample data from the real backend
+preview-fixtures: ## Regenerate preview data (FROM=<sessions.sqlite> previews your own library)
+ifdef FROM
+	cd $(CARGO_DIR) && PREVIEW_FROM="$(abspath $(patsubst ~/%,$(HOME)/%,$(FROM)))" $(CARGO) test --lib dump_library_fixtures -- --ignored
+else
 	cd $(CARGO_DIR) && $(CARGO) test --lib dump_preview_fixtures -- --ignored
+endif
 
 build: setup ## Build release installers for this OS (into target/release/bundle/)
 	npm run tauri build
@@ -67,8 +71,9 @@ deb appimage rpm: setup ## Build one Linux bundle (make deb | appimage | rpm)
 run: ## Run the release binary built by `make build`
 	$(TARGET)/release/$(SLUG)
 
-test: setup ## Run Rust tests and the frontend build
+test: setup ## Run Rust and JS tests and the frontend build
 	npm run build
+	npm test
 	cd $(CARGO_DIR) && $(CARGO) test --lib
 
 check: setup ## Build the frontend and cargo check the backend (no tests)

@@ -249,3 +249,87 @@
   .browser-grid { grid-template-columns: 1fr; }
   .detail-column { display: none; }
 }
+
+/* ------------------------------------------------- conversation view */
+.transcript-conversation, .transcript-prompts { padding-top: 20px; }
+.turn { max-width: 860px; margin: 0 auto 32px; }
+.turn-head { display: flex; align-items: center; gap: 8px; font-size: var(--text-sm); color: var(--text-3); }
+.turn-head strong { color: var(--text); font-weight: 600; font-size: var(--text-md); }
+.turn-avatar { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; flex: none; background: var(--info-soft); color: var(--info); }
+.agent-avatar { background: color-mix(in srgb, var(--agent-gray) 18%, transparent); color: var(--agent-gray); }
+.agent-avatar.lime { background: color-mix(in srgb, var(--agent-lime) 18%, transparent); color: var(--agent-lime); }
+.agent-avatar.peach { background: color-mix(in srgb, var(--agent-peach) 18%, transparent); color: var(--agent-peach); }
+.agent-avatar.blue { background: color-mix(in srgb, var(--agent-blue) 18%, transparent); color: var(--agent-blue); }
+.agent-avatar.violet { background: color-mix(in srgb, var(--agent-violet) 18%, transparent); color: var(--agent-violet); }
+.agent-avatar.mint { background: color-mix(in srgb, var(--agent-mint) 18%, transparent); color: var(--agent-mint); }
+.agent-avatar.pink { background: color-mix(in srgb, var(--agent-pink) 18%, transparent); color: var(--agent-pink); }
+.agent-avatar.amber { background: color-mix(in srgb, var(--agent-amber) 18%, transparent); color: var(--agent-amber); }
+.turn-head .copy-entry { margin-left: auto; }
+
+/* Your prompt: a tinted card, clearly not the agent's prose. */
+.prompt-card {
+  display: flex; flex-direction: column; gap: 8px; padding: 12px 16px 14px;
+  border: 1px solid color-mix(in srgb, var(--info) 28%, transparent); border-radius: var(--radius-lg);
+  background: var(--info-soft);
+}
+.prompt-card:hover .copy-entry, .reply-text:hover .copy-entry { opacity: 1; }
+.prompt-text { font-size: 15px; }
+.command-chip { align-self: flex-start; padding: 3px 9px; border-radius: 6px; background: var(--surface); border: 1px solid var(--border); font-size: var(--text-sm); color: var(--accent-text); }
+.turn-continued { margin: 0 0 4px; font-size: var(--text-sm); color: var(--text-3); font-style: italic; }
+
+/* The agent's reply: plain prose in a readable column. */
+.reply { display: flex; flex-direction: column; gap: 12px; margin-top: 18px; padding-left: 2px; }
+.reply-text { position: relative; padding-left: 32px; }
+.reply-text .markdown-body { font-size: 15px; line-height: 1.7; max-width: 75ch; }
+.reply-text > .copy-entry { position: absolute; top: 0; right: 0; }
+.reply > .thinking, .reply > .tool-list, .reply > .context-row { margin-left: 32px; }
+
+.thinking > summary, .pasted > summary, .context-chip > summary {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer; list-style: none;
+  font-size: var(--text-sm); color: var(--text-3); padding: 2px 8px 2px 6px; border-radius: 6px;
+}
+.thinking > summary::-webkit-details-marker, .pasted > summary::-webkit-details-marker,
+.context-chip > summary::-webkit-details-marker, .tool-row > summary::-webkit-details-marker { display: none; }
+.thinking > summary:hover, .pasted > summary:hover, .context-chip > summary:hover { background: var(--hover); color: var(--text-2); }
+.thinking[open] > .markdown-body { margin-top: 6px; padding-left: 12px; border-left: 2px solid var(--border-strong); color: var(--text-2); font-size: var(--text-md); }
+
+/* What the agent did: one quiet line per tool call, details on demand. */
+.tool-list { display: flex; flex-direction: column; padding: 4px 0 4px 10px; border-left: 2px solid var(--border); }
+.tool-row > summary { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 3px 8px 3px 4px; border-radius: 6px; cursor: pointer; list-style: none; font: var(--text-sm)/1.5 var(--font-mono); }
+.tool-row > summary:hover { background: var(--hover); }
+.tool-chevron { flex: none; color: var(--text-3); transition: transform .15s var(--ease); }
+.tool-row[open] > summary .tool-chevron { transform: rotate(90deg); }
+.tool-name { flex: none; color: var(--text); font-weight: 600; }
+.tool-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); }
+.tool-failed .tool-name { color: var(--danger); }
+.tool-detail { margin: 4px 0 10px 22px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.tool-detail pre { margin: 0; padding: 10px 12px; max-height: 320px; overflow: auto; background: var(--code-bg); font-size: var(--text-sm); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); }
+.tool-detail pre + pre { border-top: 1px solid var(--border); }
+.tool-empty { margin: 0; padding: 8px 12px; font-size: var(--text-sm); color: var(--text-3); }
+
+/* Injected context and pasted text: collapsed, out of the way. */
+.context-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.context-chip[open], .pasted[open] { flex-basis: 100%; }
+.context-chip > pre, .pasted > pre {
+  margin: 6px 0 0; padding: 10px 12px; max-height: 260px; overflow: auto; border-radius: var(--radius);
+  background: var(--code-bg); border: 1px solid var(--border); font-size: var(--text-sm); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2);
+}
+.prompt-card .pasted > summary, .prompt-card .context-chip > summary { background: var(--surface); }
+
+/* Long texts are clipped until expanded. */
+.clamp-body { max-height: 420px; overflow: hidden; mask-image: linear-gradient(#000 75%, transparent); }
+.clamp-open .clamp-body { max-height: none; mask-image: none; }
+.clamp-toggle { margin-top: 4px; color: var(--accent-text); }
+
+/* Prompts view: skim the session, jump to a turn. */
+.prompt-index { max-width: 860px; margin: 0 auto; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.prompt-index button {
+  display: grid; grid-template-columns: 28px 1fr; gap: 2px 10px; width: 100%; padding: 10px 12px; text-align: left;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+}
+.prompt-index button:hover { border-color: color-mix(in srgb, var(--info) 40%, transparent); background: var(--info-soft); }
+.turn-number { grid-row: 1 / span 2; align-self: start; display: grid; place-items: center; height: 22px; border-radius: 6px; background: var(--info-soft); color: var(--info); font: 600 var(--text-xs)/1 var(--font-mono); }
+.prompt-index-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: var(--text-md); color: var(--text); }
+.prompt-index-text code { font-size: var(--text-sm); color: var(--accent-text); }
+.prompt-index-meta { font-size: var(--text-xs); color: var(--text-3); }
+.tool-more { align-self: flex-start; margin: 2px 0 0 4px; color: var(--accent-text); }

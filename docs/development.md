@@ -28,7 +28,7 @@ directly, set `PKG_CONFIG=/usr/bin/pkg-config` yourself.
 | `make preview` | The UI in a browser with sample data, without building Rust |
 | `make preview-fixtures` | Regenerate that sample data from the real backend |
 | `make desktop-entry` | Per-user launcher and dock icon for `make dev` (Linux) |
-| `make test` | Frontend build and Rust tests |
+| `make test` | Frontend build, Rust tests, and JS tests |
 | `make docker-test` | The same tests in a container, with no system libraries needed |
 | `make check` | Frontend build + `cargo check` |
 | `make lint` | ESLint + Clippy; any warning fails (`make lint-js` for ESLint only) |
@@ -45,6 +45,10 @@ On Linux the dock icon comes from the `.desktop` entry whose `StartupWMClass`
 matches the window's app_id: the binary name, which `brand.mjs` sets to the
 slug in dev too. The `.deb`/`.rpm` install one; for `make dev`, run
 `make desktop-entry` once (`make desktop-entry-remove` undoes it).
+
+`make preview-fixtures FROM=~/.hession/sessions.sqlite` previews your own
+library instead (a snapshot of the newest sessions, written to the git-ignored
+`src/dev/fixtures.local.json`, which the preview prefers when present).
 
 `make preview` replaces the Tauri runtime with a mock (`src/dev/mock-ipc.js`)
 serving `src/dev/fixtures.json`: synthetic Claude Code and Codex sessions on
@@ -121,7 +125,8 @@ are Geist and Geist Mono, bundled via `@fontsource-variable`. Use the tokens
 
 ## Tests
 
-`make test` runs the Rust unit tests. `remote.rs` includes an end-to-end test
+`make test` runs the Rust unit tests and the JS tests (`node --test src/`;
+`src/transcript.test.js` covers how transcripts become conversation turns). `remote.rs` includes an end-to-end test
 that puts a stand-in `ssh` on `PATH`, then exercises the real probe, rsync,
 and import against a fake remote home. Another test runs the generated
 resume command through `sh` with awkward paths and arguments. The frontend
