@@ -125,7 +125,7 @@ are Geist and Geist Mono, bundled via `@fontsource-variable`. Use the tokens
 
 ## Tests
 
-`make test` runs the Rust unit tests and the JS tests (`node --test src/`;
+`make test` runs the Rust unit tests and the JS tests (`npm test`;
 `src/transcript.test.js` covers how transcripts become conversation turns). `remote.rs` includes an end-to-end test
 that puts a stand-in `ssh` on `PATH`, then exercises the real probe, rsync,
 and import against a fake remote home. Another test runs the generated

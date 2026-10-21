@@ -1,4 +1,4 @@
-// Run with `node --test src/` (part of `make test`).
+// Run with `npm test` (part of `make test`).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildConversation, parsePrompt, toolSummary } from './transcript.js';
