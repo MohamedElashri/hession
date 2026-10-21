@@ -179,10 +179,10 @@ installed_version() {
   case "$METHOD" in
     dmg)
       app=$(mac_app_path)
-      [ -n "$app" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null || true ;;
+      if [ -n "$app" ]; then /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null || true; fi ;;
     deb) dpkg-query -W -f='${Version}' "$APP_SLUG" 2>/dev/null || true ;;
     rpm) rpm -q --qf '%{VERSION}' "$APP_SLUG" 2>/dev/null | grep -v 'not installed' || true ;;
-    appimage) [ -f "$APPIMAGE_DIR/VERSION" ] && cat "$APPIMAGE_DIR/VERSION" || true ;;
+    appimage) if [ -f "$APPIMAGE_DIR/VERSION" ]; then cat "$APPIMAGE_DIR/VERSION"; fi ;;
   esac
 }
 
@@ -333,8 +333,8 @@ StartupWMClass=$APP_SLUG
 Categories=Development;
 Terminal=false
 EOF
-    have update-desktop-database && update-desktop-database -q "$DATA_HOME/applications" 2>/dev/null || true
-    have gtk-update-icon-cache && gtk-update-icon-cache -qtf "$DATA_HOME/icons/hicolor" 2>/dev/null || true
+    if have update-desktop-database; then update-desktop-database -q "$DATA_HOME/applications" 2>/dev/null || true; fi
+    if have gtk-update-icon-cache; then gtk-update-icon-cache -qtf "$DATA_HOME/icons/hicolor" 2>/dev/null || true; fi
     ok "Installed $APPIMAGE_PATH"
     ok "Added the '$APP_SLUG' command and an app-menu entry"
     LAUNCH="$APP_SLUG"
