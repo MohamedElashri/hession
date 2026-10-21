@@ -71,11 +71,12 @@ jobs:
           }
           release_json="$(find_release)"
           if [[ "$release_json" == 'null' ]]; then
+            node .github/scripts/release-notes.mjs "$RELEASE_TAG" > "$RUNNER_TEMP/notes.md"
             gh release create "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
+              --notes-file "$RUNNER_TEMP/notes.md" \
               --title "${{ steps.source.outputs.brand_name }} ${RELEASE_TAG}" \
-              --generate-notes \
               --draft
             for attempt in {1..10}; do
               release_json="$(find_release)"

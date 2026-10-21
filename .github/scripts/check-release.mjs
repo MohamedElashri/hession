@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { releaseNotes } from './release-notes.mjs';
 
 const root = new URL('../../', import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), 'utf8');
@@ -33,6 +34,7 @@ for (const [name, actual] of Object.entries({
 if (tag !== undefined) {
   requireCondition(tag === `v${version}`, `Release tag must be v${version}.`);
 }
+requireCondition(releaseNotes(version), `CHANGELOG.md needs a "## [${version}]" entry for this release.`);
 
 // Per-bundle architecture names follow tauri-action.
 const suffixes = [
