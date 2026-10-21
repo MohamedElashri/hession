@@ -29,8 +29,11 @@ function ready() {
 }
 window.addEventListener(READY_EVENT, ready);
 
-// Browser preview (`make preview`): mock the Tauri runtime. Removed from production builds.
-const preview = import.meta.env.DEV && new URLSearchParams(window.location.search).has('mock')
+// Browser preview (`make preview`): in a development build opened in a plain
+// browser, stand in for the Tauri runtime. Tauri defines __TAURI_INTERNALS__
+// before any page script runs, so the desktop app never loads this, and
+// production builds drop it entirely.
+const preview = import.meta.env.DEV && !window.__TAURI_INTERNALS__
   ? import('./dev/mock-ipc.js')
   : Promise.resolve();
 

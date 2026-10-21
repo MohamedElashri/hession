@@ -1,5 +1,5 @@
 // Browser preview: stands in for the Tauri runtime so the UI runs in a normal
-// browser with realistic data (`make preview`, or `npm run dev` + `?mock`).
+// browser with realistic data (`make preview`, or `npm run dev`, opened in a browser).
 // Responses come from fixtures.json, which the real backend generates
 // (`make preview-fixtures`), or from your own library via
 // `make preview-fixtures FROM=~/.hession/sessions.sqlite` (fixtures.local.json,

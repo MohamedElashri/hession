@@ -49,8 +49,8 @@ deps: ## Install system build libraries (Linux; uses sudo)
 dev: setup ## Run the app with hot reload
 	npm run tauri dev
 
-preview: setup ## UI in a browser with sample data, no Rust build (http://127.0.0.1:1420/?mock)
-	@echo "Open http://127.0.0.1:1420/?mock"
+preview: setup ## UI in a browser with sample data, no Rust build (http://127.0.0.1:1420)
+	@echo "Open http://127.0.0.1:1420"
 	npm run dev
 
 preview-fixtures: ## Regenerate preview data (FROM=<sessions.sqlite> previews your own library)
