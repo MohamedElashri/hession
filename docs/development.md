@@ -57,7 +57,12 @@ To develop against a scratch library, set
 
 ## Layout
 
+Standard Tauri layout: the frontend in `src/`, the Rust app in `src-tauri/`.
+A Cargo workspace at the root keeps one `Cargo.lock` and one `target/`.
+
 ```
+Cargo.toml, Cargo.lock  Cargo workspace (member: src-tauri)
+package.json            frontend dependencies and scripts
 brand.json              product identity (the only place the name is defined)
 branding/               logo sources (mark, icon, favicon) and generated assets
 scripts/                brand.mjs, icons.mjs, check.Dockerfile
@@ -71,6 +76,16 @@ src-tauri/src/
   commands.rs           IPC commands for search, sessions, facets, and export
   db.rs                 SQLite schema and connections
   analytics.rs, pricing.rs, data_management.rs, sync.rs
+src-tauri/tauri.conf.json, capabilities/, icons/   Tauri app config and icons
+```
+
+Build output (all ignored by git):
+
+```
+dist/                   built frontend (Vite), embedded into the app
+target/debug/           `make dev` and test builds
+target/release/<slug>   the app binary (`make run`)
+target/release/bundle/  installers: deb/, rpm/, appimage/ (Linux), dmg/ (macOS)
 ```
 
 ## How remote sessions work

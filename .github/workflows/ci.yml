@@ -50,8 +50,6 @@ jobs:
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ./src-tauri -> target
 
       - name: Install Linux system libraries
         if: runner.os == 'Linux'

@@ -34,7 +34,7 @@ from source (Linux shown; see [development](docs/development.md) for macOS):
 git clone https://github.com/MohamedElashri/hession && cd hession
 make deps      # system libraries (sudo)
 make deb       # or: make appimage, make rpm, make build
-sudo apt install ./src-tauri/target/release/bundle/deb/*.deb
+sudo apt install ./target/release/bundle/deb/*.deb
 ```
 
 ## Quick start

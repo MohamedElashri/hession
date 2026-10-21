@@ -13,7 +13,7 @@ JSON_FILES = [
 ]
 CARGO_TOML = Path("src-tauri/Cargo.toml")
 PACKAGE_LOCK = Path("package-lock.json")
-CARGO_LOCK = Path("src-tauri/Cargo.lock")
+CARGO_LOCK = Path("Cargo.lock")
 
 
 def read(p):

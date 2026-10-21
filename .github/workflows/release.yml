@@ -147,7 +147,6 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ./src-tauri -> target
           key: release-${{ matrix.rust_target }}
 
       - name: Install Linux system dependencies

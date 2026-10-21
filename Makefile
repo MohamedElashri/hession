@@ -4,14 +4,15 @@ SLUG      := $(shell node -p "require('./brand.json').slug" 2>/dev/null || echo 
 APP_NAME  := $(shell node -p "require('./brand.json').name" 2>/dev/null || echo App)
 CARGO_DIR := src-tauri
 CARGO     := cargo --locked
-BUNDLE    := $(CARGO_DIR)/target/release/bundle
+TARGET    := target
+BUNDLE    := $(TARGET)/release/bundle
 
 # Homebrew/Linuxbrew pkg-config cannot see the system GTK/WebKit packages, and
 # tools such as linuxdeploy's GTK plugin call pkgconf/pkg-config from PATH
 # rather than $PKG_CONFIG. On Linux, put the system ones first via a shim.
 ifeq ($(shell uname -s),Linux)
   ifneq ($(wildcard /usr/bin/pkg-config),)
-    PKG_SHIM := $(CURDIR)/$(CARGO_DIR)/target/pkg-config-shim
+    PKG_SHIM := $(CURDIR)/$(TARGET)/pkg-config-shim
     SYSTEM_PKGCONF := $(or $(wildcard /usr/bin/pkgconf),/usr/bin/pkg-config)
     $(shell mkdir -p $(PKG_SHIM) && ln -sf /usr/bin/pkg-config $(PKG_SHIM)/pkg-config && ln -sf $(SYSTEM_PKGCONF) $(PKG_SHIM)/pkgconf)
     export PKG_CONFIG := /usr/bin/pkg-config
@@ -55,15 +56,16 @@ preview: setup ## UI in a browser with sample data, no Rust build (http://127.0.
 preview-fixtures: ## Regenerate the preview's sample data from the real backend
 	cd $(CARGO_DIR) && $(CARGO) test --lib dump_preview_fixtures -- --ignored
 
-build: setup ## Build release installers for this OS
+build: setup ## Build release installers for this OS (into target/release/bundle/)
 	npm run tauri build
+	@echo "Installers:"; find $(BUNDLE) -maxdepth 2 -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.dmg' \) | sed 's/^/  /'
 
 deb appimage rpm: setup ## Build one Linux bundle (make deb | appimage | rpm)
 	npm run tauri build -- --bundles $@
 	@ls -1 $(BUNDLE)/$@/
 
 run: ## Run the release binary built by `make build`
-	$(CARGO_DIR)/target/release/$(SLUG)
+	$(TARGET)/release/$(SLUG)
 
 test: setup ## Run Rust tests and the frontend build
 	npm run build
@@ -97,9 +99,9 @@ brand: ## Apply brand.json to Tauri/npm/Cargo manifests
 docker-test: setup ## Run tests in a container (no system libraries needed)
 	npm run build
 	docker build -q -t $(SLUG)-check -f scripts/check.Dockerfile scripts
-	mkdir -p $(HOME)/.cargo/registry $(CARGO_DIR)/target/docker
+	mkdir -p $(HOME)/.cargo/registry $(TARGET)/docker
 	docker run --rm -u $$(id -u):$$(id -g) -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
-	  -v $(HOME)/.cargo/registry:/cargo/registry -v $(CURDIR)/$(CARGO_DIR)/target/docker:/target \
+	  -v $(HOME)/.cargo/registry:/cargo/registry -v $(CURDIR)/$(TARGET)/docker:/target \
 	  -v $(CURDIR):/w -w /w/$(CARGO_DIR) $(SLUG)-check cargo --locked test --lib
 
 # GNOME/KDE pick the dock icon from the .desktop entry whose StartupWMClass (or
@@ -113,7 +115,7 @@ desktop-entry: ## Install a per-user .desktop entry + icons (dock icon for `make
 	  install -Dm644 $(CARGO_DIR)/icons/$${s#*:}.png $(XDG_DATA)/icons/hicolor/$${s%%:*}/apps/$(SLUG).png; done
 	@mkdir -p $(XDG_DATA)/applications
 	@printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=$(APP_NAME)' \
-	  'Exec=$(CURDIR)/$(CARGO_DIR)/target/release/$(SLUG)' 'Icon=$(SLUG)' \
+	  'Exec=$(CURDIR)/$(TARGET)/release/$(SLUG)' 'Icon=$(SLUG)' \
 	  'StartupWMClass=$(SLUG)' 'Categories=Office;' 'Terminal=false' \
 	  > $(XDG_DATA)/applications/$(SLUG).desktop
 	-@gtk-update-icon-cache -qtf $(XDG_DATA)/icons/hicolor 2>/dev/null
@@ -130,4 +132,4 @@ release-check: ## Verify versions agree before tagging (VERSION=x.y.z optional)
 	node .github/scripts/check-release.mjs $(if $(VERSION),v$(VERSION))
 
 clean: ## Remove build outputs
-	rm -rf dist $(CARGO_DIR)/target
+	rm -rf dist $(TARGET)
