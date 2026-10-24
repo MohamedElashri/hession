@@ -22,9 +22,7 @@ export function transcriptParts(entry, showTools = true) {
   };
 }
 
-// ---------------------------------------------------------------------------
 // Conversation view: the dialogue grouped into turns, without bookkeeping.
-// ---------------------------------------------------------------------------
 
 // Tags whose content is the prompt the user typed (Antigravity).
 const PROMPT_TAGS = new Set(['USER_REQUEST']);
@@ -77,19 +75,20 @@ export function parsePrompt(raw) {
 
 const partData = part => { try { return JSON.parse(part.data_json || '{}'); } catch { return {}; } };
 const resultId = part => { const d = partData(part); return d.tool_use_id || d.call_id || null; };
+const firstLine = text => { const end = text.indexOf('\n'); return end < 0 ? text : text.slice(0, end); };
 
 /** One-line description of a tool call: its command, path, or first argument. */
 export function toolSummary(tool) {
-  if (tool.command_text) return tool.command_text.split('\n')[0];
+  if (tool.command_text) return firstLine(tool.command_text);
   let args = tool.arguments_json;
   try { args = JSON.parse(args); } catch { /* plain-text input */ }
-  if (typeof args === 'string') return args.split('\n')[0];
+  if (typeof args === 'string') return firstLine(args);
   if (args && typeof args === 'object') {
     for (const key of ['command', 'cmd', 'CommandLine', 'file_path', 'path', 'AbsolutePath', 'Path', 'pattern', 'query', 'url',
       'toolSummary', 'description', 'title', 'prompt', 'Prompt', 'skill', 'Action', 'message', 'input', 'code']) {
       const value = args[key];
       if (Array.isArray(value)) return value.join(' ');
-      if (typeof value === 'string' && value.trim()) return value.split('\n')[0];
+      if (typeof value === 'string' && value.trim()) return firstLine(value);
     }
   }
   return '';
@@ -104,7 +103,16 @@ export function toolSummary(tool) {
 export function buildConversation(entries) {
   const turns = [];
   let turn = null;
-  const startTurn = prompt => { turn = { id: prompt?.entry.id ?? `start-${turns.length}`, prompt, items: [] }; turns.push(turn); };
+  let lastToolGroup = null;
+  let pendingCalls = [];
+  const callsById = new Map();
+  const startTurn = prompt => {
+    turn = { id: prompt?.entry.id ?? `start-${turns.length}`, prompt, items: [] };
+    turns.push(turn);
+    callsById.clear();
+    lastToolGroup = null;
+    pendingCalls = [];
+  };
   const current = () => { if (!turn) startTurn(null); return turn; };
   const lastItem = () => current().items.at(-1);
   const toolGroup = () => {
@@ -112,13 +120,22 @@ export function buildConversation(entries) {
     if (last?.type === 'tools') return last;
     const group = { type: 'tools', key: `tools-${current().items.length}`, calls: [] };
     current().items.push(group);
+    lastToolGroup = group;
+    pendingCalls = [];
     return group;
   };
-  const findCall = id => turn?.items.flatMap(i => (i.type === 'tools' ? i.calls : [])).find(c => id && c.id === id);
+  const addCall = call => {
+    toolGroup().calls.push(call);
+    if (call.id && !callsById.has(call.id)) callsById.set(call.id, call);
+    if (!call.result) pendingCalls.push(call);
+  };
   const addResult = (id, text) => {
-    const call = findCall(id) ?? [...(turn?.items ?? [])].reverse().find(i => i.type === 'tools')?.calls.findLast(c => !c.result);
+    // Completed calls are removed lazily, once each, when anonymous output arrives.
+    while (pendingCalls.at(-1)?.result) pendingCalls.pop();
+    const call = (id && callsById.get(id)) || (lastToolGroup && pendingCalls.at(-1));
     if (call) { if (!call.result) call.result = text; return; }
-    toolGroup().calls.push({ key: `result-${id ?? toolGroup().calls.length}`, name: 'Output', summary: '', result: text });
+    const group = toolGroup();
+    addCall({ key: `result-${id ?? group.calls.length}`, name: 'Output', summary: '', result: text });
   };
 
   for (const entry of entries || []) {
@@ -145,10 +162,10 @@ export function buildConversation(entries) {
       const callParts = parts.filter(p => p.kind === 'tool_call');
       (entry.tools || []).forEach((tool, index) => {
         const own = ['', '{}', 'null'].includes(tool.arguments_json ?? '') ? null : tool.arguments_json;
-        const fromPart = partData(callParts[index] ?? {}).args;
+        const fromPart = own == null ? partData(callParts[index] ?? {}).args : null;
         const args = own ?? (fromPart == null ? null : JSON.stringify(fromPart));
         const call = { ...tool, arguments_json: args };
-        toolGroup().calls.push({ key: `call-${tool.id}`, id: tool.call_id, name: tool.tool_name || 'Tool', summary: toolSummary(call), status: tool.status, command: tool.command_text, args, result: tool.result_text || null });
+        addCall({ key: `call-${tool.id}`, id: tool.call_id, name: tool.tool_name || 'Tool', summary: toolSummary(call), status: tool.status, command: tool.command_text, args, result: tool.result_text || null });
       });
     } else if (entry.role === 'tool') {
       for (const part of parts.filter(p => p.kind === 'tool_result')) addResult(resultId(part), part.text);

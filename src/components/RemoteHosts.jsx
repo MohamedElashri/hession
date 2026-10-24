@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Server, Plus, Trash2, LoaderCircle, PlugZap, X } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { BRAND } from '../brand.js';
+import { familyLabel } from '../labels.js';
+import useModalDialog from './useModalDialog.js';
 
-const agentNames = { codex: 'Codex', claude: 'Claude Code', opencode: 'OpenCode', pi: 'Pi', commandcode: 'Command Code', muse: 'Muse', hermes: 'Hermes Agent', antigravity: 'Antigravity', cline: 'Cline' };
-const agentList = agents => agents.map(a => agentNames[a] || a).join(', ');
+const agentList = agents => agents.map(familyLabel).join(', ');
 const when = value => value ? new Date(value).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'never';
 
 /** Configure SSH hosts whose agent sessions are mirrored and imported on sync. */
 export default function RemoteHosts({ onClose, onSyncNow, syncRunning }) {
-  const dialog = useRef(null);
+  const dialog = useModalDialog();
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [custom, setCustom] = useState('');
@@ -25,11 +26,7 @@ export default function RemoteHosts({ onClose, onSyncNow, syncRunning }) {
   }, [desktop]);
 
   useEffect(() => {
-    const previous = document.activeElement;
-    dialog.current.showModal();
-    dialog.current.querySelector('button')?.focus();
     load();
-    return () => { if (previous?.isConnected) previous.focus(); };
   }, [load]);
 
   const save = async hosts => {

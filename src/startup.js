@@ -1,19 +1,15 @@
 // Keep this entry independent of React and app dependencies so the static
 // loading screen remains useful while the main bundle loads or fails.
-import { BRAND, READY_EVENT, storageKey } from './brand.js';
+import { BRAND, READY_EVENT } from './brand.js';
+import { applyAppearance, readAppearance } from './appearance.js';
+import './styles/tokens.css';
 
 const loading = document.getElementById('boot-loading');
 const status = document.getElementById('boot-status');
 const description = document.getElementById('boot-description');
 const reload = document.getElementById('boot-reload');
 
-try {
-  if (localStorage.getItem(storageKey('theme')) === 'light') {
-    loading.dataset.theme = 'light';
-  }
-} catch {
-  // Storage can be unavailable; the loading screen still works.
-}
+applyAppearance(readAppearance(), window.matchMedia('(prefers-color-scheme: dark)').matches);
 
 reload.addEventListener('click', () => window.location.reload());
 

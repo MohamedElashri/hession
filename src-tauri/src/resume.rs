@@ -4,11 +4,8 @@
 //! (`family`, `external_id`, `source_uri`, `cwd`) to the correct native
 //! resume invocation, then spawns a user-visible terminal on Linux or macOS.
 //!
-//! Design notes:
-//! - All spawning happens in backend `std::process::Command` (never frontend
-//!   shell plugin, never `sh -c` string interpolation). Session keys travel
-//!   as `argv` entries; only the Linux/macOS terminal wrapper builds a POSIX
-//!   shell line, using single-quote escaping.
+//! - Processes launch through `std::process::Command`. Session keys are passed
+//!   as arguments or single-quoted when building terminal and SSH shell commands.
 //! - `get_resume_info` is side-effect free (preflight + copyable command).
 //! - `resume_session` reuses the same plan builder, then spawns detached.
 //! - Expected failures (unknown family, missing CLI/terminal/session files)
@@ -22,6 +19,7 @@ use std::process::Command;
 
 use super::AppState;
 use crate::db;
+use crate::paths::{env_path, home_dir};
 use tauri::State;
 
 /// Families accepted for resume (mirrors `ALLOWED_FAMILIES` in commands.rs).
@@ -53,51 +51,27 @@ fn cli_candidates(family: &str) -> &'static [&'static str] {
     }
 }
 
-fn home_dir() -> PathBuf {
-    match std::env::var("HOME") {
-        Ok(v) if !v.trim().is_empty() => PathBuf::from(v.trim()),
-        _ => PathBuf::from("."),
-    }
-}
-
 fn default_codex_home() -> PathBuf {
-    match std::env::var("CODEX_HOME") {
-        Ok(v) if !v.trim().is_empty() => PathBuf::from(v.trim()),
-        _ => home_dir().join(".codex"),
-    }
+    env_path("CODEX_HOME", home_dir().join(".codex"))
 }
 
 fn default_claude_dir() -> PathBuf {
-    match std::env::var("CLAUDE_CONFIG_DIR") {
-        Ok(v) if !v.trim().is_empty() => PathBuf::from(v.trim()),
-        _ => home_dir().join(".claude"),
-    }
+    env_path("CLAUDE_CONFIG_DIR", home_dir().join(".claude"))
 }
 
 fn default_xdg_data() -> PathBuf {
-    match std::env::var("XDG_DATA_HOME") {
-        Ok(v) if !v.trim().is_empty() => PathBuf::from(v.trim()),
-        _ => home_dir().join(".local").join("share"),
-    }
+    env_path("XDG_DATA_HOME", home_dir().join(".local/share"))
 }
 
 fn default_pi_dir() -> PathBuf {
-    match std::env::var("PI_CODING_AGENT_DIR") {
-        Ok(v) if !v.trim().is_empty() => PathBuf::from(v.trim()),
-        _ => home_dir().join(".pi").join("agent"),
-    }
+    env_path("PI_CODING_AGENT_DIR", home_dir().join(".pi/agent"))
 }
 
 fn default_commandcode_home() -> PathBuf {
-    match std::env::var("COMMANDCODE_HOME") {
-        Ok(v) if !v.trim().is_empty() => PathBuf::from(v.trim()),
-        _ => home_dir().join(".commandcode"),
-    }
+    env_path("COMMANDCODE_HOME", home_dir().join(".commandcode"))
 }
 
-// ---------------------------------------------------------------------------
 // Small helpers
-// ---------------------------------------------------------------------------
 
 fn db_path_of(state: &State<'_, AppState>) -> Result<PathBuf, String> {
     state
@@ -163,9 +137,7 @@ fn display_command(cwd: &Path, binary: &str, args: &[String]) -> String {
     )
 }
 
-// ---------------------------------------------------------------------------
 // Binary + terminal discovery (same PATH as launched terminals)
-// ---------------------------------------------------------------------------
 
 fn path_dirs() -> Vec<PathBuf> {
     std::env::split_paths(&augmented_path()).collect()
@@ -609,9 +581,7 @@ fn resolve_terminal(requested: Option<&str>) -> (Option<String>, bool) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Session row + resume plan
-// ---------------------------------------------------------------------------
 
 struct SessionRow {
     family: String,
@@ -1171,9 +1141,7 @@ fn plan_binary(plan: &ResumePlan, family: &str) -> (Option<PathBuf>, String) {
     (cli_path, binary_used)
 }
 
-// ---------------------------------------------------------------------------
 // Preflight + spawn
-// ---------------------------------------------------------------------------
 
 fn preflight(db_path: &Path, id: i64, terminal: Option<&str>) -> Result<Value, String> {
     let conn = open_db(db_path)?;
@@ -1667,9 +1635,7 @@ fn resume_inner(db_path: &Path, id: i64, terminal: Option<&str>) -> Result<Value
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tauri commands
-// ---------------------------------------------------------------------------
 
 /// Side-effect free preflight for the Resume dialog. `terminal` is an
 /// optional override; otherwise the saved preference, then the default.
@@ -1733,9 +1699,7 @@ pub fn set_terminal_preference(terminal: String) -> Result<Value, String> {
     Ok(json!({ "ok": true, "terminal": terminal.trim() }))
 }
 
-// ---------------------------------------------------------------------------
 // Open the session's workspace in VS Code (Remote-SSH for remote sessions)
-// ---------------------------------------------------------------------------
 
 /// Editor CLIs that understand `--folder-uri vscode-remote://…`.
 const EDITOR_CANDIDATES: &[&str] = &["code", "code-insiders", "codium", "cursor", "windsurf"];

@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Check, Copy, ExternalLink, LoaderCircle, RefreshCw, Terminal, X } from 'lucide-react';
 import { api } from '../api.js';
 import { BRAND } from '../brand.js';
 import BrandMark from './BrandMark.jsx';
+import useModalDialog from './useModalDialog.js';
 
 const dateOf = value => (value ? new Date(value).toLocaleDateString([], { dateStyle: 'medium' }) : '');
 
@@ -13,7 +14,7 @@ const dateOf = value => (value ? new Date(value).toLocaleDateString([], { dateSt
  * clicks, and updating always runs the official installer in a visible terminal.
  */
 export default function AboutDialog({ onClose }) {
-  const dialog = useRef(null);
+  const dialog = useModalDialog();
   const [version, setVersion] = useState('');
   const [state, setState] = useState({ status: 'idle' }); // idle | checking | done | error
   const [busy, setBusy] = useState('');
@@ -21,10 +22,7 @@ export default function AboutDialog({ onClose }) {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    const previous = document.activeElement;
-    dialog.current.showModal();
     api('app_version').then(info => setVersion(info.version)).catch(() => {});
-    return () => { if (previous?.isConnected) previous.focus(); };
   }, []);
 
   const check = async () => {

@@ -4,19 +4,8 @@
 //! WAL readers use independent snapshots; short writes share a priority gate.
 //! Permission hardening: data dir `0700`, db file `0600` (unix, best-effort).
 //!
-//! This project is still in development, so there are deliberately no
-//! back-compat migrations: `init_schema` creates the current schema directly
-//! (`IF NOT EXISTS`, idempotent on every boot). Saved data is never wiped to
-//! accommodate a schema change.
-//!
-//! Required Cargo deps (already in `src-tauri/Cargo.toml`):
-//! `rusqlite = { version = "0.40", features = ["bundled"] }` (bundled SQLite
-//! provides FTS5 + `unicode61 remove_diacritics`), `serde` with `derive`,
-//! `thiserror = "2"`.
-//!
-//! - `get_or_create_*` upserts use `ON CONFLICT` statements; callers pass
-//!   pre-stringified `&str` (empty provider becomes `""`, empty key returns
-//!   `None`, empty cwd returns `None`).
+//! `init_schema` creates missing tables and indexes without clearing saved data.
+//! Bundled SQLite provides FTS5 with the `unicode61 remove_diacritics` tokenizer.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
@@ -25,9 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
-// ---------------------------------------------------------------------------
 // Errors
-// ---------------------------------------------------------------------------
 
 /// All database errors flow through this type (`thiserror`, as required).
 #[derive(Debug, thiserror::Error)]
@@ -57,9 +44,7 @@ fn sqlite_err(context: impl Into<String>, source: rusqlite::Error) -> DbError {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Paths & permissions
-// ---------------------------------------------------------------------------
 
 /// Milliseconds for `busy_timeout`.
 pub const BUSY_TIMEOUT_MS: u64 = 5000;
@@ -169,9 +154,7 @@ fn ensure_file_permissions(file: &Path) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // Open
-// ---------------------------------------------------------------------------
 
 #[derive(PartialEq, Eq)]
 struct DatabaseIdentity {
@@ -262,9 +245,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-// ---------------------------------------------------------------------------
 // Schema
-// ---------------------------------------------------------------------------
 
 /// Core tables + indexes + FTS + triggers.
 const BASE_SCHEMA: &str = r#"
@@ -346,6 +327,7 @@ CREATE TABLE IF NOT EXISTS session_context (
   raw_json TEXT
 );
 CREATE INDEX IF NOT EXISTS context_session_time_idx ON session_context(session_id, observed_at);
+CREATE INDEX IF NOT EXISTS context_session_latest_idx ON session_context(session_id, id DESC);
 CREATE INDEX IF NOT EXISTS context_entry_idx ON session_context(entry_id);
 CREATE TABLE IF NOT EXISTS entry (
   id INTEGER PRIMARY KEY,
@@ -512,6 +494,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(ANALYTICS_INVALIDATE)
         .map_err(|e| sqlite_err("init analytics invalidate trigger", e))?;
     add_session_host(conn)?;
+    crate::library_revision::install(conn).map_err(|e| sqlite_err("track library revisions", e))?;
     Ok(())
 }
 
@@ -532,9 +515,7 @@ fn add_session_host(conn: &Connection) -> Result<()> {
         .map_err(|e| sqlite_err("index session host", e))
 }
 
-// ---------------------------------------------------------------------------
 // Upserts
-// ---------------------------------------------------------------------------
 
 /// Insert-or-update an agent row, returning its id.
 ///

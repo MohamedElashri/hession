@@ -44,9 +44,7 @@ const CANONICAL_PROVIDERS: [&str; 14] = [
     "morph",
 ];
 
-// ---------------------------------------------------------------------------
 // Family fallbacks
-// ---------------------------------------------------------------------------
 
 /// Built-in fallback rate for one model family.
 #[derive(Debug, Clone, Copy)]
@@ -278,9 +276,7 @@ pub fn family_matches(family_id: &str, model: &str) -> bool {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Serde structs (camelCase wire format)
-// ---------------------------------------------------------------------------
 
 /// One flattened models.dev record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -393,9 +389,7 @@ impl PricingState {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Index helpers
-// ---------------------------------------------------------------------------
 
 fn provider_rank(provider: &str) -> usize {
     let lower = provider.to_lowercase();
@@ -648,9 +642,7 @@ pub fn match_record(state: &PricingState, model_key: &str) -> Option<usize> {
     find_family_record(state, key_family.id)
 }
 
-// ---------------------------------------------------------------------------
 // Overrides (in-memory index over the DB table)
-// ---------------------------------------------------------------------------
 
 fn reload_overrides_memory(state: &mut PricingState, rows: Vec<OverrideRow>) {
     state.custom_overrides = rows;
@@ -921,9 +913,7 @@ pub fn get_pricing_reference(state: &PricingState) -> Vec<PricingReferenceRow> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
 // Cache persistence
-// ---------------------------------------------------------------------------
 
 fn now_millis() -> i64 {
     SystemTime::now()
@@ -990,10 +980,17 @@ pub fn load_pricing_cache(
     state: &mut PricingState,
 ) -> Result<PricingStatus, String> {
     let overrides = read_override_rows(db)?;
-    let snapshot: Option<(String, i64, String)> = db
+    // Keep the metadata check and payload read in one SQLite snapshot. A warm
+    // analytics batch should not copy the entire model catalog out of SQLite.
+    let snapshot: Option<(Option<String>, i64, String)> = db
         .query_row(
-            "SELECT payload_json, model_count, updated_at FROM model_pricing_cache WHERE id = 1",
-            [],
+            "SELECT CASE WHEN updated_at=?1 AND model_count=?2 AND model_count>=0
+                         THEN NULL ELSE payload_json END,
+                    model_count, updated_at FROM model_pricing_cache WHERE id = 1",
+            rusqlite::params![
+                state.live_updated_at.as_deref(),
+                state.live_records.len() as i64
+            ],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()
@@ -1011,6 +1008,7 @@ pub fn load_pricing_cache(
         reload_overrides_memory(state, overrides);
         return Ok(status_from_meta(state));
     }
+    let payload_json = payload_json.ok_or("The pricing cache payload is missing")?;
     let raw: Value = serde_json::from_str(&payload_json)
         .map_err(|e| format!("Could not decode the pricing cache: {e}"))?;
     let (records, _) = build_pricing_index(&raw);
@@ -1031,9 +1029,7 @@ pub fn get_pricing_status(
     load_pricing_cache(db, state)
 }
 
-// ---------------------------------------------------------------------------
 // Override CRUD (stored separately so models.dev syncs never clobber them)
-// ---------------------------------------------------------------------------
 
 /// List overrides ordered by provider then model id.
 pub fn list_price_overrides(
@@ -1234,9 +1230,7 @@ pub fn delete_price_overrides(
     Ok(deleted as i64)
 }
 
-// ---------------------------------------------------------------------------
 // models.dev fetch / cache (24h TTL via reqwest)
-// ---------------------------------------------------------------------------
 
 pub fn save_pricing_payload(
     db: &Connection,

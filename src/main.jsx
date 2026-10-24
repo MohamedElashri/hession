@@ -1,12 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import Markdown from './components/Markdown.jsx';
 import {
   Bot, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Code2,
   Copy, Database, Download, FileCode2, Folder, GitBranch, Info, Laptop, Layers3,
-  LoaderCircle, Menu, MessageSquareText, Moon, Plus, RefreshCw, Search,
-  Server, Sparkles, Square, Star, Sun, Tag, Terminal, TrendingUp, User, X,
+  LoaderCircle, Menu, MessageSquareText, Palette, Plus, RefreshCw, Search,
+  Server, Sparkles, Square, Star, Tag, Terminal, TrendingUp, User, X,
 } from 'lucide-react';
 import { api, hasTauriRuntime } from './api.js';
 import { save } from '@tauri-apps/plugin-dialog';
@@ -15,12 +14,9 @@ import { BRAND, READY_EVENT, storageKey } from './brand.js';
 import { listen } from '@tauri-apps/api/event';
 import ExportSelect from './components/ExportSelect.jsx';
 import SyncMenu from './components/SyncMenu.jsx';
-import DataManagement from './components/DataManagement.jsx';
-import RemoteHosts from './components/RemoteHosts.jsx';
-import AboutDialog from './components/AboutDialog.jsx';
 import BrandMark from './components/BrandMark.jsx';
+import useAppearance from './useAppearance.js';
 import { Conversation, PromptIndex } from './components/Conversation.jsx';
-import AnalyticsView from './Analytics.jsx';
 import { readNavigation, writeNavigation } from './navigation.js';
 import DateFilter from './components/DateFilter.jsx';
 import ModelFilter from './components/ModelFilter.jsx';
@@ -28,16 +24,20 @@ import BranchFilter from './components/BranchFilter.jsx';
 import ToolFilter from './components/ToolFilter.jsx';
 import '@fontsource-variable/geist';
 import '@fontsource-variable/geist-mono';
-import './styles/tokens.css';
 import './styles/base.css';
 import './styles/app.css';
 import './styles/components.css';
-import './styles/analytics.css';
 import { buildConversation, hasToolActivity, isSessionEvent, transcriptParts } from './transcript.js';
 
 import { parseDate, filterSince, calendarDayDifference } from './dates.js';
+import { agentColors, familyLabel, shortPath } from './labels.js';
 
 const PAGE_SIZE=20;
+const AnalyticsView=lazy(()=>import('./Analytics.jsx'));
+const DataManagement=lazy(()=>import('./components/DataManagement.jsx'));
+const RemoteHosts=lazy(()=>import('./components/RemoteHosts.jsx'));
+const AboutDialog=lazy(()=>import('./components/AboutDialog.jsx'));
+const AppearanceDialog=lazy(()=>import('./components/AppearanceDialog.jsx'));
 const DETAIL_PAGE_SIZE=500; // transcript entries per page (the backend maximum)
 // Maps the metadata endpoint suffix used by loadMeta to its Tauri command.
 const META_COMMANDS={
@@ -47,13 +47,9 @@ const META_COMMANDS={
   facets:'get_facets',
   'sync/checkpoints':'get_sync_checkpoints',
 };
-const agentColors={codex:'lime',claude:'peach',opencode:'blue',pi:'violet',commandcode:'mint',muse:'pink',hermes:'amber',antigravity:'blue',cline:'mint'};
-const agentNames={codex:'Codex',claude:'Claude Code',opencode:'OpenCode',pi:'Pi',commandcode:'Command Code',muse:'Muse',hermes:'Hermes Agent',antigravity:'Antigravity',cline:'Cline'};
-const shortPath=(p)=>String(p??'').replace(/\\/g,'/').split('/').filter(Boolean).at(-1)||'Local workspace';
 const relativeAgo=(value,now=Date.now())=>{if(!value)return 'never';const d=parseDate(value);if(!d||isNaN(d.getTime()))return 'never';const minutes=Math.max(0,Math.floor((now-d.getTime())/60000));if(minutes<1)return 'just now';if(minutes<60)return `${minutes} minute${minutes===1?'':'s'} ago`;const hours=Math.floor(minutes/60);if(hours<24)return `${hours} hour${hours===1?'':'s'} ago`;const days=Math.floor(hours/24);return `${days} day${days===1?'':'s'} ago`;};
 const formatSyncTime=(value,now)=>{if(!value)return 'Never';const d=parseDate(value);if(!d||isNaN(d.getTime()))return 'Never';return `${d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})} (${relativeAgo(d,now)})`;};
 const relativeDate=(s)=>{if(!s)return 'Date unavailable';const d=parseDate(s),now=new Date();if(!d)return 'Date unavailable';const days=calendarDayDifference(d,now);if(days===0)return `Today · ${d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}`;if(days===1)return 'Yesterday';if(days>=0&&days<7)return d.toLocaleDateString([],{weekday:'long'});return d.toLocaleDateString([],{month:'short',day:'numeric',year:d.getFullYear()!==now.getFullYear()?'numeric':undefined});};
-const familyLabel=(f)=>agentNames[f]||f||'Agent';
 // A user-role entry with text, as opposed to a tool result logged under the user role.
 const isTypedPrompt=e=>e.role==='user'&&(e.parts||[]).some(p=>p.kind==='text'&&p.text);
 
@@ -78,7 +74,7 @@ function App(){
   },[exportOpen]);
   const exportJobRef=useRef(null),starPendingRef=useRef(new Set());
   const [starPending,setStarPending]=useState(()=>new Set());
-  const [includeStats,setIncludeStats]=useState(()=>localStorage.getItem(storageKey('export-stats'))==='true');
+  const [includeStats,setIncludeStats]=useState(()=>{try{return localStorage.getItem(storageKey('export-stats'))==='true';}catch{return false;}});
   const [sortOrder,setSortOrder]=useState('recent'),[page,setPage]=useState(0);
   const [sortOpen,setSortOpen]=useState(false),[facets,setFacets]=useState({models:[],branches:[],tools:[]});
   const [allWorkspaces,setAllWorkspaces]=useState(false),[workspaceQuery,setWorkspaceQuery]=useState('');
@@ -107,7 +103,8 @@ function App(){
   const [detailJump,setDetailJump]=useState('');
   const [collapsedEntries,setCollapsedEntries]=useState(()=>new Set());
   const [copiedEntry,setCopiedEntry]=useState(null);
-  const [theme,setTheme]=useState(()=>localStorage.getItem(storageKey('theme'))==='light'?'light':'dark');
+  const [appearanceOpen,setAppearanceOpen]=useState(false);
+  const {preferences,update:updateAppearance,saveError:appearanceSaveError}=useAppearance();
   const [currentTime,setCurrentTime]=useState(()=>Date.now());
   const [reportRevision,setReportRevision]=useState(0);
   const [navigation,setNavigation]=useState(readNavigation);
@@ -170,12 +167,6 @@ function App(){
       return next;
     });
   },[]);
-
-  const toggleTheme=()=>setTheme(current=>{
-    const next=current==='dark'?'light':'dark';
-    localStorage.setItem(storageKey('theme'),next);
-    return next;
-  });
 
   const copyEntry=async(entry)=>{
     try{await navigator.clipboard.writeText(entryAsMarkdown(entry));setCopiedEntry(entry.id);setTimeout(()=>setCopiedEntry(current=>current===entry.id?null:current),1400);}
@@ -350,7 +341,7 @@ function App(){
     if(!job||job.cancelled||job.stopping||job.saved)return;
     job.stopping=true;setExportStopping(true);
     // During file saving, the backend decides whether cancellation arrived before commit.
-    if(!job.saving){job.cancelled=true;job.worker?.terminate();job.reject?.(new Error('Export stopped'));}
+    if(!job.saving)job.cancelled=true;
     job.stopPromise=(async()=>{
       try{
         if(job.registered){const stopped=await api('cancel_export',{jobId:job.id});if(stopped)job.cancelled=true;}
@@ -368,36 +359,24 @@ function App(){
       const extension=exportFormat==='json'?'json':'md';
       await api('begin_export',{jobId:job.id});job.registered=true;
       if(job.cancelled){await api('cancel_export',{jobId:job.id});return;}
-      unlisten=await listen('export-progress',({payload})=>{if(payload.jobId===job.id&&!job.cancelled)setExportProgress({phase:'Reading sessions',done:payload.done,total:payload.total});});
-      if(job.cancelled)return;
-      setExportProgress({phase:'Reading sessions',done:0,total:exportScope==='session'?1:total});
-      const data=await api('export_sessions',{
-        jobId:job.id,scope:exportScope,id:exportScope==='session'?detail?.session.id:null,includeStats,
-        filters:{q:query,host:hostFilter,agent:agentFilter,project:projectFilter,models:modelFilters,branch:branchFilter,tools:toolFilters,since:filterSince(timeFilter),sort:sortOrder,starred:starredOnly,tags:tagFilters},
-      });
-      if(job.cancelled)return;
-      setExportProgress({phase:'Formatting export',done:0,total:0});
-      const contents=await new Promise((resolve,reject)=>{
-        job.reject=reject;
-        job.worker=new Worker(new URL('./export-worker.js',import.meta.url),{type:'module'});
-        job.worker.onmessage=({data})=>data.error?reject(new Error(data.error)):resolve(data.contents);
-        job.worker.onerror=()=>reject(new Error('Could not format export'));
-        job.worker.postMessage({data,format:exportFormat});
-      });
-      job.worker.terminate();job.reject=null;
+      unlisten=await listen('export-progress',({payload})=>{if(payload.jobId===job.id&&!job.cancelled)setExportProgress({phase:payload.done<payload.total?`Writing session ${payload.done+1} of ${payload.total}${payload.entries?` · ${payload.entries.toLocaleString()} entries`:''}`:'Finishing export',done:payload.done,total:payload.total});});
       if(job.cancelled)return;
       setExportProgress({phase:'Choose where to save',done:0,total:0});
-      const path=await save({defaultPath:exportFilename(exportScope,data.sessions[0]?.session,data.sessions.length,exportFormat),filters:[{name:exportFormat==='json'?'JSON':'Markdown',extensions:[extension]}]});
+      const count=exportScope==='session'?1:exportScope==='library'?stats.sessions:total;
+      const path=await save({defaultPath:exportFilename(exportScope,detail?.session,count,exportFormat),filters:[{name:exportFormat==='json'?'JSON':'Markdown',extensions:[extension]}]});
       if(!path||job.cancelled)return;
-      setExportProgress({phase:'Saving file',done:0,total:0});
+      setExportProgress({phase:'Writing export',done:0,total:count});
       job.saving=true;
-      await api('save_export',{jobId:job.id,path,contents});
+      const result=await api('export_sessions',{
+        jobId:job.id,path,format:exportFormat,scope:exportScope,id:exportScope==='session'?detail?.session.id:null,includeStats,
+        filters:{q:query,host:hostFilter,agent:agentFilter,project:projectFilter,models:modelFilters,branch:branchFilter,tools:toolFilters,since:filterSince(timeFilter),sort:sortOrder,starred:starredOnly,tags:tagFilters},
+      });
       job.saved=true;
       await job.stopPromise;
-      setExportOpen(false);setNotice(`Exported ${data.sessions.length} session${data.sessions.length===1?'':'s'}.`);
+      setExportOpen(false);setNotice(`Exported ${result.sessions} session${result.sessions===1?'':'s'}.`);
     }catch(e){await job.stopPromise;setNotice(job.cancelled?'Export stopped.':e.message);}finally{
       await job.stopPromise;
-      job.worker?.terminate();unlisten?.();
+      unlisten?.();
       try{await api('finish_export',{jobId:job.id});}catch{/* already released by the backend */}
       if(job.cancelled&&!job.saved)setNotice('Export stopped.');
       exportJobRef.current=null;setExportBusy(false);setExportStopping(false);
@@ -464,7 +443,7 @@ function App(){
       return true;
     });
   },[detail,entryFilter]);
-  const turns=useMemo(()=>buildConversation(detail?.entries),[detail]);
+  const turns=useMemo(()=>buildConversation(detail?.entries),[detail?.entries]);
   const openTurn=id=>{setTranscriptView('conversation');requestAnimationFrame(()=>document.getElementById(`turn-${id}`)?.scrollIntoView({block:'start'}));};
   // Transcript pagination derived from the backend's total/limit/offset.
   const detailTotal=detail?.total??detail?.entries?.length??0;
@@ -501,10 +480,13 @@ function App(){
   ].filter(Boolean);
   const navCount=n=><span className="nav-count">{Number(n||0).toLocaleString()}</span>;
 
-  return <div className="app-shell" data-theme={theme}>
-    {remoteHostsOpen&&<RemoteHosts onClose={()=>{setRemoteHostsOpen(false);loadMeta({silent:true});}} onSyncNow={()=>startSync()} syncRunning={sync.running||syncStarting}/>}
-    {aboutOpen&&<AboutDialog onClose={()=>setAboutOpen(false)}/>}
-    {dataManagementOpen&&<DataManagement onClose={()=>setDataManagementOpen(false)} onChanged={refreshManagedData} syncRunning={sync.running||syncStarting}/>}
+  return <div className="app-shell">
+    <Suspense fallback={<div className="export-backdrop" role="status"><span className="data-status"><LoaderCircle className="spin" size={16}/>Opening settings…</span></div>}>
+      {appearanceOpen&&<AppearanceDialog preferences={preferences} onChange={updateAppearance} saveError={appearanceSaveError} onClose={()=>setAppearanceOpen(false)}/>}
+      {remoteHostsOpen&&<RemoteHosts onClose={()=>{setRemoteHostsOpen(false);loadMeta({silent:true});}} onSyncNow={()=>startSync()} syncRunning={sync.running||syncStarting}/>}
+      {aboutOpen&&<AboutDialog onClose={()=>setAboutOpen(false)}/>}
+      {dataManagementOpen&&<DataManagement onClose={()=>setDataManagementOpen(false)} onChanged={refreshManagedData} syncRunning={sync.running||syncStarting}/>}
+    </Suspense>
     {mobileNav&&<div className="sidebar-scrim" onClick={()=>setMobileNav(false)}/>}
     <aside className={`sidebar ${mobileNav?'sidebar-open':''}`}>
       <div className="brand-row">
@@ -557,14 +539,14 @@ function App(){
           <button type="button" className="icon-button" onClick={()=>setRemoteHostsOpen(true)} title="Remote hosts" aria-label="Remote hosts"><Server size={16}/></button>
           <button type="button" className="icon-button" onClick={()=>{setSyncMenuOpen(false);setDataManagementOpen(true);}} title="Manage saved data" aria-label="Manage saved data" aria-haspopup="dialog"><Database size={16}/></button>
           <button type="button" className="icon-button" onClick={()=>setAboutOpen(true)} title={`About ${BRAND.name} and updates`} aria-label={`About ${BRAND.name} and updates`} aria-haspopup="dialog"><Info size={16}/></button>
-          <button type="button" className="icon-button" onClick={toggleTheme} title={`Switch to ${theme==='dark'?'light':'dark'} theme`} aria-label={`Switch to ${theme==='dark'?'light':'dark'} theme`}>{theme==='dark'?<Sun size={16}/>:<Moon size={16}/>}</button>
+          <button type="button" className="icon-button" onClick={()=>setAppearanceOpen(true)} title="Appearance" aria-label="Appearance" aria-haspopup="dialog"><Palette size={16}/></button>
         </div>
       </div>
     </aside>
 
     <main className="main-panel">
       {view === 'analytics' ? (
-        <AnalyticsView
+        <Suspense fallback={<div className="detail-loading" role="status"><LoaderCircle className="spin" size={18}/>Opening analytics…</div>}><AnalyticsView
           agents={agents}
           projects={projects}
           metadataState={metadataState}
@@ -574,7 +556,7 @@ function App(){
           onNavigationChange={updateAnalyticsNavigation}
           onSelectSession={selectSession}
           onOpenNav={() => setMobileNav(true)}
-        />
+        /></Suspense>
       ) : (
         <div className="content-area">
           <header className="toolbar">
@@ -667,7 +649,7 @@ function App(){
                         <ChevronDown size={14} className={`message-collapse-chevron ${isCollapsed?'collapsed':''}`}/>
                       </div>
                       {!isCollapsed&&<div className="message-content">
-                        {textParts.map((p,j)=><div className="message-text markdown-body" key={p.id||j}><ReactMarkdown remarkPlugins={[remarkGfm]}>{p.text}</ReactMarkdown></div>)}
+                        {textParts.map((p,j)=><div className="message-text markdown-body" key={p.id||j}><Markdown text={p.text}/></div>)}
                         {special.map((p,j)=><details className="tool-block" key={p.id||j} open><summary className="tool-block-head"><Terminal size={13}/><strong>{p.kind==='tool_result'?'Result':p.text||p.kind.replaceAll('_',' ')}</strong></summary><pre>{p.kind==='tool_result'&&p.text?p.text:p.data_json?formatData(p.data_json):p.text||'Tool activity recorded'}</pre></details>)}
                         {toolsVisible.map(t=><details className="tool-block" key={t.id} open><summary className="tool-block-head"><Terminal size={13}/><strong>{t.tool_name}</strong><span className={`tool-status status-${t.status||'invoked'}`}>{t.status||'invoked'}</span></summary>{t.command_text&&<pre className="command-pre">$ {t.command_text}</pre>}{t.arguments_json&&!t.command_text&&<pre>{formatData(t.arguments_json)}</pre>}{t.result_text&&<pre>{t.result_text.slice(0,6000)}</pre>}</details>)}
                         {!textParts.length&&!special.length&&!toolsVisible.length&&role==='event'&&<div className="event-note"><span>{e.payload_json&&formatData(e.payload_json)}</span></div>}
@@ -683,7 +665,7 @@ function App(){
         </div>
       )}
     </main>
-    {exportOpen&&<div className="export-backdrop" onClick={e=>{if(e.target===e.currentTarget&&!exportBusy)setExportOpen(false);}}><div ref={exportDialogRef} className="export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-title" onKeyDown={e=>{if(e.key==='Escape'&&!exportBusy)setExportOpen(false);if(e.key==='Tab'){const controls=Array.from(e.currentTarget.querySelectorAll('button:not(:disabled),input:not(:disabled)'));const first=controls[0],last=controls.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus();}}}}><div className="export-heading"><h2 id="export-title">Export sessions</h2><button type="button" className="icon-button" aria-label="Close export" disabled={exportBusy} onClick={()=>setExportOpen(false)}><X size={17}/></button></div><ExportSelect label="Export scope" value={exportScope} disabled={exportBusy} onChange={setExportScope} options={[{value:'session',label:'Selected session',disabled:!detail||isDetailLoading},{value:'filtered',label:`Filtered view (all ${total.toLocaleString()} matches)`},{value:'library',label:'Whole library'}]}/><ExportSelect label="Format" value={exportFormat} disabled={exportBusy} onChange={setExportFormat} options={[{value:'markdown',label:'Markdown (.md)'},{value:'json',label:'JSON (.json)'}]}/><label className="export-stats"><input type="checkbox" checked={includeStats} disabled={exportBusy} onChange={e=>{setIncludeStats(e.target.checked);localStorage.setItem(storageKey('export-stats'),String(e.target.checked));}}/>Include session stats (tokens, estimated cost, duration, turns, tools)</label><p>Exports include full transcripts, bookmarks, and tags.</p>{exportBusy&&<div className="export-progress-status" role="status" aria-live="polite"><LoaderCircle className="spin" size={16}/><span>{exportStopping?'Stopping export…':exportProgress.phase}{!exportStopping&&exportProgress.total>0?` · ${exportProgress.done} / ${exportProgress.total}`:''}</span></div>}{exportBusy&&exportProgress.total>0&&<progress className="export-progress-bar" value={exportProgress.done} max={exportProgress.total} aria-label="Export progress"/>}<div className="export-actions">{exportBusy&&<button type="button" className="btn" disabled={exportStopping} onClick={stopExport}><X size={14}/>{exportStopping?'Stopping…':'Stop export'}</button>}<button type="button" className="btn primary" disabled={exportBusy||(exportScope==='session'&&(!detail||isDetailLoading))} onClick={runExport}>{exportBusy?<LoaderCircle className="spin" size={14}/>:<Download size={14}/>} {exportBusy?'Exporting…':'Save export'}</button></div></div></div>}
+    {exportOpen&&<div className="export-backdrop" onClick={e=>{if(e.target===e.currentTarget&&!exportBusy)setExportOpen(false);}}><div ref={exportDialogRef} className="export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-title" onKeyDown={e=>{if(e.key==='Escape'&&!exportBusy)setExportOpen(false);if(e.key==='Tab'){const controls=Array.from(e.currentTarget.querySelectorAll('button:not(:disabled),input:not(:disabled)'));const first=controls[0],last=controls.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus();}}}}><div className="export-heading"><h2 id="export-title">Export sessions</h2><button type="button" className="icon-button" aria-label="Close export" disabled={exportBusy} onClick={()=>setExportOpen(false)}><X size={17}/></button></div><ExportSelect label="Export scope" value={exportScope} disabled={exportBusy} onChange={setExportScope} options={[{value:'session',label:'Selected session',disabled:!detail||isDetailLoading},{value:'filtered',label:`Filtered view (all ${total.toLocaleString()} matches)`},{value:'library',label:'Whole library'}]}/><ExportSelect label="Format" value={exportFormat} disabled={exportBusy} onChange={setExportFormat} options={[{value:'markdown',label:'Markdown (.md)'},{value:'json',label:'JSON (.json)'}]}/><label className="export-stats"><input type="checkbox" checked={includeStats} disabled={exportBusy} onChange={e=>{setIncludeStats(e.target.checked);try{localStorage.setItem(storageKey('export-stats'),String(e.target.checked));}catch{setNotice('Could not save the export preference.');}}}/>Include session stats (tokens, estimated cost, duration, turns, tools)</label><p>Exports include full transcripts, bookmarks, and tags.</p>{exportBusy&&<div className="export-progress-status" role="status" aria-live="polite"><LoaderCircle className="spin" size={16}/><span>{exportStopping?'Stopping export…':exportProgress.phase}{!exportStopping&&exportProgress.total>0?` · ${exportProgress.done} / ${exportProgress.total}`:''}</span></div>}{exportBusy&&exportProgress.total>0&&<progress className="export-progress-bar" value={exportProgress.done} max={exportProgress.total} aria-label="Export progress"/>}<div className="export-actions">{exportBusy&&<button type="button" className="btn" disabled={exportStopping} onClick={stopExport}><X size={14}/>{exportStopping?'Stopping…':'Stop export'}</button>}<button type="button" className="btn primary" disabled={exportBusy||(exportScope==='session'&&(!detail||isDetailLoading))} onClick={runExport}>{exportBusy?<LoaderCircle className="spin" size={14}/>:<Download size={14}/>} {exportBusy?'Exporting…':'Save export'}</button></div></div></div>}
     {resumeOpen&&<div className="export-backdrop" onClick={e=>{if(e.target===e.currentTarget&&!resumeBusy)setResumeOpen(false);}}><div ref={resumeDialogRef} className="export-dialog resume-dialog" role="dialog" aria-modal="true" aria-labelledby="resume-title" onKeyDown={e=>{if(e.key==='Escape'&&!resumeBusy)setResumeOpen(false);}}><div className="export-heading"><h2 id="resume-title">Resume session</h2><button type="button" className="icon-button" aria-label="Close resume" disabled={resumeBusy} onClick={()=>setResumeOpen(false)}><X size={17}/></button></div>{detail&&<p className="resume-sub">{familyLabel(detail.session.agent)} · {detail.session.title||'Untitled session'}</p>}{resumeTerminals.length>0&&<ExportSelect label="Terminal" value={resumeTerminal} disabled={resumeBusy} onChange={changeResumeTerminal} options={resumeTerminals.map(t=>({value:t.id,label:t.available?t.label:`${t.label} — not installed`,disabled:!t.available}))}/>}{resumeBusy&&!resumeInfo&&<div className="export-progress-status" role="status" aria-live="polite"><LoaderCircle className="spin" size={16}/><span>Preparing resume command…</span></div>}{resumeInfo?.displayCommand&&<pre className="resume-command">{resumeInfo.displayCommand}</pre>}{resumeInfo?.host?<p className="resume-meta">Runs on <strong>{resumeInfo.host}</strong> over SSH, in {detail?.session.cwd||'the home directory'}.</p>:resumeInfo?.cwd&&<p className="resume-meta">Working directory: {resumeInfo.cwd}{resumeInfo.cwdFallback?' (fallback)':''}</p>}{resumeInfo?.cliFound===false&&<p className="resume-meta resume-warn">Agent CLI not found. Install it or copy the command above into a terminal.</p>}{resumeInfo?.sourceExists===false&&<p className="resume-meta resume-warn">Original session file is missing; the agent may report it as not found.</p>}{(resumeInfo?.warnings||[]).map(w=><p key={w} className="resume-meta resume-warn">{w}</p>)}{resumeError&&<div className="error-strip"><CircleHelp size={15}/><span>{resumeError}</span><button onClick={()=>setResumeError('')} aria-label="Dismiss"><X size={14}/></button></div>}<div className="export-actions"><button type="button" className="btn" disabled={resumeBusy||!(resumeInfo?.displayCommand)} onClick={copyResumeCommand}>{resumeCopied?<Check size={14}/>:<Copy size={14}/>}{resumeCopied?'Copied':'Copy command'}</button><button type="button" className="btn primary" disabled={resumeBusy||!resumeInfo} onClick={launchResume}>{resumeBusy?<LoaderCircle className="spin" size={14}/>:<Terminal size={14}/>}{resumeBusy?'Working…':'Resume in terminal'}</button></div></div></div>}
   </div>;
 }
@@ -714,23 +696,10 @@ class ErrorBoundary extends React.Component {
   componentDidCatch(error,info){window.dispatchEvent(new Event(READY_EVENT));console.error('[boot] React error:',error,info);}
   render(){
     if(this.state.error){
-      return <div style={{padding:20,color:'#eee',fontFamily:'sans-serif'}}><h2>{BRAND.name} failed to start</h2><pre style={{whiteSpace:'pre-wrap'}}>{String(this.state.error?.message||this.state.error)}</pre><button onClick={()=>window.location.reload()}>Reload</button></div>;
+      return <div className="startup-error"><h2>{BRAND.name} failed to start</h2><p>{String(this.state.error?.message||this.state.error)}</p><button className="btn" onClick={()=>window.location.reload()}>Reload</button></div>;
     }
     return this.props.children;
   }
 }
-
-window.onerror=function(message,source,lineno,colno,error){
-  console.error('[boot] window.onerror:',message,source,lineno,colno,error);
-  let el=document.getElementById('boot-error-overlay');
-  if(!el){
-    el=document.createElement('div');
-    el.id='boot-error-overlay';
-    el.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:9999;padding:8px 12px;background:#7a1f1f;color:#fff;font:12px monospace;white-space:pre-wrap';
-    document.body.appendChild(el);
-  }
-  el.textContent='Error: '+(error?.stack||error?.message||message)+' @'+source+':'+lineno+':'+colno;
-  return false;
-};
 
 createRoot(document.getElementById('root')).render(<React.StrictMode><ErrorBoundary><App/></ErrorBoundary></React.StrictMode>);

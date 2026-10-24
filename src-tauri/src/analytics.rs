@@ -41,9 +41,7 @@ fn check_cancelled(cancelled: &AtomicBool) -> Result<(), String> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Serialize structs (camelCase wire format)
-// ---------------------------------------------------------------------------
 
 /// Query filters: `agent/model/workspace/timezone/since`.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -225,9 +223,7 @@ pub fn request_refresh(path: &std::path::Path, force: bool) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Calendar (timezone-aware bucketing)
-// ---------------------------------------------------------------------------
 
 fn has_timezone_suffix(text: &str) -> bool {
     if text.ends_with('Z') || text.ends_with('z') {
@@ -265,6 +261,12 @@ fn parse_date(value: &str) -> Option<DateTime<Utc>> {
     let text = value.trim();
     if text.is_empty() {
         return None;
+    }
+    if text.len() == 10 {
+        return NaiveDate::parse_from_str(text, "%Y-%m-%d")
+            .ok()
+            .and_then(|date| date.and_hms_opt(0, 0, 0))
+            .map(|date| date.and_utc());
     }
     let text = text.replacen(' ', "T", 1);
     let text = if has_timezone_suffix(&text) {
@@ -412,9 +414,7 @@ fn register_cache_discount(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // sync_analytics
-// ---------------------------------------------------------------------------
 
 fn sqlite_error(ctx: &str, e: rusqlite::Error) -> String {
     format!("{ctx}: {e}")
@@ -477,6 +477,9 @@ pub(crate) fn calculate_session(
         .filter(|v| v.is_finite())
         .unwrap_or(0.0);
 
+    let metrics: Option<Value> = metrics_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok());
     // Use cached metrics only when every required count is present. Older
     // imports contain partial blobs and must fall back to the actual rows.
     let (total_turns, user_turns, assistant_turns, user_chars, assistant_chars, tool_chars): (
@@ -487,10 +490,7 @@ pub(crate) fn calculate_session(
         i64,
         i64,
     ) = {
-        let metrics: Option<Value> = metrics_json
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok());
-        match metrics.filter(|m| ["total_turns", "user_turns", "assistant_turns", "user_chars", "assistant_chars", "tool_chars"]
+        match metrics.as_ref().filter(|m| ["total_turns", "user_turns", "assistant_turns", "user_chars", "assistant_chars", "tool_chars"]
             .iter().all(|key| m.get(*key).and_then(Value::as_i64).is_some_and(|n| n >= 0))) {
             Some(m) => (
                 m.get("total_turns").and_then(|v| v.as_i64()).unwrap_or(0),
@@ -516,10 +516,7 @@ pub(crate) fn calculate_session(
     };
 
     let (tool_count, tool_error_count): (i64, i64) = {
-        let metrics: Option<Value> = metrics_json
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok());
-        match metrics.filter(|m| {
+        match metrics.as_ref().filter(|m| {
             ["tool_count", "tool_error_count"]
                 .iter()
                 .all(|key| m.get(*key).and_then(Value::as_i64).is_some_and(|n| n >= 0))
@@ -571,7 +568,7 @@ pub(crate) fn calculate_session(
             .map_err(|_| "Could not lock the pricing state".to_string())?;
         calculate_cost(
             &mut st,
-            &model_name.clone().unwrap_or_default(),
+            model_name.as_deref().unwrap_or_default(),
             input,
             output,
             cached,
@@ -732,9 +729,7 @@ pub fn sync_analytics_cancellable(
     Ok(processed)
 }
 
-// ---------------------------------------------------------------------------
 // Query helpers
-// ---------------------------------------------------------------------------
 
 fn ref_to_json(v: ValueRef) -> Value {
     match v {
@@ -846,6 +841,40 @@ const BASE_JOIN: &str = "
     LEFT JOIN workspace w ON w.id = sa.workspace_id
 ";
 
+const REPORT_JOIN: &str = "
+    FROM report_scope sa
+    JOIN session s ON s.id=sa.session_id
+    JOIN agent a ON a.id=sa.agent_id
+    LEFT JOIN workspace w ON w.id=sa.workspace_id
+";
+
+fn prepare_report_scope(db: &Connection, filters: &AnalyticsFilters) -> Result<(), String> {
+    let (clause, params) = build_filters(filters);
+    let query_only: bool = db
+        .pragma_query_value(None, "query_only", |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if query_only {
+        db.pragma_update(None, "query_only", false)
+            .map_err(|e| e.to_string())?;
+    }
+    let result = (|| {
+        db.execute_batch("DROP TABLE IF EXISTS temp.report_scope")
+            .map_err(|e| e.to_string())?;
+        db.execute(
+            &format!("CREATE TEMP TABLE report_scope AS SELECT sa.* {BASE_JOIN} {clause}"),
+            rusqlite::params_from_iter(params),
+        )
+        .map_err(|e| e.to_string())?;
+        db.execute_batch("CREATE UNIQUE INDEX temp.report_scope_session_idx ON report_scope(session_id); ANALYZE temp.report_scope").map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    if query_only {
+        db.pragma_update(None, "query_only", true)
+            .map_err(|e| e.to_string())?;
+    }
+    result
+}
+
 const CACHE_COLUMNS: &str = "
     COALESCE(SUM(MIN(MAX(sa.cached_tokens, 0), MAX(sa.input_tokens, 0))), 0) AS cache_hit_tokens,
     COALESCE(SUM(MIN(MAX(sa.cached_tokens, 0), MAX(sa.input_tokens, 0)) * cache_discount(sa.model_name)), 0) AS cache_savings,
@@ -952,9 +981,7 @@ fn month_end(today: &str) -> String {
         .unwrap_or_else(|| today.to_string())
 }
 
-// ---------------------------------------------------------------------------
 // get_full_analytics
-// ---------------------------------------------------------------------------
 
 /// Full analytics payload (KPIs, breakdowns, trends, tool metrics, pulse).
 /// Returns `serde_json::Value` with snake_case keys.
@@ -995,11 +1022,9 @@ pub fn get_full_analytics(
 
     register_cache_discount(db, report_pricing.clone())?;
 
-    let (clause, owned) = build_filters(filters);
-    let refs: Vec<&dyn rusqlite::types::ToSql> = owned
-        .iter()
-        .map(|s| s as &dyn rusqlite::types::ToSql)
-        .collect();
+    prepare_report_scope(db, filters)?;
+    let clause = "WHERE 1";
+    let refs: Vec<&dyn rusqlite::types::ToSql> = Vec::new();
 
     // 1. Overall KPIs
     let summary_row: Value = {
@@ -1019,7 +1044,7 @@ pub fn get_full_analytics(
                     COALESCE(SUM(sa.duration_seconds),0) as total_duration_seconds,
                     COALESCE(AVG(sa.duration_seconds),0) as avg_duration_seconds,
                     COUNT(DISTINCT user_date(sa.started_at)) AS active_days,
-                    {CACHE_COLUMNS} {BASE_JOIN} {clause}"
+                    {CACHE_COLUMNS} {REPORT_JOIN} {clause}"
             ))
             .map_err(|e| sqlite_error("Could not prepare the KPI query", e))?;
         one_to_json(&mut stmt, &refs)
@@ -1058,7 +1083,7 @@ pub fn get_full_analytics(
                     SUM(sa.estimated_cost) as estimated_cost, SUM(sa.total_turns) AS total_turns,
                     COALESCE(SUM(sa.duration_seconds),0) AS total_duration_seconds,
                     COUNT(DISTINCT user_date(sa.started_at)) AS active_days,
-                    {CACHE_COLUMNS} {BASE_JOIN} {clause}
+                    {CACHE_COLUMNS} {REPORT_JOIN} {clause}
                  GROUP BY sa.model_name ORDER BY estimated_cost DESC, total_tokens DESC"
             ))
             .map_err(|e| sqlite_error("Could not prepare the by-model query", e))?;
@@ -1109,7 +1134,7 @@ pub fn get_full_analytics(
                     SUM(sa.tool_count) as tool_count, SUM(sa.tool_error_count) as tool_error_count,
                     COALESCE(SUM(sa.duration_seconds),0) AS total_duration_seconds,
                     COUNT(DISTINCT user_date(sa.started_at)) AS active_days,
-                    {CACHE_COLUMNS} {BASE_JOIN} {clause}
+                    {CACHE_COLUMNS} {REPORT_JOIN} {clause}
                  GROUP BY a.id ORDER BY estimated_cost DESC, sessions DESC"
             ))
             .map_err(|e| sqlite_error("Could not prepare the by-agent query", e))?;
@@ -1155,7 +1180,7 @@ pub fn get_full_analytics(
                     SUM(sa.estimated_cost) as estimated_cost, SUM(sa.total_turns) as total_turns,
                     COALESCE(SUM(sa.duration_seconds),0) AS total_duration_seconds,
                     COUNT(DISTINCT user_date(sa.started_at)) AS active_days,
-                    {CACHE_COLUMNS} {BASE_JOIN} {clause}
+                    {CACHE_COLUMNS} {REPORT_JOIN} {clause}
                  GROUP BY sa.workspace_id ORDER BY estimated_cost DESC, total_tokens DESC"
             ))
             .map_err(|e| sqlite_error("Could not prepare the by-workspace query", e))?;
@@ -1190,7 +1215,7 @@ pub fn get_full_analytics(
                     SUM(sa.total_turns) as turns, SUM(sa.user_turns) AS user_turns,
                     SUM(sa.assistant_turns) AS assistant_turns, SUM(sa.tool_count) as tool_calls,
                     SUM(sa.tool_error_count) as tool_errors
-                 {BASE_JOIN} {clause}
+                 {REPORT_JOIN} {clause}
                  GROUP BY date HAVING date IS NOT NULL AND date >= '2024-01-01' AND date <= '2030-01-01'
                  ORDER BY date ASC"
             ))
@@ -1364,7 +1389,7 @@ pub fn get_full_analytics(
                 "SELECT sa.session_id, s.title AS session_title, a.family, sa.model_name,
                     COALESCE(w.display_name, w.path, 'Other') AS workspace, sa.started_at,
                     sa.estimated_cost, sa.total_tokens, sa.duration_seconds, sa.total_turns
-                 {BASE_JOIN} {clause} ORDER BY sa.{metric} DESC, sa.session_id DESC LIMIT 5"
+                 {REPORT_JOIN} {clause} ORDER BY sa.{metric} DESC, sa.session_id DESC LIMIT 5"
             ))
             .map_err(|e| sqlite_error("Could not prepare the leaderboard query", e))?;
         let rows = rows_to_json(&mut stmt, &refs)
@@ -1381,10 +1406,8 @@ pub fn get_full_analytics(
                         t.tool_name) as command, t.tool_name, COUNT(*) as fail_count,
                     MAX(t.started_at) as last_failed_at, MAX(COALESCE(t.exit_code, 1)) as exit_code,
                     SUBSTR(t.result_text, 1, 140) as sample_error
-                 FROM tool_invocation t INDEXED BY tool_failures_idx
-                 JOIN session s ON s.id = t.session_id JOIN agent a ON a.id = s.agent_id
-                 LEFT JOIN workspace w ON w.id = s.workspace_id
-                 JOIN session_analytics sa ON sa.session_id = s.id
+                 FROM tool_invocation t
+                 JOIN report_scope sa ON sa.session_id=t.session_id
                  {clause} AND (t.status = 'error' OR (t.exit_code IS NOT NULL AND t.exit_code != 0))
                    AND (t.tool_name IN ('bash','exec','CommandExecution','terminal','shell') OR t.command_text IS NOT NULL)
                  GROUP BY command HAVING command IS NOT NULL AND command != ''
@@ -1401,10 +1424,8 @@ pub fn get_full_analytics(
                     SUM(CASE WHEN t.status = 'error' OR (t.exit_code IS NOT NULL AND t.exit_code != 0) THEN 1 ELSE 0 END) as error_calls,
                     SUM(CASE WHEN t.status = 'completed' AND (t.exit_code IS NULL OR t.exit_code = 0) THEN 1 ELSE 0 END) as success_calls,
                     ROUND(AVG(CASE WHEN t.duration_ms > 0 AND t.duration_ms < 600000 THEN t.duration_ms END)) as avg_duration_ms
-                 FROM tool_invocation t INDEXED BY tool_metrics_name_idx
-                 JOIN session s ON s.id = t.session_id JOIN agent a ON a.id = s.agent_id
-                 LEFT JOIN workspace w ON w.id = s.workspace_id
-                 JOIN session_analytics sa ON sa.session_id = s.id
+                 FROM tool_invocation t
+                 JOIN report_scope sa ON sa.session_id=t.session_id
                  {clause} GROUP BY t.tool_name HAVING total_calls >= 3
                  ORDER BY error_calls DESC, total_calls DESC LIMIT 16"
             ))
@@ -1441,9 +1462,8 @@ pub fn get_full_analytics(
                         t.tool_name) as command,
                     t.status, t.session_id, s.title as session_title, t.duration_ms, t.started_at
                  FROM tool_invocation t
-                 JOIN session s ON s.id = t.session_id JOIN agent a ON a.id = s.agent_id
-                 LEFT JOIN workspace w ON w.id = s.workspace_id
-                 JOIN session_analytics sa ON sa.session_id = s.id
+                 JOIN report_scope sa ON sa.session_id=t.session_id
+                 JOIN session s ON s.id=t.session_id
                  {clause} AND t.duration_ms > 50 AND t.duration_ms < 600000
                  ORDER BY t.duration_ms DESC LIMIT 15"
             ))
@@ -1458,11 +1478,10 @@ pub fn get_full_analytics(
                 "WITH ranked AS (
                     SELECT t.tool_name, t.duration_ms,
                         ROW_NUMBER() OVER (PARTITION BY t.tool_name ORDER BY t.duration_ms) AS rank,
-                        COUNT(*) OVER (PARTITION BY t.tool_name) AS samples
+                        COUNT(*) OVER (PARTITION BY t.tool_name ORDER BY t.duration_ms
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS samples
                      FROM tool_invocation t
-                     JOIN session s ON s.id = t.session_id JOIN agent a ON a.id = s.agent_id
-                     LEFT JOIN workspace w ON w.id = s.workspace_id
-                     JOIN session_analytics sa ON sa.session_id = s.id
+                     JOIN report_scope sa ON sa.session_id=t.session_id
                      {clause} AND t.duration_ms IS NOT NULL AND t.duration_ms >= 0
                  ) SELECT tool_name, MAX(samples) AS samples, AVG(duration_ms) AS avg_duration_ms,
                     MIN(CASE WHEN rank >= (samples + 1) / 2 THEN duration_ms END) AS p50_duration_ms,
@@ -1478,10 +1497,8 @@ pub fn get_full_analytics(
         let mut stmt = db
             .prepare(&format!(
                 "SELECT COALESCE(t.status, 'unspecified') as status, COUNT(*) as count
-                 FROM tool_invocation t INDEXED BY tool_metrics_status_idx
-                 JOIN session s ON s.id = t.session_id JOIN agent a ON a.id = s.agent_id
-                 LEFT JOIN workspace w ON w.id = s.workspace_id
-                 JOIN session_analytics sa ON sa.session_id = s.id
+                 FROM tool_invocation t
+                 JOIN report_scope sa ON sa.session_id=t.session_id
                  {clause} GROUP BY status ORDER BY count DESC"
             ))
             .map_err(|e| sqlite_error("Could not prepare the tool status query", e))?;
@@ -1495,7 +1512,7 @@ pub fn get_full_analytics(
             .prepare(&format!(
                 "SELECT user_weekday(sa.started_at) as day_of_week, user_hour(sa.started_at) as hour_of_day,
                     COUNT(*) as count, SUM(sa.total_turns) as turns
-                 {BASE_JOIN} {clause}
+                 {REPORT_JOIN} {clause}
                    AND sa.started_at IS NOT NULL AND user_weekday(sa.started_at) IS NOT NULL
                  GROUP BY day_of_week, hour_of_day"
             ))
@@ -1514,47 +1531,33 @@ pub fn get_full_analytics(
             peak_point = p.clone();
         }
     }
-    let mut duration_distribution = Vec::new();
-    for (label, min, max) in [
-        ("< 2 mins", 0.0, 120.0),
-        ("2–10 mins", 120.0, 600.0),
-        ("10–30 mins", 600.0, 1800.0),
-        ("30–60 mins", 1800.0, 3600.0),
-        ("1–2 hours", 3600.0, 7200.0),
-        ("> 2 hours", 7200.0, 9_999_999.0),
-    ] {
-        let mut stmt = db
+    let duration_rows = {
+        let mut statement = db
             .prepare(&format!(
-                "SELECT COUNT(*) as count, COALESCE(AVG(sa.total_turns), 0) as avg_turns
-                 {BASE_JOIN} {clause} AND sa.duration_seconds >= ? AND sa.duration_seconds < ?"
-            ))
-            .map_err(|e| sqlite_error("Could not prepare the duration query", e))?;
-        let mut all_owned = owned.clone();
-        let min_s = min.to_string();
-        let max_s = max.to_string();
-        // Params are strings here; SQLite compares numerically for REAL column.
-        all_owned.push(min_s);
-        all_owned.push(max_s);
-        let all_refs: Vec<&dyn rusqlite::types::ToSql> = all_owned
-            .iter()
-            .map(|s| s as &dyn rusqlite::types::ToSql)
-            .collect();
-        let row = one_to_json(&mut stmt, &all_refs)
-            .map_err(|e| sqlite_error("Could not run the duration query", e))?
-            .unwrap_or(json!({}));
-        let count = row.get("count").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        duration_distribution.push(json!({
-            "label": label, "count": count as i64,
-            "avg_turns": round_to(row.get("avg_turns").and_then(|v| v.as_f64()).unwrap_or(0.0), 1),
-            "pct": if total_sessions > 0 { round_to(count / total_sessions as f64 * 100.0, 1) } else { 0.0 },
-        }));
-    }
+            "SELECT CASE WHEN sa.duration_seconds<120 THEN 0 WHEN sa.duration_seconds<600 THEN 1
+                         WHEN sa.duration_seconds<1800 THEN 2 WHEN sa.duration_seconds<3600 THEN 3
+                         WHEN sa.duration_seconds<7200 THEN 4 ELSE 5 END AS bucket,
+                    COUNT(*) AS count, COALESCE(AVG(sa.total_turns),0) AS avg_turns
+             {REPORT_JOIN} {clause} AND sa.duration_seconds>=0 AND sa.duration_seconds<9999999
+             GROUP BY bucket"
+        ))
+            .map_err(|e| sqlite_error("Could not prepare duration buckets", e))?;
+        rows_to_json(&mut statement, &refs)
+            .map_err(|e| sqlite_error("Could not read duration buckets", e))?
+    };
+    let duration_distribution: Vec<Value> = ["< 2 mins", "2–10 mins", "10–30 mins", "30–60 mins", "1–2 hours", "> 2 hours"]
+        .iter().enumerate().map(|(index,label)| {
+            let row=duration_rows.iter().find(|row|row["bucket"].as_u64()==Some(index as u64));
+            let count=row.and_then(|row|row["count"].as_i64()).unwrap_or(0);
+            let average=row.and_then(|row|row["avg_turns"].as_f64()).unwrap_or(0.0);
+            json!({"label":label,"count":count,"avg_turns":round_to(average,1),"pct":if total_sessions>0 {round_to(count as f64/total_sessions as f64*100.0,1)} else {0.0}})
+        }).collect();
     let turn_depth_counts = {
         let mut stmt = db
             .prepare(&format!(
                 "SELECT CASE WHEN sa.total_turns = 0 THEN '0' WHEN sa.total_turns = 1 THEN '1'
                     WHEN sa.total_turns <= 5 THEN '2–5' WHEN sa.total_turns <= 20 THEN '6–20' ELSE '20+' END AS label,
-                    COUNT(*) AS count {BASE_JOIN} {clause} GROUP BY label"
+                    COUNT(*) AS count {REPORT_JOIN} {clause} GROUP BY label"
             ))
             .map_err(|e| sqlite_error("Could not prepare the turn depth query", e))?;
         rows_to_json(&mut stmt, &refs)
@@ -1578,25 +1581,17 @@ pub fn get_full_analytics(
                     SUM(sa.user_turns) as user_turns, SUM(sa.assistant_turns) as assistant_turns,
                     ROUND(AVG(sa.total_turns), 1) as avg_turns_per_session,
                     ROUND(COALESCE(SUM(sa.duration_seconds),0) / 3600.0, 1) as total_hours
-                 {BASE_JOIN} {clause}
+                 {REPORT_JOIN} {clause}
                  GROUP BY sa.workspace_id HAVING total_turns > 0 ORDER BY total_turns DESC LIMIT 16"
             ))
             .map_err(|e| sqlite_error("Could not prepare the turns-by-project query", e))?;
         rows_to_json(&mut stmt, &refs)
             .map_err(|e| sqlite_error("Could not run the turns-by-project query", e))?
     };
-    let active_days_count: i64 = {
-        let mut stmt = db
-            .prepare(&format!(
-                "SELECT COUNT(DISTINCT user_date(sa.started_at)) as count
-                 {BASE_JOIN} {clause} AND sa.started_at IS NOT NULL"
-            ))
-            .map_err(|e| sqlite_error("Could not prepare the active days query", e))?;
-        one_to_json(&mut stmt, &refs)
-            .map_err(|e| sqlite_error("Could not run the active days query", e))?
-            .and_then(|r| r.get("count").and_then(|v| v.as_i64()))
-            .unwrap_or(0)
-    };
+    let active_days_count = summary_row
+        .get("active_days")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
 
     let mut kpis = summary_row.clone();
     apply_efficiency(&mut kpis);

@@ -1,7 +1,7 @@
 {
   "name": "hession",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
@@ -12,7 +12,8 @@
     "icons": "node scripts/icons.mjs",
     "lint": "eslint .",
     "unused": "knip",
-    "test": "node --test 'src/**/*.test.js'"
+    "test": "node --test 'src/**/*.test.js'",
+    "benchmark": "node scripts/benchmark.mjs"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",

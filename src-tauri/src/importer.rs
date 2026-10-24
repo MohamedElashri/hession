@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
+use crate::paths::{env_path, home_dir};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -31,7 +32,7 @@ pub const HOST_ERROR_PREFIX: &str = "host ";
 const MAX_ERRORS: usize = 25;
 /// Cap on files collected during directory walks (robustness guard).
 const MAX_FILES: usize = 100_000;
-/// Cooperative cancellation flag (`requestSyncStop` equivalent).
+/// Cooperative cancellation checked between import batches.
 static STOP: AtomicBool = AtomicBool::new(false);
 
 /// Ask a running sync to stop at the next cancellation check.
@@ -53,9 +54,7 @@ pub(crate) fn is_stop_requested() -> bool {
     stop_requested()
 }
 
-// ---------------------------------------------------------------------------
 // Public shapes
-// ---------------------------------------------------------------------------
 
 /// One importable agent family.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,9 +106,7 @@ pub struct SyncSummary {
     pub cancelled: bool,
 }
 
-// ---------------------------------------------------------------------------
 // Source discovery (+ env overrides)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SourceKind {
@@ -131,20 +128,6 @@ struct Source {
     root: PathBuf,
     sub: &'static str,
     kind: SourceKind,
-}
-
-fn home_dir() -> PathBuf {
-    match std::env::var("HOME") {
-        Ok(v) if !v.trim().is_empty() => PathBuf::from(v.trim()),
-        _ => PathBuf::from("."),
-    }
-}
-
-fn env_path(key: &str, default: PathBuf) -> PathBuf {
-    match std::env::var(key) {
-        Ok(v) if !v.trim().is_empty() => PathBuf::from(v.trim()),
-        _ => default,
-    }
 }
 
 fn hermes_home(home: &Path) -> PathBuf {
@@ -394,9 +377,7 @@ pub fn discover_source_files(family: &str) -> Vec<PathBuf> {
     out
 }
 
-// ---------------------------------------------------------------------------
 // JSONL parsing + minimal normalization
-// ---------------------------------------------------------------------------
 
 /// Read a stable, complete JSONL snapshot. Never silently discard bad records.
 pub fn parse_jsonl_file(path: &Path) -> Result<Vec<Value>, String> {
@@ -859,9 +840,7 @@ pub fn normalize_record(
     })
 }
 
-// ---------------------------------------------------------------------------
 // sync_state / sync_checkpoint helpers
-// ---------------------------------------------------------------------------
 
 /// Incremental sync is driven by file size + modification time only: a source
 /// whose current size and mtime still match the last successful import is
@@ -971,9 +950,7 @@ fn split_source_uri(source_uri: &str) -> Result<(&str, PathBuf), String> {
     Ok((family, path))
 }
 
-// ---------------------------------------------------------------------------
 // Atomic source imports: session, transcript, derived activity, and sync state
-// ---------------------------------------------------------------------------
 
 /// Reuse the pricing index for the whole sync; reload only after a user
 /// changes prices, while holding the same writer slot as that change.
@@ -1277,9 +1254,7 @@ fn commit_session(
     Ok(data.records.len())
 }
 
-// ---------------------------------------------------------------------------
 // syncAll (incremental / full)
-// ---------------------------------------------------------------------------
 
 fn push_error(summary: &mut SyncSummary, file: &str, error: String) {
     if summary.errors.len() >= MAX_ERRORS {

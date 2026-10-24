@@ -3,6 +3,7 @@ import { Database, Download, Upload, Trash2, LoaderCircle, RefreshCw, X } from '
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { BRAND } from '../brand.js';
+import useModalDialog from './useModalDialog.js';
 
 const emptyFilters = () => ({ query: '', agent: '', workspace: '', since: '', until: '', starred: false, tag: '' });
 const errorMessage = error => error instanceof Error ? error.message : String(error);
@@ -18,7 +19,7 @@ const filtersForCommand = filters => {
 };
 
 export default function DataManagement({ onClose, onChanged, syncRunning }) {
-  const dialog = useRef(null);
+  const dialog = useModalDialog();
   const requestId = useRef(0);
   const operation = useRef(false);
   const [tab, setTab] = useState('saved');
@@ -40,13 +41,6 @@ export default function DataManagement({ onClose, onChanged, syncRunning }) {
   const desktop = Boolean(window.__TAURI_INTERNALS__?.invoke);
   const actionsDisabled = Boolean(busy || previewLoading || !preview || syncRunning || !desktop);
   const confirmationWord = resetDatabase ? 'RESET' : 'DELETE';
-
-  useEffect(() => {
-    const previous = document.activeElement;
-    dialog.current.showModal();
-    dialog.current.querySelector('button')?.focus();
-    return () => { if (previous?.isConnected) previous.focus(); };
-  }, []);
 
   useEffect(() => {
     const id = ++requestId.current;

@@ -1,13 +1,15 @@
-import { useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkBreaks from 'remark-breaks';
+import { memo, useState } from 'react';
+import Markdown from './Markdown.jsx';
 import { Bot, Brain, Check, ChevronRight, ClipboardList, Copy, Info, User } from 'lucide-react';
 import { parseDate } from '../dates.js';
 
-// Single newlines are kept: prompts and command output rely on them.
-const plugins = [remarkGfm, remarkBreaks];
-const Markdown = ({ text }) => <ReactMarkdown remarkPlugins={plugins}>{text}</ReactMarkdown>;
+function DeferredDetails({ summary, children, ...props }) {
+  const [open, setOpen] = useState(false);
+  return <details {...props} onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>{summary}</summary>
+    {open && children()}
+  </details>;
+}
 
 const timeOf = entry => parseDate(entry?.occurred_at)?.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) ?? '';
 const lineCount = text => String(text ?? '').split('\n').length;
@@ -15,17 +17,6 @@ const failed = status => ['error', 'failed', 'failure'].includes(String(status ?
 
 function formatArgs(value) {
   try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return String(value ?? ''); }
-}
-
-/** Long text is clipped until the reader asks for the rest. */
-function Clamp({ text, children }) {
-  const long = String(text ?? '').length > 1600 || lineCount(text) > 28;
-  const [open, setOpen] = useState(false);
-  if (!long) return children;
-  return <div className={`clamp ${open ? 'clamp-open' : ''}`}>
-    <div className="clamp-body">{children}</div>
-    <button type="button" className="text-button clamp-toggle" onClick={() => setOpen(!open)}>{open ? 'Show less' : 'Show more'}</button>
-  </div>;
 }
 
 function CopyButton({ text, label }) {
@@ -38,10 +29,10 @@ function CopyButton({ text, label }) {
 
 /** Injected context (system reminders, environment, metadata), collapsed. */
 function ContextChips({ context }) {
-  return <div className="context-row">{context.map((c, i) => <details className="context-chip" key={`${c.tag}-${i}`}>
-    <summary><Info size={12}/>{c.label}</summary>
-    <pre>{c.body}</pre>
-  </details>)}</div>;
+  return <div className="context-row">{context.map((c, i) => <DeferredDetails className="context-chip" key={`${c.tag}-${i}`}
+    summary={<><Info size={12}/>{c.label}</>}>
+    {() => <pre>{c.body}</pre>}
+  </DeferredDetails>)}</div>;
 }
 
 function Prompt({ prompt }) {
@@ -54,11 +45,11 @@ function Prompt({ prompt }) {
       <CopyButton text={copyText} label="Copy prompt"/>
     </header>
     {prompt.command && <code className="command-chip">{prompt.command}</code>}
-    {prompt.text && <Clamp text={prompt.text}><div className="markdown-body prompt-text"><Markdown text={prompt.text}/></div></Clamp>}
-    {prompt.pasted.map((paste, i) => <details className="pasted" key={i}>
-      <summary><ClipboardList size={13}/>Pasted text · {lineCount(paste)} line{lineCount(paste) === 1 ? '' : 's'}</summary>
-      <pre>{paste}</pre>
-    </details>)}
+    {prompt.text && <div className="markdown-body prompt-text"><Markdown text={prompt.text} preserveLines/></div>}
+    {prompt.pasted.map((paste, i) => <DeferredDetails className="pasted" key={i}
+      summary={<><ClipboardList size={13}/>Pasted text · {lineCount(paste)} line{lineCount(paste) === 1 ? '' : 's'}</>}>
+      {() => <pre>{paste}</pre>}
+    </DeferredDetails>)}
     {prompt.context.length > 0 && <ContextChips context={prompt.context}/>}
   </article>;
 }
@@ -71,18 +62,18 @@ function ToolCalls({ calls }) {
   const [expanded, setExpanded] = useState(false);
   const collapsible = calls.length > TOOL_RUN_COLLAPSE;
   const shown = collapsible && !expanded ? calls.slice(0, TOOL_RUN_VISIBLE) : calls;
-  return <div className="tool-list">{shown.map(call => <details className={`tool-row ${failed(call.status) ? 'tool-failed' : ''}`} key={call.key}>
-    <summary>
+  return <div className="tool-list">{shown.map(call => <DeferredDetails className={`tool-row ${failed(call.status) ? 'tool-failed' : ''}`} key={call.key}
+    summary={<>
       <ChevronRight size={13} className="tool-chevron"/>
       <span className="tool-name">{call.name}</span>
       <span className="tool-summary">{call.summary}</span>
       {failed(call.status) && <span className="tool-status status-error">failed</span>}
-    </summary>
-    <div className="tool-detail">
+    </>}>
+    {() => <div className="tool-detail">
       {call.command ? <pre className="command-pre">$ {call.command}</pre> : call.args && call.args !== '{}' && <pre>{formatArgs(call.args)}</pre>}
       {call.result ? <pre>{call.result.slice(0, 8000)}{call.result.length > 8000 ? '\n…' : ''}</pre> : <p className="tool-empty">No output recorded.</p>}
-    </div>
-  </details>)}
+    </div>}
+  </DeferredDetails>)}
   {collapsible && <button type="button" className="text-button tool-more" onClick={() => setExpanded(!expanded)}>
     {expanded ? 'Show fewer' : `Show ${calls.length - TOOL_RUN_VISIBLE} more tool calls`}
   </button>}
@@ -91,20 +82,19 @@ function ToolCalls({ calls }) {
 
 function ReplyItem({ item }) {
   if (item.type === 'text') return <div className="reply-text">
-    <Clamp text={item.text}><div className="markdown-body"><Markdown text={item.text}/></div></Clamp>
+    <div className="markdown-body"><Markdown text={item.text} preserveLines/></div>
     <CopyButton text={item.text} label="Copy reply"/>
   </div>;
-  if (item.type === 'thinking') return <details className="thinking">
-    <summary><Brain size={13}/>Thinking</summary>
-    <div className="markdown-body"><Markdown text={item.text}/></div>
-  </details>;
+  if (item.type === 'thinking') return <DeferredDetails className="thinking" summary={<><Brain size={13}/>Thinking</>}>
+    {() => <div className="markdown-body"><Markdown text={item.text} preserveLines/></div>}
+  </DeferredDetails>;
   if (item.type === 'tools') return <ToolCalls calls={item.calls}/>;
   if (item.type === 'context') return <ContextChips context={item.context}/>;
   return null;
 }
 
 /** The dialogue as turns: your prompt, then the agent's reply and actions. */
-export function Conversation({ turns, agentName, agentColor }) {
+export const Conversation = memo(function Conversation({ turns, agentName, agentColor }) {
   return turns.map(turn => <section className="turn" id={`turn-${turn.id}`} key={turn.id}>
     {turn.prompt ? <Prompt prompt={turn.prompt}/> : <p className="turn-continued">Continued from earlier in the session</p>}
     {turn.items.length > 0 && <div className="reply">
@@ -115,7 +105,7 @@ export function Conversation({ turns, agentName, agentColor }) {
       {turn.items.map(item => <ReplyItem item={item} key={item.key}/>)}
     </div>}
   </section>);
-}
+});
 
 /** Every prompt on the page, to skim a session and jump to a turn. */
 export function PromptIndex({ turns, onOpen }) {

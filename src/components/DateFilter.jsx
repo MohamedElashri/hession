@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState } from 'react';
+import useDropdown from './useDropdown.js';
 import { Calendar, ChevronDown, Check, X } from 'lucide-react';
 
 import { localDateKey } from '../dates.js';
@@ -26,9 +27,8 @@ const SHORT_LABELS = {
 const isPresetValue = (val) => KNOWN_PRESET_VALUES.includes(val);
 
 export default function DateFilter({ value, onChange, presets = DEFAULT_PRESETS }) {
-  const [open, setOpen] = useState(false);
+  const { open, setOpen, anchorRef } = useDropdown();
   const [customDate, setCustomDate] = useState(value && !isPresetValue(value) ? value : '');
-  const anchorRef = useRef(null);
 
   // Follow outside changes to the value (adjusting state during render).
   const [seenValue, setSeenValue] = useState(value);
@@ -37,17 +37,6 @@ export default function DateFilter({ value, onChange, presets = DEFAULT_PRESETS 
     if (value && !isPresetValue(value)) setCustomDate(value);
     else if (!value) setCustomDate('');
   }
-
-  useEffect(() => {
-    if (!open) return;
-    const handleClick = (e) => {
-      if (anchorRef.current && !anchorRef.current.contains(e.target)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('pointerdown', handleClick);
-    return () => document.removeEventListener('pointerdown', handleClick);
-  }, [open]);
 
   const getLabel = () => {
     if (!value) return 'Date';
@@ -132,6 +121,7 @@ export default function DateFilter({ value, onChange, presets = DEFAULT_PRESETS 
             <div className="filter-custom-row">
               <input
                 type="date"
+                aria-label="Custom from date"
                 className="filter-date-input"
                 value={customDate}
                 onChange={(e) => setCustomDate(e.target.value)}

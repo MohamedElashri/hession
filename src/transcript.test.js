@@ -85,3 +85,41 @@ test('tool summaries prefer commands, then paths', () => {
   assert.equal(toolSummary({ arguments_json: '{"file_path":"src/a.rs"}' }), 'src/a.rs');
   assert.equal(toolSummary({ arguments_json: '*** Begin Patch\nfoo' }), '*** Begin Patch');
 });
+
+test('out-of-order results attach by ID across tool groups without crossing turns', () => {
+  const call = (id, result) => ({ id, role: 'assistant', parts: [], tools: [{ id, call_id: `c${id}`, tool_name: 'Read', result_text: result }] });
+  const result = (id, body) => ({ role: 'tool', parts: [{ kind: 'tool_result', data_json: JSON.stringify({ call_id: id }), text: body }] });
+  const [first, second] = buildConversation([
+    text(1, 'user', 'go'), call(2), call(3), text(4, 'assistant', 'Next step'), call(5),
+    result('c3', 'three'), result('c2', 'two'), result(null, 'five'), result('c2', 'duplicate'),
+    text(6, 'user', 'again'), result('c2', 'new turn'),
+  ]);
+  const calls = first.items.flatMap(item => item.calls || []);
+  assert.deepEqual(calls.map(item => item.result), ['two', 'three', 'five']);
+  assert.equal(second.items[0].calls[0].name, 'Output');
+  assert.equal(second.items[0].calls[0].result, 'new turn');
+});
+
+test('anonymous results fill pending calls in reverse order within the latest group', () => {
+  const [turn] = buildConversation([
+    text(1, 'user', 'go'),
+    { role: 'assistant', parts: [], tools: [
+      { id: 1, call_id: 'a', tool_name: 'Read' },
+      { id: 2, call_id: 'b', tool_name: 'Read', result_text: 'already' },
+      { id: 3, call_id: 'c', tool_name: 'Read' },
+    ] },
+    ...['last', 'first', 'orphan'].map(text => ({ role: 'tool', parts: [{ kind: 'tool_result', text }] })),
+  ]);
+  assert.deepEqual(turn.items[0].calls.map(call => call.result), ['first', 'already', 'last', 'orphan']);
+});
+
+test('reused call IDs keep the first call and empty output remains pending', () => {
+  const [turn] = buildConversation([
+    text(1, 'user', 'go'),
+    { role: 'assistant', parts: [], tools: [{ id: 1, call_id: 'a' }, { id: 2, call_id: 'a' }] },
+    { role: 'tool', parts: [{ kind: 'tool_result', data_json: '{"call_id":"a"}', text: '' }] },
+    { role: 'tool', parts: [{ kind: 'tool_result', data_json: '{"call_id":"a"}', text: 'first' }] },
+    { role: 'tool', parts: [{ kind: 'tool_result', text: 'second' }] },
+  ]);
+  assert.deepEqual(turn.items[0].calls.map(call => call.result), ['first', 'second']);
+});

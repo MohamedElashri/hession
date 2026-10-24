@@ -34,7 +34,7 @@ directly, set `PKG_CONFIG=/usr/bin/pkg-config` yourself.
 | `make lint` | ESLint + ShellCheck + Clippy; any warning fails (`make lint-js`, `make lint-sh` alone) |
 | `make unused` | Unused files, exports, and npm dependencies (knip) |
 | `make fmt` / `make fmt-check` | Format the Rust code / fail if it isn't formatted |
-| `make build` | Installers for this OS; `make deb`, `appimage`, `rpm` for one format |
+| `make build` | Release binary only; `make build-debug` for faster testing; `make bundle` for installers |
 | `make run` | Run the release binary |
 | `make icons` | Regenerate icons and brand assets from `branding/` |
 | `make brand` | Apply `brand.json` to the Tauri, npm, and Cargo manifests |
@@ -71,7 +71,9 @@ brand.json              product identity (the only place the name is defined)
 branding/               logo sources (mark, icon, favicon) and generated assets
 scripts/                brand.mjs, icons.mjs, check.Dockerfile
 src/                    React UI: main.jsx, Analytics.jsx, components/, api.js (IPC)
-  styles/               tokens.css (both themes), base, app, components, analytics
+  appearance.js         validated appearance settings, legacy theme migration
+  useAppearance.js      preference persistence and device theme changes
+  styles/               theme tokens, base, app, components, analytics
   dev/                  browser preview: mock IPC and fixtures
 src-tauri/src/
   importer.rs           source discovery, incremental import (+ import_*.rs formats)
@@ -119,18 +121,28 @@ and tagline. The code reads them through `src/brand.js` (frontend) and
 The mark is drawn on a 24-unit grid in `branding/mark.svg`; `icon.svg` and
 `favicon.svg` use the same geometry.
 
-UI colours come only from `src/styles/tokens.css` (one block per theme); fonts
-are Geist and Geist Mono, bundled via `@fontsource-variable`. Use the tokens
-(`--surface`, `--text-2`, `--accent`, …) instead of hex values in styles.
+Theme and accent colors live in `src/styles/tokens.css`; fonts are Geist and
+Geist Mono, bundled via `@fontsource-variable`. Use the tokens (`--surface`,
+`--text-2`, `--accent`, …) for UI colors. Theme previews and brand artwork use
+fixed colors. Appearance attributes live on the document root so native
+dialogs and the startup screen inherit them. Use rem or the text-size tokens
+for typography so the text-size preference applies throughout the app.
+
+Agent, workspace, model, branch, and tool filters share `OptionFilter.jsx`.
+Their wrappers supply normalized options; `useDropdown.js` handles dismissal.
+Native settings dialogs share `useModalDialog.js` to open modally and return
+focus to their trigger when closed.
 
 ## Tests
 
 `make test` runs the Rust unit tests and the JS tests (`npm test`;
-`src/transcript.test.js` covers how transcripts become conversation turns). `remote.rs` includes an end-to-end test
+`src/transcript.test.js` covers how transcripts become conversation turns and
+`src/appearance.test.js` covers saved settings, migration, and theme resolution).
+`remote.rs` includes an end-to-end test
 that puts a stand-in `ssh` on `PATH`, then exercises the real probe, rsync,
 and import against a fake remote home. Another test runs the generated
-resume command through `sh` with awkward paths and arguments. The frontend
-has no unit tests; the Vite build is its check.
+resume command through `sh` with awkward paths and arguments. For visual checks,
+use `make preview` to inspect both sessions and analytics with sample data.
 
 ## Releases
 

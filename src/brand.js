@@ -1,5 +1,5 @@
 // Product identity from brand.json; import from here instead of spelling the name.
-import brand from '../brand.json';
+import brand from '../brand.json' with { type: 'json' };
 
 export const BRAND = brand;
 /** Namespaced localStorage key, e.g. storageKey('theme'). */

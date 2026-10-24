@@ -27,9 +27,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Upper bound for one host's mirror transfer (first syncs can be large).
 const MIRROR_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
-// ---------------------------------------------------------------------------
 // Host configuration (`<data_dir>/remotes.json`)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostConfig {
@@ -134,9 +132,7 @@ pub fn from_mirror(path: &Path) -> Option<(String, String)> {
     Some((host, remote.to_string_lossy().into_owned()))
 }
 
-// ---------------------------------------------------------------------------
 // Probe: resolve the host's agent stores with its own environment
-// ---------------------------------------------------------------------------
 
 /// One agent store on a remote host. `root`/`sub` follow the importer's
 /// `Source` layout; `aux` entries are mirrored for metadata only.
@@ -331,9 +327,7 @@ fn save_probe(probe: &Probe) -> Result<(), String> {
     fs::write(&path, text).map_err(|e| format!("Could not save host probe: {e}"))
 }
 
-// ---------------------------------------------------------------------------
 // Mirroring
-// ---------------------------------------------------------------------------
 
 /// Something to copy from a store: a directory (only transcript formats inside
 /// it) or a single file (a SQLite database or one of its sidecars).
@@ -530,9 +524,7 @@ pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-// ---------------------------------------------------------------------------
 // Running agents on a host
-// ---------------------------------------------------------------------------
 
 /// The command string `ssh -t <host> <this>` runs to resume an agent.
 ///
@@ -599,9 +591,7 @@ pub fn vscode_folder_uri(host: &str, path: &str) -> String {
     format!("vscode-remote://ssh-remote+{host}{encoded}")
 }
 
-// ---------------------------------------------------------------------------
 // Host suggestions: ~/.ssh/config and VS Code Remote-SSH history
-// ---------------------------------------------------------------------------
 
 fn home() -> PathBuf {
     std::env::var_os("HOME")
@@ -786,9 +776,7 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-// ---------------------------------------------------------------------------
 // Tauri commands
-// ---------------------------------------------------------------------------
 
 fn host_status(host: &HostConfig) -> Value {
     let probe = load_probe(&host.name);

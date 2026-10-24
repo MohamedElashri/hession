@@ -17,26 +17,7 @@ use tauri::State;
 
 const BACKUP_ID: i64 = 0x53424f58; // SBOX
 const BACKUP_VERSION: i64 = 1;
-const TABLES: &[&str] = &[
-    "agent",
-    "workspace",
-    "repository",
-    "model",
-    "session",
-    "entry",
-    "content_part",
-    "session_context",
-    "tool_invocation",
-    "file_activity",
-    "session_annotation",
-    "session_tag",
-];
-const SETTINGS_TABLES: &[&str] = &[
-    "model_price_overrides",
-    "model_pricing_cache",
-    "sync_state",
-    "sync_checkpoint",
-];
+use crate::library_revision::{DATA_TABLES as TABLES, SETTINGS_TABLES};
 type Row = HashMap<String, Value>;
 type IdMaps = HashMap<&'static str, HashMap<i64, i64>>;
 
@@ -72,7 +53,9 @@ fn path_of(state: &State<'_, AppState>) -> Result<PathBuf, String> {
         .map_err(|_| "Could not access the database path".into())
 }
 fn open(path: &Path) -> Result<Connection, String> {
-    db::open_db(path).map_err(|e| e.to_string())
+    let conn = db::open_db(path).map_err(|e| e.to_string())?;
+    crate::library_revision::mark_managed(&conn).map_err(|e| e.to_string())?;
+    Ok(conn)
 }
 fn sql<T>(result: rusqlite::Result<T>) -> Result<T, String> {
     result.map_err(|e| e.to_string())
@@ -195,6 +178,9 @@ fn select_ids(conn: &Connection, ids: &[i64]) -> Result<(), String> {
     Ok(())
 }
 fn token(conn: &Connection, ids: &[i64]) -> Result<String, String> {
+    if let Some(token) = sql(crate::library_revision::managed_token(conn, ids))? {
+        return Ok(token);
+    }
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     ids.hash(&mut hash);
     // Hash logical input data in a stable order within the caller's snapshot.
@@ -256,14 +242,19 @@ fn verify_token(actual: &str, expected: &str) -> Result<(), String> {
         Ok(())
     }
 }
-fn summary(conn: &Connection, ids: &[i64]) -> Result<Json, String> {
+fn summary_counts(conn: &Connection, ids: &[i64]) -> Result<Json, String> {
     let entries: i64 = sql(conn.query_row(
         "SELECT COUNT(*) FROM entry WHERE session_id IN (SELECT id FROM selected_session)",
         [],
         |r| r.get(0),
     ))?;
     let tools: i64 = sql(conn.query_row("SELECT COUNT(*) FROM tool_invocation WHERE session_id IN (SELECT id FROM selected_session)", [], |r| r.get(0)))?;
-    Ok(json!({"sessions":ids.len(), "entries":entries, "tools":tools, "token":token(conn, ids)?}))
+    Ok(json!({"sessions":ids.len(), "entries":entries, "tools":tools}))
+}
+fn summary(conn: &Connection, ids: &[i64]) -> Result<Json, String> {
+    let mut result = summary_counts(conn, ids)?;
+    result["token"] = json!(token(conn, ids)?);
+    Ok(result)
 }
 fn options(conn: &Connection) -> Result<Json, String> {
     let strings = |query: &str| -> Result<Vec<String>, String> {
@@ -413,7 +404,13 @@ pub async fn export_saved_data(
         ))?;
         let tx = sql(backup.transaction_with_behavior(TransactionBehavior::Immediate))?;
         let ids = selection(&tx, &filters)?;
-        verify_token(&token(&tx, &ids)?, &expected_token)?;
+        let actual = if expected_token.starts_with("r1:") {
+            sql(crate::library_revision::snapshot_token(&tx, &ids))?
+                .ok_or("The library revision changed. Refresh the preview.")?
+        } else {
+            token(&tx, &ids)?
+        };
+        verify_token(&actual, &expected_token)?;
         select_ids(&tx, &ids)?;
         let total: i64 = sql(tx.query_row("SELECT COUNT(*) FROM session", [], |r| r.get(0)))?;
         sql(tx.execute(
@@ -523,7 +520,7 @@ pub async fn preview_data_import(
         select_ids(&source, &ids)?;
         let (plan, import_token) = import_plan(&tx, &source, &ids)?;
         let matches = plan.iter().filter(|(_, id)| id.is_some()).count();
-        let mut result = summary(&source, &ids)?;
+        let mut result = summary_counts(&source, &ids)?;
         result["token"] = json!(import_token);
         result["matchingSessions"] = json!(matches);
         result["newSessions"] = json!(ids.len() - matches);
@@ -707,4 +704,91 @@ pub async fn delete_saved_data(
         let warning = conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE)").err().map(|e| format!("Data was deleted, but disk space could not be fully reclaimed: {e}"));
         Ok(json!({"deleted":ids.len(),"reset":reset_database,"warning":warning}))
     }).await.map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn library() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        db::init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO agent(id,family,product) VALUES(1,'codex','Codex')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session(id,agent_id,source_uri,title) VALUES(1,1,'test://1','Original')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO entry(id,session_id,ordinal,kind,search_text) VALUES(1,1,0,'message','Original text')",[]).unwrap();
+        conn
+    }
+
+    #[test]
+    fn incoming_backups_hash_content_even_when_revision_numbers_match() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = library();
+        let first_path = directory.path().join("first.sqlite");
+        let second_path = directory.path().join("second.sqlite");
+        source.backup(rusqlite::MAIN_DB, &first_path, None).unwrap();
+        source
+            .backup(rusqlite::MAIN_DB, &second_path, None)
+            .unwrap();
+        let first = Connection::open(first_path).unwrap();
+        let second = Connection::open(second_path).unwrap();
+        first
+            .execute(
+                "UPDATE entry SET search_text='First changed text' WHERE id=1",
+                [],
+            )
+            .unwrap();
+        second
+            .execute(
+                "UPDATE entry SET search_text='Other changed text' WHERE id=1",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            crate::library_revision::snapshot_token(&first, &[1]).unwrap(),
+            crate::library_revision::snapshot_token(&second, &[1]).unwrap()
+        );
+        let first_token = token(&first, &[1]).unwrap();
+        let second_token = token(&second, &[1]).unwrap();
+        assert_ne!(first_token, second_token);
+        assert!(verify_token(&first_token, &second_token).is_err());
+        assert!(!first_token.starts_with("r1:"));
+    }
+
+    #[test]
+    fn managed_tokens_cover_text_tags_prices_and_fall_back_if_tracking_is_removed() {
+        let conn = library();
+        crate::library_revision::mark_managed(&conn).unwrap();
+        let mut previous = token(&conn, &[1]).unwrap();
+        assert!(previous.starts_with("r1:"));
+        for statement in [
+            "UPDATE entry SET search_text='Updated' WHERE id=1",
+            "INSERT INTO session_tag VALUES(1,'tag')",
+            "INSERT INTO session_annotation VALUES(1,1)",
+            "INSERT INTO model_price_overrides(provider,model_id,in_per_1m,out_per_1m,cache_per_1m) VALUES('','model',1,2,0.1)",
+        ] {
+            conn.execute(statement,[]).unwrap();
+            let actual=token(&conn,&[1]).unwrap();
+            assert_ne!(actual,previous);
+            assert!(verify_token(&actual,&previous).is_err());
+            previous=actual;
+        }
+        conn.execute_batch("DROP TRIGGER library_revision_entry_update")
+            .unwrap();
+        let before = token(&conn, &[1]).unwrap();
+        assert!(!before.starts_with("r1:"));
+        conn.execute(
+            "UPDATE entry SET search_text='Changed after removing the trigger'",
+            [],
+        )
+        .unwrap();
+        assert_ne!(token(&conn, &[1]).unwrap(), before);
+    }
 }

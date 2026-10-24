@@ -10,8 +10,8 @@ import ReportFilters from './components/ReportFilters.jsx';
 import { useNumericSort, NumericSortHeader, numericSortValue } from './components/SortableTable.jsx';
 import { changeReportFilters, reportError } from './analytics-data.js';
 import { api } from './api.js';
+import './styles/analytics.css';
 
-// Format helper utilities
 const formatNum = (num) => {
   if (num == null) return '0';
   if (num >= 1000000000) return (num / 1000000000).toFixed(2) + 'B';
@@ -63,13 +63,10 @@ export default function AnalyticsView({
   const [error, setError] = useState('');
   const [copiedCmd, setCopiedCmd] = useState(null);
   const analyticsRequestId = useRef(0);
-  // Whether a report is shown, so refetches keep it visible (a ref, so the
-  // fetch callback doesn't depend on the data it loads).
+  // Keep reports visible during refetches without making data a fetch dependency.
   const hasData = useRef(false);
 
-  // Filters (date uses the same dropdown UX as the sessions page:
-  // presets + custom from-date with Apply. Internally a custom date is
-  // stored as dateFilter='custom' + customSince='YYYY-MM-DD' to keep URLs stable.)
+  // Custom dates use separate dateFilter/customSince fields to preserve saved URLs.
   const dateFilter = navigationState.dateFilter || '';
   const customSince = navigationState.customSince || '';
   const agentFilter = navigationState.agentFilter || '';
@@ -77,7 +74,6 @@ export default function AnalyticsView({
   const modelFilter = navigationState.modelFilter || '';
   const setModelFilter = value => onNavigationChange?.(changeReportFilters({ modelFilter: value }));
 
-  // Selected chart metric for trend view
   const trendMetric = navigationState.trendMetric || 'cost';
   const setTrendMetric = value => onNavigationChange?.({ trendMetric: value });
   const [hoveredTrendPoint, setHoveredTrendPoint] = useState(null);
@@ -120,11 +116,11 @@ export default function AnalyticsView({
     }
   }, [dateFilter, customSince, agentFilter, workspaceFilter, modelFilter, navigationState.timezone]);
 
-  // Refetch when filters change (via fetchAnalytics), the tab changes, or data is synced.
+  // Every tab uses the same report; switching sections does not need another IPC call.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching shows a loading state
     fetchAnalytics();
-  }, [fetchAnalytics, activeTab, refreshKey, syncRunning]);
+  }, [fetchAnalytics, refreshKey, syncRunning]);
 
   useEffect(() => {
     if (!syncRunning && !data?.refreshing) return;
@@ -506,9 +502,7 @@ function EfficiencyTable({ title, byModel = [], byAgent = [], byWorkspace = [], 
   </div>;
 }
 
-// -------------------------------------------------------------
-// 1. OVERVIEW SECTION
-// -------------------------------------------------------------
+// Overview section
 function OverviewSection({
   kpis,
   tokensAndCosts,
@@ -687,9 +681,7 @@ function OverviewSection({
   );
 }
 
-// -------------------------------------------------------------
-// 2. TOKEN & COST TRACKING SECTION
-// -------------------------------------------------------------
+// Token & cost tracking section
 function TokenCostSection({ kpis, tokensAndCosts }) {
   const byModel = tokensAndCosts.by_model || [];
   const byAgent = tokensAndCosts.by_agent || [];
@@ -867,9 +859,7 @@ function TokenCostSection({ kpis, tokensAndCosts }) {
   );
 }
 
-// -------------------------------------------------------------
-// 3. TOOL FAILURE & EXECUTION METRICS SECTION
-// -------------------------------------------------------------
+// Tool failure & execution metrics section
 function ToolExecutionSection({
   kpis,
   toolMetrics,
@@ -1108,9 +1098,7 @@ function ToolExecutionSection({
   );
 }
 
-// -------------------------------------------------------------
-// 4. AGENT PRODUCTIVITY PULSE SECTION
-// -------------------------------------------------------------
+// Agent productivity pulse section
 function ProductivitySection({
   kpis,
   productivity,
@@ -1269,9 +1257,7 @@ function ProductivitySection({
   );
 }
 
-// -------------------------------------------------------------
 // Shared methodology footnote: pricing provenance + token estimation.
-// -------------------------------------------------------------
 function MethodologyNote({ methodology }) {
   const prices = methodology?.pricingSource === 'models.dev'
     ? (<>Model prices from <strong>models.dev</strong>{methodology?.pricingUpdatedAt ? ` (cached ${(parseDate(methodology.pricingUpdatedAt)?.toLocaleDateString() || 'date unavailable')}, ${Number(methodology.pricingModelCount || 0).toLocaleString()} models)` : ''}. </>)
@@ -1296,9 +1282,7 @@ function PricingSourceBadge({ source, title }) {
   );
 }
 
-// -------------------------------------------------------------
-// 5. MODEL PRICING MATRIX REFERENCE
-// -------------------------------------------------------------
+// Model pricing matrix reference
 function PricingMatrixSection({ pricingList = [], methodology }) {
   const pricingSorting = useNumericSort(pricingList);
   return (
@@ -1371,9 +1355,7 @@ function PricingMatrixSection({ pricingList = [], methodology }) {
   );
 }
 
-// -------------------------------------------------------------
-// 6. CUSTOM PRICE OVERRIDES
-// -------------------------------------------------------------
+// Custom price overrides
 function PriceOverridesSection({
   overrides = [],
   overridesLoading = false,
@@ -1693,11 +1675,8 @@ function PriceOverridesSection({
   );
 }
 
-// -------------------------------------------------------------
-// CHART COMPONENT: Activity Heatmap (7 Days x 24 Hours)
-// -------------------------------------------------------------
+// Chart component: activity heatmap (7 days x 24 hours)
 function ActivityHeatmap({ heatmapData = [], hoveredCell, setHoveredCell }) {
-  // Build 7 x 24 matrix
   const matrix = useMemo(() => {
     const grid = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => ({ count: 0, turns: 0 })));
     let maxCount = 1;
@@ -1769,9 +1748,7 @@ function ActivityHeatmap({ heatmapData = [], hoveredCell, setHoveredCell }) {
   );
 }
 
-// -------------------------------------------------------------
-// CHART COMPONENT: Timeseries Area/Line Chart (Pure SVG)
-// -------------------------------------------------------------
+// Chart component: timeseries area/line chart (pure svg)
 function TrendChart({ data = [], metric = 'cost', hoveredPoint, setHoveredPoint }) {
   if (!data.length) {
     return (
@@ -1782,7 +1759,6 @@ function TrendChart({ data = [], metric = 'cost', hoveredPoint, setHoveredPoint 
     );
   }
 
-  // Dimensions
   const width = 800;
   const height = 220;
   const padLeft = 45;
@@ -1793,7 +1769,6 @@ function TrendChart({ data = [], metric = 'cost', hoveredPoint, setHoveredPoint 
   const chartW = width - padLeft - padRight;
   const chartH = height - padTop - padBottom;
 
-  // Extract values based on metric
   const getValue = (d) => {
     if (metric === 'cost') return d.estimated_cost || 0;
     if (metric === 'tokens') return d.total_tokens || 0;
@@ -1811,7 +1786,6 @@ function TrendChart({ data = [], metric = 'cost', hoveredPoint, setHoveredPoint 
   const maxVal = Math.max(1, ...values, ...averages);
   const averagePath = averages.map((value, i) => `${i ? 'L' : 'M'} ${padLeft + i / Math.max(1, data.length - 1) * chartW} ${padTop + chartH - value / maxVal * chartH}`).join(' ');
 
-  // Generate SVG points
   const points = data.map((d, i) => {
     const x = padLeft + (i / Math.max(1, data.length - 1)) * chartW;
     const y = padTop + chartH - (getValue(d) / maxVal) * chartH;
@@ -1826,8 +1800,8 @@ function TrendChart({ data = [], metric = 'cost', hoveredPoint, setHoveredPoint 
       <svg viewBox={`0 0 ${width} ${height}`} className="analytics-svg-chart">
         <defs>
           <linearGradient id="trendGradient" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#b7f58e" stopOpacity="0.32" />
-            <stop offset="100%" stopColor="#b7f58e" stopOpacity="0.0" />
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.32" />
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.0" />
           </linearGradient>
         </defs>
 
@@ -1849,9 +1823,9 @@ function TrendChart({ data = [], metric = 'cost', hoveredPoint, setHoveredPoint 
         {areaD && <path d={areaD} fill="url(#trendGradient)" />}
 
         {/* Main Line */}
-        {pathD && <path d={pathD} fill="none" stroke="#b7f58e" strokeWidth="2.2" strokeLinecap="round" />}
+        {pathD && <path d={pathD} fill="none" stroke="var(--accent)" strokeWidth="2.2" strokeLinecap="round" />}
 
-        <path d={averagePath} fill="none" stroke="#8ba9ef" strokeWidth="2" strokeDasharray="5 4" />
+        <path d={averagePath} fill="none" stroke="var(--info)" strokeWidth="2" strokeDasharray="5 4" />
 
         {/* Date labels on X axis */}
         {points.map((p, i) => {

@@ -1,5 +1,18 @@
 # User guide
 
+## Appearance
+
+Open **Appearance** using the palette icon at the bottom of the sidebar.
+Choose **System** to follow your device’s light/dark setting, or pick **Dark**,
+**Light**, **Midnight**, or **Sepia**. You can also change the accent color,
+text size, and spacing, wrap code and tool output, or reduce animation.
+The device’s reduced motion setting is always respected.
+
+Changes apply immediately and are remembered on this device, including at
+startup. **Reset to defaults** restores the system theme, green accent,
+default text size, and comfortable spacing. Existing light/dark preferences
+are kept when upgrading.
+
 ## Syncing
 
 **Sync now** (bottom of the sidebar) imports new and changed sessions. It also

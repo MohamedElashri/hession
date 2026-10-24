@@ -29,9 +29,14 @@ code, pre, kbd, .mono { font-family: var(--font-mono); }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .spin { animation-duration: 3s; } }
+:root[data-reduce-motion="true"] *, :root[data-reduce-motion="true"] *::before, :root[data-reduce-motion="true"] *::after {
+  animation: none !important; transition: none !important; scroll-behavior: auto !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
 
-/* ---------------------------------------------------------------- buttons */
+/* Buttons */
 .btn, .data-button, .filter-button, .sync-button, .sync-options-button {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
   height: 32px; padding: 0 12px;
@@ -66,7 +71,7 @@ code, pre, kbd, .mono { font-family: var(--font-mono); }
 }
 .text-button:hover { color: var(--text); background: var(--hover); }
 
-/* ----------------------------------------------------------------- fields */
+/* Fields */
 input[type="text"], input[type="search"], input[type="date"], input:not([type]), select, textarea {
   border: 1px solid var(--border-strong); border-radius: var(--radius);
   background: var(--surface); padding: 7px 10px; font-size: var(--text-md);
@@ -76,7 +81,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { border-color
 input::placeholder { color: var(--text-3); }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
 
-/* ------------------------------------------------------------------ chips */
+/* Chips */
 .tag-chip {
   display: inline-flex; align-items: center; gap: 4px;
   height: 20px; padding: 0 7px; border-radius: 999px;
@@ -99,7 +104,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 .agent-dot.pink { background: var(--agent-pink); }
 .agent-dot.amber { background: var(--agent-amber); }
 
-/* ------------------------------------------------------------------ menus */
+/* Menus */
 .filter-anchor, .sort-anchor, .sync-action { position: relative; }
 .filter-dropdown-menu, .sort-menu, .sync-menu {
   position: absolute; z-index: 40; top: calc(100% + 6px); left: 0;
@@ -117,7 +122,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 .filter-menu-item:focus-visible { background: var(--hover); box-shadow: none; }
 .filter-menu-item.active, .sort-menu-active { color: var(--accent-text); font-weight: 500; }
 
-/* ---------------------------------------------------------------- dialogs */
+/* Dialogs */
 .export-backdrop {
   position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px;
   background: #00000073; backdrop-filter: blur(2px);
@@ -134,7 +139,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 .export-dialog p, .data-dialog p { color: var(--text-2); font-size: var(--text-md); line-height: 1.55; margin: 0 0 14px; }
 .export-actions, .data-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
 
-/* ---------------------------------------------------------------- notices */
+/* Notices */
 .notice, .error-strip, .data-status, .data-error, .data-success, .data-warning {
   display: flex; align-items: center; gap: 9px;
   padding: 9px 12px; border-radius: var(--radius);
@@ -157,7 +162,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
   border-radius: 50%; background: var(--surface-3); color: var(--text-3);
 }
 
-/* --------------------------------------------------------------- markdown */
+/* Markdown */
 .markdown-body { font-size: var(--text-base); line-height: 1.65; color: var(--text); overflow-wrap: anywhere; }
 .markdown-body > :first-child { margin-top: 0; }
 .markdown-body > :last-child { margin-bottom: 0; }
@@ -173,3 +178,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 .markdown-body table { border-collapse: collapse; font-size: var(--text-md); display: block; overflow: auto; }
 .markdown-body th, .markdown-body td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; }
 .markdown-body th { background: var(--surface-2); font-weight: 600; }
+
+:root[data-wrap-code="true"] pre, :root[data-wrap-code="true"] pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
+:root[data-wrap-code="false"] pre, :root[data-wrap-code="false"] pre code { white-space: pre; overflow-wrap: normal; }
+pre { overflow-x: auto; }
+.startup-error { padding: 24px; }
+.startup-error p { margin: 12px 0; overflow-wrap: anywhere; }

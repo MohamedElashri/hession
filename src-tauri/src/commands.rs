@@ -1,17 +1,5 @@
-//! Tauri v2 commands.
-//!
-//! Thin `#[tauri::command]` wrappers → `*_inner` blocking helpers, following
-//! the reference pattern (wrapper clones the DB path out of `AppState`, then
-//! `spawn_blocking` runs the SQLite work; `Result<Value, String>` everywhere,
-//! never `panic!`).
-//!
-//! Argument names and response shapes match the frontend invoke calls in
-//! `src/main.jsx` + `src/Analytics.jsx`.
-//!
-//! Backend wiring: [`crate::db`] for open/path, [`crate::analytics`] for the
-//! analytics payload, [`crate::pricing`] for pricing + overrides,
-//! [`crate::importer`] for filesystem agent discovery + checkpoints, and
-//! [`crate::sync`] for the single-flight background sync worker.
+//! Tauri commands for library search, transcripts, exports, analytics, and sync.
+//! SQLite work runs in blocking helpers with a database path from `AppState`.
 
 use rusqlite::types::{ToSql, Value as SqlValue, ValueRef};
 use rusqlite::Connection;
@@ -42,9 +30,7 @@ const ALLOWED_FAMILIES: &[&str] = &[
 /// Host filter value for sessions recorded on this machine.
 const LOCAL_HOST: &str = "@local";
 
-// ---------------------------------------------------------------------------
 // Small helpers
-// ---------------------------------------------------------------------------
 
 /// Clone the DB path out of managed state (keeps the mutex hold tiny).
 fn db_path_of(state: &State<'_, AppState>) -> Result<PathBuf, String> {
@@ -83,7 +69,7 @@ fn row_to_json(cols: &[String], row: &rusqlite::Row<'_>) -> Result<Value, rusqli
 fn query_all(conn: &Connection, sql: &str, params: &[SqlValue]) -> Result<Vec<Value>, String> {
     let refs: Vec<&dyn ToSql> = params.iter().map(|v| v as &dyn ToSql).collect();
     let mut stmt = conn
-        .prepare(sql)
+        .prepare_cached(sql)
         .map_err(|e| format!("Could not prepare query: {e}"))?;
     let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
     let mapped = stmt
@@ -179,9 +165,7 @@ fn opt_str(value: &Option<String>) -> &str {
     value.as_deref().unwrap_or("")
 }
 
-// ---------------------------------------------------------------------------
 // ping (pre-existing liveness probe)
-// ---------------------------------------------------------------------------
 
 /// Liveness probe. Always available, even before sync has ever run.
 #[tauri::command]
@@ -189,9 +173,7 @@ pub async fn ping(_state: State<'_, AppState>) -> Result<String, String> {
     Ok("ok".to_string())
 }
 
-// ---------------------------------------------------------------------------
 // get_health
-// ---------------------------------------------------------------------------
 
 fn get_health_inner(db_path: &Path) -> Result<Value, String> {
     let conn = open_db(db_path)?;
@@ -213,9 +195,7 @@ pub async fn get_health(state: State<'_, AppState>) -> Result<Value, String> {
         .map_err(|e| format!("get_health failed: {e}"))?
 }
 
-// ---------------------------------------------------------------------------
 // search_sessions
-// ---------------------------------------------------------------------------
 
 fn search_sessions_inner(
     db_path: &Path,
@@ -230,13 +210,13 @@ fn search_sessions_inner(
     Ok(result)
 }
 
-fn search_sessions_from_conn(
-    conn: &Connection,
-    f: &SessionFilters,
-    limit: i64,
-    offset: i64,
-    job: Option<&ExportJob>,
-) -> Result<Value, String> {
+struct SessionQuery {
+    base: String,
+    params: Vec<SqlValue>,
+    order_by: &'static str,
+}
+
+fn session_query(f: &SessionFilters) -> SessionQuery {
     let (q, agent, project, branch, since, sort, host) = (
         f.q.as_str(),
         f.agent.as_str(),
@@ -345,6 +325,25 @@ fn search_sessions_from_conn(
         "FROM session s JOIN agent a ON a.id=s.agent_id \
          LEFT JOIN workspace w ON w.id=s.workspace_id {search_join} {where_clause}"
     );
+    SessionQuery {
+        base,
+        params,
+        order_by,
+    }
+}
+
+fn search_sessions_from_conn(
+    conn: &Connection,
+    f: &SessionFilters,
+    limit: i64,
+    offset: i64,
+    job: Option<&ExportJob>,
+) -> Result<Value, String> {
+    let SessionQuery {
+        base,
+        params,
+        order_by,
+    } = session_query(f);
     let columns = "s.id,s.title,s.external_id,s.cwd,s.host,s.started_at,s.last_event_at,\
         a.family AS agent,a.product,w.path AS project,\
         (SELECT branch FROM session_context c WHERE c.session_id=s.id AND c.branch IS NOT NULL \
@@ -365,12 +364,7 @@ fn search_sessions_from_conn(
         &format!("SELECT {columns} {base} ORDER BY {order_by} LIMIT ? OFFSET ?"),
         &list_params,
     )?;
-    for session in &mut sessions {
-        if let Some(job) = job {
-            job.check()?;
-        }
-        attach_annotations(conn, session)?;
-    }
+    attach_annotations_batch(conn, &mut sessions, job)?;
     let total = query_one(conn, &format!("SELECT COUNT(*) n {base}"), &params)?
         .and_then(|row| row.get("n").and_then(|v| v.as_i64()))
         .unwrap_or(0);
@@ -431,9 +425,7 @@ pub async fn search_sessions(
     .map_err(|e| format!("search_sessions failed: {e}"))?
 }
 
-// ---------------------------------------------------------------------------
 // get_session  (paginated transcript)
-// ---------------------------------------------------------------------------
 
 fn get_session_inner(db_path: &Path, id: &str, limit: i64, page: i64) -> Result<Value, String> {
     let session_id: i64 = id
@@ -448,12 +440,7 @@ fn get_session_inner(db_path: &Path, id: &str, limit: i64, page: i64) -> Result<
     Ok(result)
 }
 
-fn get_session_from_conn(
-    conn: &Connection,
-    session_id: i64,
-    limit: i64,
-    offset: &mut i64,
-) -> Result<Value, String> {
+fn get_session_metadata(conn: &Connection, session_id: i64) -> Result<Value, String> {
     let mut session = query_one(
         conn,
         "SELECT s.*,a.family AS agent,a.product,w.path AS project,\
@@ -469,6 +456,16 @@ fn get_session_from_conn(
     .ok_or_else(|| "Session not found".to_string())?;
 
     attach_annotations(conn, &mut session)?;
+    Ok(session)
+}
+
+fn get_session_from_conn(
+    conn: &Connection,
+    session_id: i64,
+    limit: i64,
+    offset: &mut i64,
+) -> Result<Value, String> {
+    let session = get_session_metadata(conn, session_id)?;
     let entry_counts = query_one(
         conn,
         "WITH classified AS (
@@ -496,15 +493,59 @@ fn get_session_from_conn(
         *offset = ((total + limit - 1) / limit - 1).max(0) * limit;
     }
 
+    let entries = get_entries_from_conn(conn, session_id, limit, *offset)?;
+
+    Ok(json!({
+        "session": session,
+        "entries": entries,
+        "total": total,
+        "entryCounts": entry_counts,
+        "limit": limit,
+        "offset": offset,
+    }))
+}
+
+/// Load only the requested transcript page, using its entry IDs for attachments.
+fn get_entries_from_conn(
+    conn: &Connection,
+    session_id: i64,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<Value>, String> {
     let entries = query_all(
         conn,
         "SELECT * FROM entry WHERE session_id=? ORDER BY ordinal LIMIT ? OFFSET ?",
         &[
             SqlValue::Integer(session_id),
             SqlValue::Integer(limit),
-            SqlValue::Integer(*offset),
+            SqlValue::Integer(offset),
         ],
     )?;
+    attach_entry_details(conn, entries)
+}
+
+fn get_entries_after(
+    conn: &Connection,
+    session_id: i64,
+    after: Option<i64>,
+) -> Result<Vec<Value>, String> {
+    let entries = if let Some(ordinal) = after {
+        query_all(
+            conn,
+            "SELECT * FROM entry WHERE session_id=? AND ordinal>? ORDER BY ordinal LIMIT 500",
+            &[SqlValue::Integer(session_id), SqlValue::Integer(ordinal)],
+        )?
+    } else {
+        query_all(
+            conn,
+            "SELECT * FROM entry WHERE session_id=? ORDER BY ordinal LIMIT 500",
+            &[SqlValue::Integer(session_id)],
+        )?
+    };
+    attach_entry_details(conn, entries)
+}
+
+fn attach_entry_details(conn: &Connection, entries: Vec<Value>) -> Result<Vec<Value>, String> {
     let entry_ids: Vec<i64> = entries
         .iter()
         .filter_map(|e| e.get("id").and_then(|v| v.as_i64()))
@@ -515,20 +556,14 @@ fn get_session_from_conn(
         HashMap<i64, Vec<Value>>,
     ) = (HashMap::new(), HashMap::new());
     if !entry_ids.is_empty() {
-        let placeholders =
-            "SELECT id FROM entry WHERE session_id=? ORDER BY ordinal LIMIT ? OFFSET ?";
-        let params = vec![
-            SqlValue::Integer(session_id),
-            SqlValue::Integer(session_id),
-            SqlValue::Integer(limit),
-            SqlValue::Integer(*offset),
-        ];
+        let placeholders = entry_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let params: Vec<SqlValue> = entry_ids.into_iter().map(SqlValue::Integer).collect();
         for part in query_all(
             conn,
             &format!(
                 "SELECT cp.*, e.ordinal AS e_ord FROM content_part cp \
                  JOIN entry e ON e.id=cp.entry_id \
-                 WHERE e.session_id=? AND cp.entry_id IN ({placeholders}) \
+                 WHERE cp.entry_id IN ({placeholders}) \
                  ORDER BY e_ord,cp.ordinal"
             ),
             &params,
@@ -537,13 +572,18 @@ fn get_session_from_conn(
                 parts_by_entry.entry(entry_id).or_default().push(part);
             }
         }
+        let mut tool_params = params;
+        let session_id = entries
+            .first()
+            .and_then(|entry| entry["session_id"].as_i64())
+            .ok_or("Invalid transcript session")?;
+        tool_params.insert(0, SqlValue::Integer(session_id));
         for tool in query_all(
             conn,
             &format!(
-                "SELECT * FROM tool_invocation WHERE session_id=? \
-                 AND entry_id IN ({placeholders}) ORDER BY id"
+                "SELECT * FROM tool_invocation WHERE session_id=? AND entry_id IN ({placeholders}) ORDER BY id"
             ),
-            &params,
+            &tool_params,
         )? {
             if let Some(entry_id) = tool.get("entry_id").and_then(|v| v.as_i64()) {
                 tools_by_entry.entry(entry_id).or_default().push(tool);
@@ -553,29 +593,15 @@ fn get_session_from_conn(
 
     let entries: Vec<Value> = entries
         .into_iter()
-        .map(|entry| {
+        .map(|mut entry| {
             let entry_id = entry.get("id").and_then(|v| v.as_i64()).unwrap_or(-1);
-            let mut object = entry.as_object().cloned().unwrap_or_default();
-            object.insert(
-                "parts".to_string(),
-                Value::Array(parts_by_entry.remove(&entry_id).unwrap_or_default()),
-            );
-            object.insert(
-                "tools".to_string(),
-                Value::Array(tools_by_entry.remove(&entry_id).unwrap_or_default()),
-            );
-            Value::Object(object)
+            entry["parts"] = Value::Array(parts_by_entry.remove(&entry_id).unwrap_or_default());
+            entry["tools"] = Value::Array(tools_by_entry.remove(&entry_id).unwrap_or_default());
+            entry
         })
         .collect();
 
-    Ok(json!({
-        "session": session,
-        "entries": entries,
-        "total": total,
-        "entryCounts": entry_counts,
-        "limit": limit,
-        "offset": offset,
-    }))
+    Ok(entries)
 }
 
 /// Flat args `{ id, limit, page }` (all strings from the frontend).
@@ -595,9 +621,7 @@ pub async fn get_session(
         .map_err(|e| format!("get_session failed: {e}"))?
 }
 
-// ---------------------------------------------------------------------------
 // get_agents
-// ---------------------------------------------------------------------------
 
 fn get_agents_inner(db_path: &Path) -> Result<Value, String> {
     let conn = open_db(db_path)?;
@@ -651,9 +675,7 @@ pub async fn get_agents(state: State<'_, AppState>) -> Result<Value, String> {
         .map_err(|e| format!("get_agents failed: {e}"))?
 }
 
-// ---------------------------------------------------------------------------
 // get_projects
-// ---------------------------------------------------------------------------
 
 fn get_projects_inner(db_path: &Path) -> Result<Value, String> {
     let conn = open_db(db_path)?;
@@ -676,9 +698,7 @@ pub async fn get_projects(state: State<'_, AppState>) -> Result<Value, String> {
         .map_err(|e| format!("get_projects failed: {e}"))?
 }
 
-// ---------------------------------------------------------------------------
 // get_facets
-// ---------------------------------------------------------------------------
 
 fn get_facets_inner(db_path: &Path) -> Result<Value, String> {
     let conn = open_db(db_path)?;
@@ -743,9 +763,7 @@ pub async fn get_facets(state: State<'_, AppState>) -> Result<Value, String> {
         .map_err(|e| format!("get_facets failed: {e}"))?
 }
 
-// ---------------------------------------------------------------------------
 // get_stats
-// ---------------------------------------------------------------------------
 
 fn get_stats_inner(db_path: &Path) -> Result<Value, String> {
     let conn = open_db(db_path)?;
@@ -772,9 +790,7 @@ pub async fn get_stats(state: State<'_, AppState>) -> Result<Value, String> {
         .map_err(|e| format!("get_stats failed: {e}"))?
 }
 
-// ---------------------------------------------------------------------------
 // get_analytics
-// ---------------------------------------------------------------------------
 
 fn get_analytics_inner(
     db_path: &Path,
@@ -840,9 +856,7 @@ pub async fn get_analytics(
     .map_err(|e| format!("get_analytics failed: {e}"))?
 }
 
-// ---------------------------------------------------------------------------
 // refresh_analytics
-// ---------------------------------------------------------------------------
 
 fn refresh_analytics_inner(db_path: &Path) -> Result<Value, String> {
     analytics::request_refresh(db_path, true);
@@ -857,9 +871,7 @@ pub async fn refresh_analytics(state: State<'_, AppState>) -> Result<Value, Stri
         .map_err(|e| format!("refresh_analytics failed: {e}"))?
 }
 
-// ---------------------------------------------------------------------------
 // get_pricing_status
-// ---------------------------------------------------------------------------
 
 fn get_pricing_status_inner(db_path: &Path) -> Result<Value, String> {
     let conn = open_db(db_path)?;
@@ -876,9 +888,7 @@ pub async fn get_pricing_status(state: State<'_, AppState>) -> Result<Value, Str
         .map_err(|e| format!("get_pricing_status failed: {e}"))?
 }
 
-// ---------------------------------------------------------------------------
 // sync_pricing
-// ---------------------------------------------------------------------------
 
 fn sync_pricing_inner(db_path: &Path, raw: &Value, updated_at: &str) -> Result<Value, String> {
     let _writer = db::user_write();
@@ -916,9 +926,7 @@ pub async fn sync_pricing(state: State<'_, AppState>) -> Result<Value, String> {
         .map_err(|e| format!("sync_pricing failed: {e}"))?
 }
 
-// ---------------------------------------------------------------------------
 // get_pricing_overrides
-// ---------------------------------------------------------------------------
 
 fn get_pricing_overrides_inner(db_path: &Path) -> Result<Value, String> {
     let conn = open_db(db_path)?;
@@ -937,9 +945,7 @@ pub async fn get_pricing_overrides(state: State<'_, AppState>) -> Result<Value, 
         .map_err(|e| format!("get_pricing_overrides failed: {e}"))?
 }
 
-// ---------------------------------------------------------------------------
 // save_pricing_override
-// ---------------------------------------------------------------------------
 
 #[allow(non_snake_case)]
 fn save_pricing_override_inner(
@@ -1019,9 +1025,7 @@ pub async fn save_pricing_override(
     .map_err(|e| format!("save_pricing_override failed: {e}"))?
 }
 
-// ---------------------------------------------------------------------------
 // delete_pricing_override
-// ---------------------------------------------------------------------------
 
 #[allow(non_snake_case)]
 fn delete_pricing_override_inner(
@@ -1079,9 +1083,7 @@ pub async fn delete_pricing_override(
     .map_err(|e| format!("delete_pricing_override failed: {e}"))?
 }
 
-// ---------------------------------------------------------------------------
 // get_sync_status / get_sync_checkpoints / start_sync  (sync API)
-// ---------------------------------------------------------------------------
 
 /// Live status snapshot from the single-flight sync worker.
 /// Shape matches what the frontend polls (`running`, camelCase progress
@@ -1221,6 +1223,50 @@ fn attach_annotations(conn: &Connection, session: &mut Value) -> Result<(), Stri
     Ok(())
 }
 
+fn attach_annotations_batch(
+    conn: &Connection,
+    sessions: &mut [Value],
+    job: Option<&ExportJob>,
+) -> Result<(), String> {
+    // Keep the bind count bounded for whole-library exports.
+    for chunk in sessions.chunks_mut(500) {
+        if let Some(job) = job {
+            job.check()?;
+        }
+        let mut positions = HashMap::with_capacity(chunk.len());
+        let mut params = Vec::with_capacity(chunk.len());
+        for (index, session) in chunk.iter_mut().enumerate() {
+            let id = session["id"].as_i64().ok_or("Invalid session ID")?;
+            positions.insert(id, index);
+            params.push(SqlValue::Integer(id));
+            session["starred"] = json!(false);
+            session["tags"] = json!([]);
+        }
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        for row in query_all(
+            conn,
+            &format!("SELECT session_id,starred FROM session_annotation WHERE session_id IN ({placeholders})"),
+            &params,
+        )? {
+            if let Some(index) = row["session_id"].as_i64().and_then(|id| positions.get(&id)) {
+                chunk[*index]["starred"] = json!(row["starred"].as_i64() == Some(1));
+            }
+        }
+        for mut row in query_all(
+            conn,
+            &format!("SELECT session_id,label FROM session_tag WHERE session_id IN ({placeholders}) ORDER BY label"),
+            &params,
+        )? {
+            if let Some(index) = row["session_id"].as_i64().and_then(|id| positions.get(&id)) {
+                if let Some(tags) = chunk[*index]["tags"].as_array_mut() {
+                    tags.push(row["label"].take());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn update_session_annotations(
     state: State<'_, AppState>,
@@ -1353,7 +1399,235 @@ pub fn finish_export(state: State<'_, ExportState>, job_id: String) -> Result<()
     Ok(())
 }
 
-// Each parameter is a field of the frontend's IPC call.
+struct ExportRequest {
+    scope: String,
+    session_id: Option<i64>,
+    filters: SessionFilters,
+    include_stats: bool,
+    format: String,
+}
+
+struct ExportOutput<'a, W> {
+    inner: W,
+    job: &'a ExportJob,
+}
+
+impl<W: Write> Write for ExportOutput<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.job.check().map_err(std::io::Error::other)?;
+        self.inner.write(&bytes[..bytes.len().min(64 * 1024)])
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.job.check().map_err(std::io::Error::other)?;
+        self.inner.flush()
+    }
+}
+
+fn export_ids(conn: &Connection, request: &ExportRequest) -> Result<Vec<i64>, String> {
+    if request.scope == "session" {
+        return Ok(vec![request
+            .session_id
+            .ok_or("Select a session to export")?]);
+    }
+    let defaults = SessionFilters::default();
+    let filters = if request.scope == "library" {
+        &defaults
+    } else {
+        &request.filters
+    };
+    let SessionQuery {
+        base,
+        params,
+        order_by,
+    } = session_query(filters);
+    let columns = match filters.sort.as_str() {
+        "longest" => "s.id,(julianday(COALESCE(s.last_event_at,s.started_at))-julianday(s.started_at)) AS duration_days",
+        "messages" => "s.id,(SELECT COUNT(*) FROM entry e WHERE e.session_id=s.id) AS entry_count",
+        _ => "s.id",
+    };
+    let mut statement = conn
+        .prepare_cached(&format!("SELECT {columns} {base} ORDER BY {order_by}"))
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(params), |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+fn write_export(
+    conn: &Connection,
+    request: &ExportRequest,
+    output: impl Write,
+    job: &ExportJob,
+    progress: impl Fn(usize, usize, usize),
+) -> Result<usize, String> {
+    if !["session", "library", "filtered"].contains(&request.scope.as_str()) {
+        return Err("Invalid export scope".into());
+    }
+    if !["json", "markdown"].contains(&request.format.as_str()) {
+        return Err("Invalid export format".into());
+    }
+    job.check()?;
+    let ids = export_ids(conn, request)?;
+    let total = ids.len();
+    let pricing = Arc::new(Mutex::new(pricing::PricingState::new()));
+    if request.include_stats {
+        let mut state = pricing.lock().map_err(|_| "Could not lock pricing")?;
+        pricing::load_pricing_cache(conn, &mut state)?;
+    }
+    let mut writer = crate::export_format::ExportWriter::new(output, &request.format);
+    writer
+        .begin(&request.scope, &chrono::Utc::now().to_rfc3339(), total)
+        .map_err(|e| e.to_string())?;
+    progress(0, total, 0);
+    for (index, id) in ids.into_iter().enumerate() {
+        job.check()?;
+        let mut session = get_session_metadata(conn, id)?;
+        let object = session.as_object_mut().ok_or("Invalid session")?;
+        for key in [
+            "raw_metadata_json",
+            "metrics_json",
+            "token_usage_json",
+            "source_uri",
+            "source_size",
+            "source_mtime",
+        ] {
+            object.remove(key);
+        }
+        let stats = if request.include_stats {
+            let stats = analytics::calculate_session(conn, &pricing, id)?;
+            Some(json!({
+                "duration_seconds": stats.duration_seconds, "model_name": stats.model_name,
+                "input_tokens": stats.input_tokens, "output_tokens": stats.output_tokens,
+                "cached_tokens": stats.cached_tokens, "total_tokens": stats.total_tokens,
+                "estimated_cost": stats.estimated_cost, "user_turns": stats.user_turns,
+                "assistant_turns": stats.assistant_turns, "total_turns": stats.total_turns,
+                "tool_count": stats.tool_count, "tool_error_count": stats.tool_error_count,
+            }))
+        } else {
+            None
+        };
+        writer
+            .session(&session, stats.as_ref())
+            .map_err(|e| e.to_string())?;
+        let mut after = None;
+        let mut written = 0;
+        loop {
+            job.check()?;
+            let page = get_entries_after(conn, id, after)?;
+            if page.is_empty() {
+                break;
+            }
+            for entry in &page {
+                job.check()?;
+                writer.entry(entry).map_err(|e| e.to_string())?;
+            }
+            after = Some(
+                page.last()
+                    .and_then(|entry| entry["ordinal"].as_i64())
+                    .ok_or("Invalid transcript ordinal")?,
+            );
+            written += page.len();
+            progress(index, total, written);
+        }
+        writer.unlinked_tools().map_err(|e| e.to_string())?;
+        let mut after = None;
+        loop {
+            job.check()?;
+            let tools = if let Some(after) = after {
+                query_all(conn,"SELECT * FROM tool_invocation WHERE session_id=? AND entry_id IS NULL AND id>? ORDER BY id LIMIT 500",&[SqlValue::Integer(id),SqlValue::Integer(after)])?
+            } else {
+                query_all(conn,"SELECT * FROM tool_invocation WHERE session_id=? AND entry_id IS NULL ORDER BY id LIMIT 500",&[SqlValue::Integer(id)])?
+            };
+            if tools.is_empty() {
+                break;
+            }
+            for tool in &tools {
+                job.check()?;
+                writer.unlinked_tool(tool).map_err(|e| e.to_string())?;
+            }
+            after = Some(
+                tools
+                    .last()
+                    .and_then(|tool| tool["id"].as_i64())
+                    .ok_or("Invalid tool ID")?,
+            );
+        }
+        writer.end_session().map_err(|e| e.to_string())?;
+        progress(index + 1, total, written);
+    }
+    writer.finish().map_err(|e| e.to_string())?;
+    job.check()?;
+    Ok(total)
+}
+
+fn save_streamed_export(
+    database: &Path,
+    target: &Path,
+    request: &ExportRequest,
+    job: &ExportJob,
+    progress: impl Fn(usize, usize, usize),
+) -> Result<usize, String> {
+    job.check()?;
+    let parent = target
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let database = std::fs::canonicalize(database).map_err(|e| e.to_string())?;
+    let candidate = if target.exists() {
+        std::fs::canonicalize(target).map_err(|e| e.to_string())?
+    } else {
+        std::fs::canonicalize(parent)
+            .map_err(|e| e.to_string())?
+            .join(target.file_name().ok_or("Invalid export path")?)
+    };
+    if candidate == database
+        || candidate.as_os_str() == format!("{}-wal", database.display()).as_str()
+        || candidate.as_os_str() == format!("{}-shm", database.display()).as_str()
+    {
+        return Err(
+            "Choose an export file separate from the active database and its journal files.".into(),
+        );
+    }
+    let mut conn = open_db(&database)?;
+    *job.interrupt
+        .lock()
+        .map_err(|_| "Could not access export state")? = Some(conn.get_interrupt_handle());
+    conn.pragma_update(None, "query_only", true)
+        .map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(&format!(".{}-export-", crate::brand::SLUG))
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .map_err(|e| e.to_string())?;
+    let count = {
+        let mut output = std::io::BufWriter::with_capacity(
+            64 * 1024,
+            ExportOutput {
+                inner: temporary.as_file_mut(),
+                job,
+            },
+        );
+        let count = write_export(&tx, request, &mut output, job, progress)?;
+        output.flush().map_err(|e| e.to_string())?;
+        count
+    };
+    tx.commit().map_err(|e| e.to_string())?;
+    temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+    let mut saved = job
+        .saved
+        .lock()
+        .map_err(|_| "Could not access export state")?;
+    job.check()?;
+    temporary
+        .persist(target)
+        .map_err(|e| format!("Could not save export: {e}"))?;
+    *saved = true;
+    Ok(count)
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn export_sessions(
@@ -1361,115 +1635,36 @@ pub async fn export_sessions(
     exports: State<'_, ExportState>,
     app: tauri::AppHandle,
     job_id: String,
+    path: String,
     scope: String,
     id: Option<i64>,
     filters: SessionFilters,
     include_stats: bool,
+    format: String,
 ) -> Result<Value, String> {
-    let path = db_path_of(&state)?;
+    let database = db_path_of(&state)?;
     let job = export_job(&exports, &job_id)?;
     tauri::async_runtime::spawn_blocking(move || {
-        job.check()?;
-        if !["session", "library", "filtered"].contains(&scope.as_str()) { return Err("Invalid export scope".to_string()); }
-        let mut conn = open_db(&path)?;
-        *job.interrupt.lock().map_err(|_| "Could not access export state")? = Some(conn.get_interrupt_handle());
-        job.check()?;
-        conn.pragma_update(None, "query_only", true).map_err(|e| e.to_string())?;
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
-        let ids = if scope == "session" { vec![id.ok_or("Select a session to export")?] } else {
-            let f = if scope == "library" { SessionFilters::default() } else { filters };
-            // Use the library's exact search and ordering, without pagination.
-            // This connection holds a read snapshot while assembling transcripts.
-            let result = search_sessions_from_conn(&tx, &f, -1, 0, Some(&job))?;
-            result["sessions"].as_array().ok_or("Invalid session list")?.iter().filter_map(|s| s["id"].as_i64()).collect()
+        let request = ExportRequest {
+            scope,
+            session_id: id,
+            filters,
+            include_stats,
+            format,
         };
-        let pricing = Arc::new(Mutex::new(pricing::PricingState::new()));
-        { let mut p = pricing.lock().map_err(|_| "Could not lock pricing")?; pricing::load_pricing_cache(&tx, &mut p)?; }
-        let mut sessions = Vec::new();
-        let total = ids.len();
-        let _ = app.emit("export-progress", json!({"jobId": job_id, "done": 0, "total": total}));
-        for (index, id) in ids.into_iter().enumerate() {
-            job.check()?;
-            let mut data = get_session_from_conn(&tx, id, 500, &mut 0)?;
-            let entry_total = data["total"].as_i64().unwrap_or(0);
-            let mut offset = 500;
-            while offset < entry_total {
-                job.check()?;
-                let mut page = get_session_from_conn(&tx, id, 500, &mut offset)?;
-                let entries = page["entries"].as_array_mut().ok_or("Invalid transcript")?;
-                data["entries"].as_array_mut().ok_or("Invalid transcript")?.append(entries);
-                offset += 500;
-            }
-            let object = data["session"].as_object_mut().ok_or("Invalid session")?;
-            for key in ["raw_metadata_json", "metrics_json", "token_usage_json", "source_uri", "source_size", "source_mtime"] { object.remove(key); }
-            let data_object = data.as_object_mut().ok_or("Invalid transcript")?;
-            for key in ["total", "entryCounts", "limit", "offset"] { data_object.remove(key); }
-            data["unlinkedTools"] = json!(query_all(&tx, "SELECT * FROM tool_invocation WHERE session_id=? AND entry_id IS NULL ORDER BY id", &[SqlValue::Integer(id)])?);
-            if include_stats {
-                let stats = analytics::calculate_session(&tx, &pricing, id)?;
-                data["stats"] = json!({
-                    "duration_seconds": stats.duration_seconds, "model_name": stats.model_name,
-                    "input_tokens": stats.input_tokens, "output_tokens": stats.output_tokens,
-                    "cached_tokens": stats.cached_tokens, "total_tokens": stats.total_tokens,
-                    "estimated_cost": stats.estimated_cost, "user_turns": stats.user_turns,
-                    "assistant_turns": stats.assistant_turns, "total_turns": stats.total_turns,
-                    "tool_count": stats.tool_count, "tool_error_count": stats.tool_error_count,
-                });
-            }
-            sessions.push(data);
-            job.check()?;
-            let _ = app.emit("export-progress", json!({"jobId": job_id, "done": index + 1, "total": total}));
-        }
-        job.check()?;
-        tx.commit().map_err(|e| e.to_string())?;
-        Ok(json!({"schemaVersion": 1, "exportedAt": chrono::Utc::now().to_rfc3339(), "scope": scope, "sessions": sessions}))
-    }).await.map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn save_export(
-    state: State<'_, ExportState>,
-    job_id: String,
-    path: String,
-    contents: String,
-) -> Result<(), String> {
-    let job = export_job(&state, &job_id)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        job.check()?;
-        let target = PathBuf::from(path);
-        let parent = target.parent().ok_or("Invalid export path")?;
-        let temp = parent.join(format!(
-            ".{}-export-{}.tmp",
-            crate::brand::SLUG,
-            uuid::Uuid::new_v4()
-        ));
-        let result = (|| -> Result<(), String> {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)
-                .map_err(|e| format!("Could not save export: {e}"))?;
-            for chunk in contents.as_bytes().chunks(64 * 1024) {
-                job.check()?;
-                file.write_all(chunk)
-                    .map_err(|e| format!("Could not save export: {e}"))?;
-            }
-            file.sync_all()
-                .map_err(|e| format!("Could not save export: {e}"))?;
-            drop(file);
-            let mut saved = job
-                .saved
-                .lock()
-                .map_err(|_| "Could not access export state")?;
-            job.check()?;
-            std::fs::rename(&temp, &target).map_err(|e| format!("Could not save export: {e}"))?;
-            *saved = true;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temp);
-        }
-        result
+        let count = save_streamed_export(
+            &database,
+            Path::new(&path),
+            &request,
+            &job,
+            |done, total, entries| {
+                let _ = app.emit(
+                    "export-progress",
+                    json!({"jobId":job_id,"done":done,"total":total,"entries":entries}),
+                );
+            },
+        )?;
+        Ok(json!({"sessions":count,"path":path}))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1478,3 +1673,7 @@ pub async fn save_export(
 #[cfg(test)]
 #[path = "preview_fixtures.rs"]
 mod preview_fixtures;
+
+#[cfg(test)]
+#[path = "query_tests.rs"]
+mod query_tests;

@@ -6,7 +6,7 @@
   font: 400 var(--text-base)/1.5 var(--font-sans);
 }
 
-/* ---------------------------------------------------------------- sidebar */
+/* Sidebar */
 .sidebar {
   display: flex; flex-direction: column; flex: 0 0 var(--sidebar-w); width: var(--sidebar-w);
   background: var(--surface); border-right: 1px solid var(--border);
@@ -30,8 +30,8 @@
 .section-link:hover { color: var(--text); }
 
 .nav-item {
-  display: flex; align-items: center; gap: 9px; width: 100%; min-height: 32px;
-  padding: 5px 10px; border-radius: var(--radius); text-align: left;
+  display: flex; align-items: center; gap: 9px; width: 100%; min-height: var(--nav-height);
+  padding: var(--nav-padding) 10px; border-radius: var(--radius); text-align: left;
   color: var(--text-2); font-size: var(--text-md); font-weight: 450;
   transition: background .12s var(--ease), color .12s var(--ease);
 }
@@ -42,7 +42,7 @@
 .nav-item.nav-active > svg { color: var(--accent-text); }
 .nav-primary .nav-item { font-size: var(--text-base); font-weight: 500; min-height: 34px; }
 .nav-count { margin-left: auto; color: var(--text-3); font: 400 var(--text-xs)/1 var(--font-mono); }
-.nav-host { flex: none; padding: 1px 5px; border-radius: 4px; background: var(--info-soft); color: var(--info); font: 500 10px/1.4 var(--font-mono); max-width: 70px; overflow: hidden; text-overflow: ellipsis; }
+.nav-host { flex: none; padding: 1px 5px; border-radius: 4px; background: var(--info-soft); color: var(--info); font: 500 0.625rem/1.4 var(--font-mono); max-width: 70px; overflow: hidden; text-overflow: ellipsis; }
 .nav-hint { color: var(--text-3); }
 .nav-empty { padding: 6px 10px; color: var(--text-3); font-size: var(--text-sm); }
 .nav-section .metadata-status { padding: 4px 10px; }
@@ -72,7 +72,7 @@
 .sidebar-tools { display: flex; gap: 2px; }
 .sidebar .sync-menu { top: auto; bottom: calc(100% + 8px); left: auto; right: 0; width: 280px; }
 
-/* ------------------------------------------------------------- main panel */
+/* Main panel */
 .main-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .content-area { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
@@ -103,7 +103,7 @@
 
 .browser-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--list-w) minmax(0, 1fr); }
 
-/* ----------------------------------------------------------- session list */
+/* Session list */
 .session-column { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: var(--surface); }
 .list-head { display: flex; align-items: center; gap: 6px; height: 44px; padding: 0 8px 0 16px; border-bottom: 1px solid var(--border); flex: none; }
 .list-count { flex: 1; font-size: var(--text-sm); font-weight: 600; color: var(--text-2); }
@@ -115,7 +115,7 @@
 }
 .session-card-wrap { position: relative; }
 .session-card {
-  display: flex; flex-direction: column; gap: 4px; width: 100%; padding: 10px 36px 10px 10px;
+  display: flex; flex-direction: column; gap: 4px; width: 100%; padding: var(--row-padding) 36px var(--row-padding) 10px;
   border-radius: var(--radius); text-align: left; transition: background .12s var(--ease);
 }
 .session-card:hover { background: var(--hover); }
@@ -156,7 +156,7 @@
 .detail-placeholder { margin: auto; }
 .detail-placeholder h2 { font-size: var(--text-lg); font-weight: 600; color: var(--text); }
 
-/* ----------------------------------------------------------- session detail */
+/* Session detail */
 .detail-column { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
 .detail-loading { margin: auto; display: flex; align-items: center; gap: 10px; color: var(--text-3); font-size: var(--text-md); }
 .detail-header { padding: 16px 24px 12px; border-bottom: 1px solid var(--border); background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
@@ -224,7 +224,7 @@
 .event-note span { display: block; font: var(--text-xs)/1.5 var(--font-mono); color: var(--text-3); white-space: pre-wrap; max-height: 160px; overflow: auto; }
 .transcript-end { max-width: 920px; margin: 20px auto 0; text-align: center; font-size: var(--text-xs); color: var(--text-3); text-transform: uppercase; letter-spacing: .06em; }
 
-/* ------------------------------------------------- export and resume dialogs */
+/* Export and resume dialogs */
 .export-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; font-size: var(--text-sm); font-weight: 500; color: var(--text-2); }
 .export-select .filter-button { width: 100%; justify-content: space-between; }
 .export-select .filter-dropdown-menu { width: 100%; }
@@ -237,7 +237,7 @@
 .resume-meta { margin: 0 0 6px !important; font-size: var(--text-sm) !important; }
 .resume-warn { color: var(--warning) !important; }
 
-/* ------------------------------------------------------------- responsive */
+/* Responsive */
 @media (max-width: 1280px) { .app-shell { --list-w: 320px; } }
 @media (max-width: 1100px) {
   .sidebar { position: fixed; inset: 0 auto 0 0; transform: translateX(-100%); transition: transform .2s var(--ease); box-shadow: var(--shadow); }
@@ -250,9 +250,9 @@
   .detail-column { display: none; }
 }
 
-/* ------------------------------------------------- conversation view */
+/* Conversation view */
 .transcript-conversation, .transcript-prompts { padding-top: 20px; }
-.turn { max-width: 860px; margin: 0 auto 32px; }
+.turn { max-width: 860px; margin: 0 auto calc(var(--card-padding) * 2); }
 .turn-head { display: flex; align-items: center; gap: 8px; font-size: var(--text-sm); color: var(--text-3); }
 .turn-head strong { color: var(--text); font-weight: 600; font-size: var(--text-md); }
 .turn-avatar { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; flex: none; background: var(--info-soft); color: var(--info); }
@@ -268,19 +268,19 @@
 
 /* Your prompt: a tinted card, clearly not the agent's prose. */
 .prompt-card {
-  display: flex; flex-direction: column; gap: 8px; padding: 12px 16px 14px;
+  display: flex; flex-direction: column; gap: 8px; padding: var(--card-padding);
   border: 1px solid color-mix(in srgb, var(--info) 28%, transparent); border-radius: var(--radius-lg);
   background: var(--info-soft);
 }
 .prompt-card:hover .copy-entry, .reply-text:hover .copy-entry { opacity: 1; }
-.prompt-text { font-size: 15px; }
+.prompt-text { font-size: 0.9375rem; }
 .command-chip { align-self: flex-start; padding: 3px 9px; border-radius: 6px; background: var(--surface); border: 1px solid var(--border); font-size: var(--text-sm); color: var(--accent-text); }
 .turn-continued { margin: 0 0 4px; font-size: var(--text-sm); color: var(--text-3); font-style: italic; }
 
 /* The agent's reply: plain prose in a readable column. */
 .reply { display: flex; flex-direction: column; gap: 12px; margin-top: 18px; padding-left: 2px; }
 .reply-text { position: relative; padding-left: 32px; }
-.reply-text .markdown-body { font-size: 15px; line-height: 1.7; max-width: 75ch; }
+.reply-text .markdown-body { font-size: 0.9375rem; line-height: 1.7; max-width: 75ch; }
 .reply-text > .copy-entry { position: absolute; top: 0; right: 0; }
 .reply > .thinking, .reply > .tool-list, .reply > .context-row { margin-left: 32px; }
 

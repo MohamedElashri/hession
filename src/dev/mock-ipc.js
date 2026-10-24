@@ -5,6 +5,7 @@
 // `make preview-fixtures FROM=~/.hession/sessions.sqlite` (fixtures.local.json,
 // git-ignored), which is preferred when present. Loaded only in development builds.
 import sample from './fixtures.json';
+import appPackage from '../../package.json' with { type: 'json' };
 
 // Fetched rather than imported: a real library can be tens of megabytes, more
 // than Vite will transform into a module.
@@ -86,10 +87,10 @@ const handlers = {
   get_resume_info: resumeInfo,
   resume_session: () => ({ ok: false, message: 'Resuming is disabled in the browser preview.' }),
   open_in_editor: () => Promise.reject('Opening VS Code is disabled in the browser preview.'),
-  app_version: () => ({ name: 'Hession', version: '0.1.0' }),
+  app_version: () => ({ name: 'Hession', version: appPackage.version }),
   check_for_update: async () => {
     await delay(600);
-    return { current: '0.1.0', latest: '0.2.0', tag: 'v0.2.0', newer: true, publishedAt: new Date().toISOString(), url: '#',
+    return { current: appPackage.version, latest: '0.2.0', tag: 'v0.2.0', newer: true, publishedAt: new Date().toISOString(), url: '#',
       notes: '### Features\n- A sample release note for the preview.\n\n### Fixes\n- Another sample entry.' };
   },
   update_command: ({ tag }) => `curl -fsSL https://raw.githubusercontent.com/example/app/${tag}/install.sh | sh -s -- --version ${tag}`,
@@ -102,6 +103,8 @@ const handlers = {
   'plugin:event|listen': () => callbacks++,
   'plugin:event|unlisten': () => null,
 };
+
+window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
 
 window.__TAURI_INTERNALS__ = {
   metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } },

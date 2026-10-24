@@ -3,35 +3,58 @@
 SLUG      := $(shell node -p "require('./brand.json').slug" 2>/dev/null || echo app)
 APP_NAME  := $(shell node -p "require('./brand.json').name" 2>/dev/null || echo App)
 CARGO_DIR := src-tauri
-CARGO     := cargo --locked
-TARGET    := target
+MANIFEST  := $(CARGO_DIR)/Cargo.toml
+NPM       ?= npm
+CARGO     ?= cargo
+TARGET    := $(or $(CARGO_TARGET_DIR),target)
+PROFILE   ?= release
 BUNDLE    := $(TARGET)/release/bundle
+TAURI     = $(NPM) run tauri --
+CARGO_ARGS = --locked --manifest-path $(MANIFEST)
+export CARGO_TARGET_DIR := $(abspath $(TARGET))
+
+ifeq ($(filter $(PROFILE),release debug),)
+  $(error PROFILE must be release or debug)
+endif
 
 # Homebrew/Linuxbrew pkg-config cannot see the system GTK/WebKit packages, and
 # tools such as linuxdeploy's GTK plugin call pkgconf/pkg-config from PATH
 # rather than $PKG_CONFIG. On Linux, put the system ones first via a shim.
 ifeq ($(shell uname -s),Linux)
   ifneq ($(wildcard /usr/bin/pkg-config),)
-    PKG_SHIM := $(CURDIR)/$(TARGET)/pkg-config-shim
+    PKG_SHIM := $(abspath $(TARGET))/pkg-config-shim
     SYSTEM_PKGCONF := $(or $(wildcard /usr/bin/pkgconf),/usr/bin/pkg-config)
-    $(shell mkdir -p $(PKG_SHIM) && ln -sf /usr/bin/pkg-config $(PKG_SHIM)/pkg-config && ln -sf $(SYSTEM_PKGCONF) $(PKG_SHIM)/pkgconf)
     export PKG_CONFIG := /usr/bin/pkg-config
     export PATH := $(PKG_SHIM):$(PATH)
   endif
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help setup deps dev preview preview-fixtures build deb appimage rpm run test check lint lint-js lint-sh unused fmt fmt-check icons brand \
-        docker-test release-check clean desktop-entry desktop-entry-remove
+.PHONY: help setup deps dev preview preview-fixtures build build-debug bundle deb appimage rpm run run-debug \
+        verify test check lint lint-js lint-sh unused fmt fmt-check icons brand docker-test release-check \
+        clean desktop-entry desktop-entry-remove _frontend _pkg-config
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-z][a-z -]*:.*## / {printf "  \033[32m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-setup: node_modules ## Install npm dependencies
+setup: node_modules/.package-lock.json ## Install npm dependencies when manifests change
 
-node_modules: package.json package-lock.json
-	npm ci
+node_modules/.package-lock.json: package.json package-lock.json
+	$(NPM) ci
 	@touch $@
+
+_pkg-config:
+ifdef PKG_SHIM
+	@mkdir -p "$(PKG_SHIM)"
+	@ln -sf /usr/bin/pkg-config "$(PKG_SHIM)/pkg-config"
+	@ln -sf "$(SYSTEM_PKGCONF)" "$(PKG_SHIM)/pkgconf"
+endif
+
+_frontend: setup
+	$(NPM) run brand
+	$(NPM) run build
+
+dev preview-fixtures build build-debug bundle deb appimage rpm test check lint: | _pkg-config
 
 deps: ## Install system build libraries (Linux; uses sudo)
 	@if command -v apt-get >/dev/null; then \
@@ -47,71 +70,80 @@ deps: ## Install system build libraries (Linux; uses sudo)
 	else echo "Unsupported package manager; see docs/development.md"; exit 1; fi
 
 dev: setup ## Run the app with hot reload
-	npm run tauri dev
+	$(TAURI) dev
 
 preview: setup ## UI in a browser with sample data, no Rust build (http://127.0.0.1:1420)
 	@echo "Open http://127.0.0.1:1420"
-	npm run dev
+	$(NPM) run dev
 
 preview-fixtures: ## Regenerate preview data (FROM=<sessions.sqlite> previews your own library)
 ifdef FROM
-	cd $(CARGO_DIR) && PREVIEW_FROM="$(abspath $(patsubst ~/%,$(HOME)/%,$(FROM)))" $(CARGO) test --lib dump_library_fixtures -- --ignored
+	PREVIEW_FROM="$(abspath $(patsubst ~/%,$(HOME)/%,$(FROM)))" $(CARGO) test $(CARGO_ARGS) --lib dump_library_fixtures -- --ignored
 else
-	cd $(CARGO_DIR) && $(CARGO) test --lib dump_preview_fixtures -- --ignored
+	$(CARGO) test $(CARGO_ARGS) --lib dump_preview_fixtures -- --ignored
 endif
 
-build: setup ## Build release installers for this OS (into target/release/bundle/)
-	npm run tauri build
+build-debug run-debug: override PROFILE = debug
+
+build: ## Build only the release binary (PROFILE=debug for faster testing)
+build-debug: ## Alias for a debug binary build
+build build-debug: setup
+	$(TAURI) build $(if $(filter debug,$(PROFILE)),--debug) --no-bundle -- --bin $(SLUG)
+	@echo "Binary: $(TARGET)/$(PROFILE)/$(SLUG)"
+
+bundle: ## Build release installers (BUNDLES=deb,appimage,rpm to select formats)
+deb appimage rpm: override BUNDLES = $@
+deb appimage rpm: ## Build one Linux installer format
+bundle deb appimage rpm: setup
+	$(TAURI) build $(if $(BUNDLES),--bundles $(BUNDLES))
 	@echo "Installers:"; find $(BUNDLE) -maxdepth 2 -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.dmg' \) | sed 's/^/  /'
 
-deb appimage rpm: setup ## Build one Linux bundle (make deb | appimage | rpm)
-	npm run tauri build -- --bundles $@
-	@ls -1 $(BUNDLE)/$@/
+run: ## Run the built binary (PROFILE=release or debug)
+run-debug: ## Alias for running the debug binary
+run run-debug:
+	"$(TARGET)/$(PROFILE)/$(SLUG)"
 
-run: ## Run the release binary built by `make build`
-	$(TARGET)/release/$(SLUG)
+verify: fmt-check lint unused test release-check ## Run all release checks
 
-test: setup ## Run Rust and JS tests and the frontend build
-	npm run build
-	npm test
-	cd $(CARGO_DIR) && $(CARGO) test --lib
+test: _frontend ## Run JavaScript and Rust tests against the built frontend
+	$(NPM) test
+	$(CARGO) test $(CARGO_ARGS) --lib
 
-check: setup ## Build the frontend and cargo check the backend (no tests)
-	npm run check
+check: _frontend ## Build the frontend and check Rust without running tests
+	$(CARGO) check $(CARGO_ARGS)
 
-lint: lint-js lint-sh ## ESLint + ShellCheck + Clippy; any warning fails
-	npm run build
-	cd $(CARGO_DIR) && $(CARGO) clippy --all-targets -- -D warnings
+lint: _frontend lint-js lint-sh ## ESLint, ShellCheck, and Clippy; warnings fail
+	$(CARGO) clippy $(CARGO_ARGS) --all-targets -- -D warnings
 
-lint-js: setup ## ESLint on the frontend and scripts
-	npm run lint
+lint-js: NPM_SCRIPT = lint
+lint-js: ## Lint the frontend and scripts
 
 lint-sh: ## ShellCheck the install script (skipped if shellcheck is missing)
 	@if command -v shellcheck >/dev/null; then shellcheck -s sh install.sh && echo "install.sh: shellcheck clean"; \
 	else echo "shellcheck not installed; skipping install.sh check"; fi
 
-unused: setup ## Report unused files, exports, and npm dependencies (knip)
-	npm run unused
+unused: ## Find unused files, exports, and dependencies
+
+icons: ## Regenerate icons and brand assets
+lint-js unused icons: setup
+	$(NPM) run $(or $(NPM_SCRIPT),$@)
 
 fmt: ## Format the Rust code
-	cd $(CARGO_DIR) && cargo fmt
+	$(CARGO) fmt --manifest-path $(MANIFEST)
 
 fmt-check: ## Fail if the Rust code is not formatted
-	cd $(CARGO_DIR) && cargo fmt --check
-
-icons: setup ## Regenerate icons and brand assets from branding/
-	npm run icons
+	$(CARGO) fmt --manifest-path $(MANIFEST) --check
 
 brand: ## Apply brand.json to Tauri/npm/Cargo manifests
-	npm run brand
+	$(NPM) run brand
 
-docker-test: setup ## Run tests in a container (no system libraries needed)
-	npm run build
+docker-test: _frontend ## Run JavaScript tests locally and Rust tests in Docker
+	$(NPM) test
 	docker build -q -t $(SLUG)-check -f scripts/check.Dockerfile scripts
-	mkdir -p $(HOME)/.cargo/registry $(TARGET)/docker
+	mkdir -p "$(HOME)/.cargo/registry" "$(TARGET)/docker"
 	docker run --rm -u $$(id -u):$$(id -g) -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
-	  -v $(HOME)/.cargo/registry:/cargo/registry -v $(CURDIR)/$(TARGET)/docker:/target \
-	  -v $(CURDIR):/w -w /w/$(CARGO_DIR) $(SLUG)-check cargo --locked test --lib
+	  -v "$(HOME)/.cargo/registry:/cargo/registry" -v "$(abspath $(TARGET))/docker:/target" \
+	  -v "$(CURDIR):/w" -w /w/$(CARGO_DIR) $(SLUG)-check cargo --locked test --lib
 
 # GNOME/KDE pick the dock icon from the .desktop entry whose StartupWMClass (or
 # file name) matches the window's app_id / WM_CLASS, which GTK sets to the binary
@@ -141,4 +173,4 @@ release-check: ## Verify versions agree before tagging (VERSION=x.y.z optional)
 	node .github/scripts/check-release.mjs $(if $(VERSION),v$(VERSION))
 
 clean: ## Remove build outputs
-	rm -rf dist $(TARGET)
+	rm -rf dist "$(TARGET)"

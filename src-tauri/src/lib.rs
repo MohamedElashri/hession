@@ -1,7 +1,4 @@
 //! Tauri v2 application shell. Product identity lives in `brand.json` (see `brand`).
-//!
-//! File modules (`db`, `analytics`, `pricing`, `commands`, `importer`,
-//! `sync`) live in their own `*.rs` files.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -11,7 +8,10 @@ pub mod brand;
 pub mod commands;
 pub mod data_management;
 pub mod db;
+mod export_format;
 pub mod importer;
+mod library_revision;
+mod paths;
 pub mod pricing;
 pub mod remote;
 pub mod resume;
@@ -64,7 +64,6 @@ pub fn run() {
             commands::cancel_export,
             commands::finish_export,
             commands::export_sessions,
-            commands::save_export,
             commands::get_agents,
             commands::get_projects,
             commands::get_facets,
