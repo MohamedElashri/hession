@@ -58,6 +58,7 @@ pub fn run() {
             commands::ping,
             commands::get_health,
             commands::search_sessions,
+            commands::search_session_entries,
             commands::get_session,
             commands::update_session_annotations,
             commands::begin_export,

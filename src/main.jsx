@@ -1,6 +1,7 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import Markdown from './components/Markdown.jsx';
+import SessionSearch from './components/SessionSearch.jsx';
 import {
   Bot, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Code2,
   Copy, Database, Download, FileCode2, Folder, GitBranch, Info, Laptop, Layers3,
@@ -101,6 +102,7 @@ function App(){
   const setTranscriptView=v=>{setTranscriptViewState(v);try{localStorage.setItem(storageKey('transcript-view'),v);}catch{/* preference only */}};
   const [detailPage,setDetailPage]=useState(1); // 1-based transcript page
   const [detailJump,setDetailJump]=useState('');
+  const [searchEntry,setSearchEntry]=useState(null);
   const [collapsedEntries,setCollapsedEntries]=useState(()=>new Set());
   const [copiedEntry,setCopiedEntry]=useState(null);
   const [appearanceOpen,setAppearanceOpen]=useState(false);
@@ -121,7 +123,7 @@ function App(){
   if(shownSelection!==selected){
     setShownSelection(selected);
     setResumeOpen(false);setResumeInfo(null);setResumeError('');setResumeCopied(false);setResumeTerminals([]);setResumeTerminal('');
-    setCollapsedEntries(new Set());setDetailPage(1);setDetailJump('');setTagDraft('');
+    setSearchEntry(null);setCollapsedEntries(new Set());setDetailPage(1);setDetailJump('');setTagDraft('');
   }
   // Back to the first page whenever the filters change.
   const filterKey=JSON.stringify([query,hostFilter,agentFilter,projectFilter,modelFilters,branchFilter,toolFilters,timeFilter,sortOrder,starredOnly,tagFilters]);
@@ -435,6 +437,7 @@ function App(){
     const resultId=p=>{try{const d=JSON.parse(p.data_json||'{}');return d.tool_use_id||d.call_id;}catch{return null;}};
     const duplicateResult=e=>e.parts?.length>0&&e.parts.every(p=>p.kind==='tool_result'&&shownResults.has(resultId(p)));
     return entries.filter(e=>{
+      if(e.id===searchEntry)return true;
       if(duplicateResult(e))return false;
       if(entryFilter==='user')return isTypedPrompt(e);
       if(entryFilter==='assistant')return e.role==='assistant';
@@ -442,7 +445,16 @@ function App(){
       if(entryFilter==='event')return isSessionEvent(e);
       return true;
     });
-  },[detail,entryFilter]);
+  },[detail,entryFilter,searchEntry]);
+  useEffect(()=>{
+    if(!detailLoading&&searchEntry)document.getElementById(`entry-${searchEntry}`)?.scrollIntoView({block:'center'});
+  },[detail,detailLoading,searchEntry]);
+  const openSearchEntry=entry=>{
+    setEntryFilter('all');setTranscriptView('log');setSearchEntry(entry.id);
+    setCollapsedEntries(previous=>{const next=new Set(previous);next.delete(entry.id);return next;});
+    setDetailPage(Math.floor(entry.position/DETAIL_PAGE_SIZE)+1);setDetailJump('');
+    requestAnimationFrame(()=>document.getElementById(`entry-${entry.id}`)?.scrollIntoView({block:'center'}));
+  };
   const turns=useMemo(()=>buildConversation(detail?.entries),[detail?.entries]);
   const openTurn=id=>{setTranscriptView('conversation');requestAnimationFrame(()=>document.getElementById(`turn-${id}`)?.scrollIntoView({block:'start'}));};
   // Transcript pagination derived from the backend's total/limit/offset.
@@ -599,6 +611,7 @@ function App(){
             </section>
 
             <section className="detail-column" aria-label="Session">
+              {detail&&<SessionSearch key={detail.session.id} sessionId={detail.session.id} onOpen={openSearchEntry}/>}
               {detail&&!isDetailLoading?<>
                 <div className="detail-header">
                   <div className="detail-agent-line"><span className={`agent-dot ${agentColors[detail.session.agent]||'gray'}`}/><span>{detail.session.product||familyLabel(detail.session.agent)}</span>{detail.session.host&&<span className="host-chip"><Server size={11}/>{detail.session.host}</span>}<span className="detail-sep">·</span><span>{relativeDate(detail.session.last_event_at||detail.session.started_at)}</span></div>
@@ -638,7 +651,7 @@ function App(){
                     // Agents log tool results under the user role; show them as tool output.
                     const toolOnly=!textParts.length&&(toolsVisible.length>0||special.length>0);
                     const kind=toolOnly?'tool':isUser?'user':isAssistant?'assistant':'system';
-                    return <article className={`transcript-entry ${kind}-entry`} key={e.id}>
+                    return <article id={`entry-${e.id}`} className={`transcript-entry ${kind}-entry ${e.id===searchEntry?'search-target':''}`} key={e.id}>
                       <div className="message-head" onClick={()=>toggleCollapse(e.id)} role="button" tabIndex={0} aria-expanded={!isCollapsed} title={isCollapsed?'Expand':'Collapse'} onKeyDown={ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();toggleCollapse(e.id);}}}>
                         <span className="message-avatar">{kind==='user'?<User size={13}/>:kind==='assistant'?<Bot size={13}/>:<Terminal size={12}/>}</span>
                         <strong>{kind==='user'?'You':kind==='assistant'?(detail.session.product||'Agent'):kind==='tool'?'Tool output':'Event'}</strong>
