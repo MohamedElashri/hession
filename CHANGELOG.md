@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0] - 2026-11-09
+
+- Search complete sessions with highlighted excerpts and jumps to matches.
+- Choose automatic, discovered, or custom terminals in Settings.
+- Find session titles and workspace paths in global search.
+
 ## [0.1.2] - 2026-10-24
 
 ### Added
@@ -44,6 +50,7 @@ Initial release for macOS (universal) and Linux.
 - Light/dark themes and bundled Geist fonts.
 - Download installer with SHA-256 verification.
 
+[0.2.0]: https://github.com/MohamedElashri/hession/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/MohamedElashri/hession/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/MohamedElashri/hession/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/MohamedElashri/hession/releases/tag/v0.1.0
