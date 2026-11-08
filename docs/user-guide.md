@@ -1,5 +1,17 @@
 # User guide
 
+## Searching sessions
+
+Use the search field above the session list to search transcript text, titles,
+and workspace paths across local and remote sessions. Sidebar filters narrow
+the results; clear them to search the whole library. Transcript words match
+prefixes, ignore case and accents, and multiple words match any word.
+
+Use **Search this session** above an open transcript to search every indexed
+entry, including tool arguments and output, beyond the currently loaded page.
+Results include highlighted excerpts and pagination. Select a result to open
+its entry in the full log. Clear the field or press Escape to dismiss results.
+
 ## Appearance
 
 Open **Appearance** using the palette icon at the bottom of the sidebar.

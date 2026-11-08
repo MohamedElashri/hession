@@ -299,15 +299,18 @@ fn session_query(f: &SessionFilters) -> SessionQuery {
         params.push(SqlValue::Text(cutoff));
     }
 
-    // Full-text search join (no LIKE fallback over entry.search_text).
+    // Keep metadata-only matches, even when no transcript entry matches.
     let mut search_join = String::new();
     if !q.trim().is_empty() {
         if let Some(expression) = fts_expression(q) {
-            search_join = "JOIN (SELECT e.session_id, MIN(e.ordinal) AS rank FROM entry_fts \
+            search_join = "LEFT JOIN (SELECT e.session_id, MIN(e.ordinal) AS rank FROM entry_fts \
                  JOIN entry e ON e.id=entry_fts.rowid WHERE entry_fts MATCH ? \
                  GROUP BY e.session_id) hits ON hits.session_id=s.id"
                 .to_string();
             params.insert(0, SqlValue::Text(expression));
+            filters.push("(hits.session_id IS NOT NULL OR s.title LIKE ? ESCAPE '\\' OR s.cwd LIKE ? ESCAPE '\\' OR w.path LIKE ? ESCAPE '\\')".to_string());
+            let literal = SqlValue::Text(format!("%{}%", escape_like(q.trim())));
+            params.extend([literal.clone(), literal.clone(), literal]);
         } else {
             filters.push("(s.title LIKE ? ESCAPE '\\' OR s.cwd LIKE ? ESCAPE '\\')".to_string());
             let lit = format!("%{}%", escape_like(q));
@@ -619,6 +622,69 @@ pub async fn get_session(
     tauri::async_runtime::spawn_blocking(move || get_session_inner(&db_path, &id, limit, page))
         .await
         .map_err(|e| format!("get_session failed: {e}"))?
+}
+
+// Search the complete indexed transcript, independently of the displayed page.
+fn search_session_entries_from_conn(
+    conn: &Connection,
+    session_id: i64,
+    q: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Value, String> {
+    get_session_metadata(conn, session_id)?;
+    let q = q.trim();
+    if q.is_empty() {
+        return Ok(json!({"entries": [], "total": 0}));
+    }
+    let expression = fts_expression(q);
+    let (base, excerpt, term) = match expression {
+        Some(term) => (
+            "FROM entry_fts JOIN entry e ON e.id=entry_fts.rowid WHERE e.session_id=? AND entry_fts MATCH ?",
+            "snippet(entry_fts,0,char(1),char(2),' … ',40)",
+            term,
+        ),
+        None => (
+            "FROM entry e WHERE e.session_id=? AND e.search_text LIKE ? ESCAPE '\\'",
+            "substr(e.search_text,1,600)",
+            format!("%{}%", escape_like(q)),
+        ),
+    };
+    let params = [SqlValue::Integer(session_id), SqlValue::Text(term)];
+    let total = query_one(conn, &format!("SELECT COUNT(*) n {base}"), &params)?
+        .and_then(|v| v["n"].as_i64())
+        .unwrap_or(0);
+    let mut list_params = params.to_vec();
+    list_params.extend([SqlValue::Integer(limit), SqlValue::Integer(offset)]);
+    let entries = query_all(conn, &format!(
+        "SELECT e.id,e.ordinal,e.role,e.kind,{excerpt} AS excerpt, \
+         (SELECT COUNT(*) FROM entry p WHERE p.session_id=e.session_id AND p.ordinal<e.ordinal) AS position \
+         {base} ORDER BY e.ordinal LIMIT ? OFFSET ?"
+    ), &list_params)?;
+    Ok(json!({"entries": entries, "total": total}))
+}
+
+#[tauri::command]
+pub async fn search_session_entries(
+    state: State<'_, AppState>,
+    id: String,
+    q: String,
+    limit: Option<String>,
+    offset: Option<String>,
+) -> Result<Value, String> {
+    let path = db_path_of(&state)?;
+    let session_id = id
+        .parse::<i64>()
+        .map_err(|_| "Session not found".to_string())?;
+    let limit = clamp_limit(limit.as_deref(), 20, 1, 50);
+    let offset = parse_i64(opt_str(&offset), 0).max(0);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = open_db(&path)?;
+        let snapshot = conn.transaction().map_err(|e| e.to_string())?;
+        search_session_entries_from_conn(&snapshot, session_id, &q, limit, offset)
+    })
+    .await
+    .map_err(|e| format!("Session search failed: {e}"))?
 }
 
 // get_agents

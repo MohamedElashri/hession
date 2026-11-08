@@ -1,5 +1,93 @@
 use super::*;
 
+#[test]
+fn global_search_includes_metadata_and_preserves_filters() {
+    let conn = library();
+    conn.execute(
+        "UPDATE session SET title='Unique title',cwd='/work/metadata' WHERE id=1",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO entry(session_id,ordinal,kind,search_text) VALUES(2,0,'message','unique transcript')", []).unwrap();
+    let filters = SessionFilters {
+        q: "unique".into(),
+        ..Default::default()
+    };
+    let result = search_sessions_from_conn(&conn, &filters, 20, 0, None).unwrap();
+    assert_eq!(result["total"], 2);
+    let filters = SessionFilters {
+        q: "metadata".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        search_sessions_from_conn(&conn, &filters, 20, 0, None).unwrap()["sessions"][0]["id"],
+        1
+    );
+    let filters = SessionFilters {
+        q: "unique".into(),
+        agent: "claude".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        search_sessions_from_conn(&conn, &filters, 20, 0, None).unwrap()["total"],
+        0
+    );
+}
+
+#[test]
+fn session_search_spans_pages_and_keeps_session_boundaries() {
+    let conn = library();
+    for ordinal in 0..1100 {
+        conn.execute("INSERT INTO entry(session_id,ordinal,kind,role,search_text) VALUES(1,?1,'message','tool',?2)",
+            rusqlite::params![ordinal * 2, if ordinal >= 500 { "résumé needle tool output" } else { "other text" }]).unwrap();
+    }
+    conn.execute(
+        "INSERT INTO entry(session_id,ordinal,kind,search_text) VALUES(2,0,'message','needle')",
+        [],
+    )
+    .unwrap();
+    let result = search_session_entries_from_conn(&conn, 1, "NEED", 20, 0).unwrap();
+    assert_eq!(result["total"], 600);
+    assert_eq!(result["entries"][0]["position"], 500);
+    assert_eq!(result["entries"][0]["ordinal"], 1000);
+    assert!(result["entries"][0]["excerpt"]
+        .as_str()
+        .unwrap()
+        .contains("\u{1}needle\u{2}"));
+    let last = search_session_entries_from_conn(&conn, 1, "resume", 20, 580).unwrap();
+    assert_eq!(last["entries"].as_array().unwrap().len(), 20);
+    assert_eq!(last["entries"][19]["position"], 1099);
+    assert_eq!(
+        search_session_entries_from_conn(&conn, 1, "missing", 20, 0).unwrap()["total"],
+        0
+    );
+    assert_eq!(
+        search_session_entries_from_conn(&conn, 1, "  ", 20, 0).unwrap()["total"],
+        0
+    );
+    assert!(search_session_entries_from_conn(&conn, 9999, "needle", 20, 0).is_err());
+}
+
+#[test]
+fn session_search_handles_punctuation_and_sql_wildcards_literally() {
+    let conn = library();
+    for (ordinal, text) in ["100%", "1000", "___", "other"].iter().enumerate() {
+        conn.execute(
+            "INSERT INTO entry(session_id,ordinal,kind,search_text) VALUES(1,?1,'message',?2)",
+            rusqlite::params![ordinal as i64, text],
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        search_session_entries_from_conn(&conn, 1, "%", 20, 0).unwrap()["total"],
+        1
+    );
+    assert_eq!(
+        search_session_entries_from_conn(&conn, 1, "\" OR *", 20, 0).unwrap()["total"],
+        0
+    );
+}
+
 fn library() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();

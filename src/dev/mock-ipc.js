@@ -75,7 +75,23 @@ const handlers = {
   start_sync: () => ({ running: false, phase: 'complete', filesDone: 12, filesTotal: 12, errors: [] }),
   stop_sync: () => true,
   search_sessions: search,
-  get_session: ({ id }) => fixtures.details[id] ?? Promise.reject('Session not found'),
+  get_session: ({ id, limit = '500', page = '1' }) => {
+    const detail = fixtures.details[id];
+    if (!detail) throw 'Session not found';
+    const offset = (Number(page) - 1) * Number(limit);
+    return { ...detail, entries: detail.entries.slice(offset, offset + Number(limit)), offset, limit: Number(limit) };
+  },
+  search_session_entries: ({ id, q, limit = '20', offset = '0' }) => {
+    const detail = fixtures.details[id];
+    if (!detail) throw 'Session not found';
+    const terms = [...new Set(q.toLowerCase().match(/[\p{L}\p{N}_]+/gu) || [])];
+    const entries = detail.entries.flatMap((entry, position) => {
+      const text = entry.search_text || '';
+      if (!(terms.length ? terms.some(term => text.toLowerCase().includes(term)) : text.includes(q.trim()))) return [];
+      return [{ ...entry, position, excerpt: text.slice(0, 600) }];
+    });
+    return { entries: entries.slice(Number(offset), Number(offset) + Number(limit)), total: entries.length };
+  },
   update_session_annotations: annotate,
   get_analytics: () => fixtures.analytics,
   refresh_analytics: () => ({ ok: true }),
