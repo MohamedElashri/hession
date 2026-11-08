@@ -18,7 +18,9 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const state = {
   sessions: fixtures.sessions.map((s) => ({ ...s })),
   hosts: (fixtures.facets.hosts || []).map((h) => ({ name: h.value, enabled: true, lastSync: fixtures.generatedAt, agents: ['claude', 'codex'] })),
-  terminal: 'gnome-terminal',
+  terminal: 'default',
+  customPath: null,
+  customArgs: null,
 };
 let callbacks = 0;
 
@@ -55,11 +57,13 @@ function annotate({ id, starred, tags }) {
   return { starred: session.starred, tags: session.tags };
 }
 
-function resumeInfo({ id }) {
+function resumeInfo({ id, terminal }) {
+  const chosen = terminal || state.terminal;
+  const resolved = chosen === 'default' ? 'gnome-terminal' : chosen;
   const s = fixtures.details[id].session;
   const cmd = s.agent === 'codex' ? `codex resume ${s.external_id}` : `claude --resume ${s.external_id}`;
   return {
-    ok: true, family: s.agent, host: s.host || null, terminal: 'GNOME Terminal', terminalId: state.terminal,
+    ok: true, family: s.agent, host: s.host || null, terminal: resolved === 'custom' ? 'Custom terminal' : 'GNOME Terminal', terminalId: resolved,
     cwd: s.host ? '/home/dev' : s.cwd, cwdExists: true, cliFound: true, sourceExists: true, warnings: [],
     displayCommand: s.host ? `ssh -t ${s.host} 'cd ${s.cwd} && ${cmd}'` : `cd ${s.cwd} && ${cmd}`,
   };
@@ -82,8 +86,9 @@ const handlers = {
   get_pricing_status: () => fixtures.pricingStatus,
   get_pricing_overrides: () => fixtures.pricingOverrides,
   sync_pricing: () => Promise.reject('Price download is disabled in the preview.'),
-  list_terminals: () => ({ terminals: [{ id: 'gnome-terminal', label: 'GNOME Terminal', available: true }, { id: 'kitty', label: 'Kitty', available: false }], defaultId: 'gnome-terminal', saved: state.terminal }),
-  set_terminal_preference: ({ terminal }) => { state.terminal = terminal; return { ok: true }; },
+  list_terminals: () => ({ customPath: state.customPath, customArgs: state.customArgs, terminals: [{ id: 'default', label: 'Default terminal (automatic)', available: true }, ...(state.customPath ? [{ id: 'custom', label: 'Custom terminal', available: true }] : []), { id: 'gnome-terminal', label: 'GNOME Terminal', available: true }, { id: 'kitty', label: 'Kitty', available: false }], defaultId: 'gnome-terminal', saved: state.terminal }),
+  set_terminal_preference: ({ terminal, customPath, customArgs }) => { state.terminal = terminal; if (customPath !== undefined) state.customPath = customPath; if (customArgs !== undefined) state.customArgs = customArgs; return { ok: true }; },
+  'plugin:dialog|open': () => '/opt/my terminal/bin/terminal',
   get_resume_info: resumeInfo,
   resume_session: () => ({ ok: false, message: 'Resuming is disabled in the browser preview.' }),
   open_in_editor: () => Promise.reject('Opening VS Code is disabled in the browser preview.'),
