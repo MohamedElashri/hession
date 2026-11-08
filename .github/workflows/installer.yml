@@ -42,6 +42,10 @@ jobs:
         if: matrix.container
         run: dnf install -y --setopt=install_weak_deps=False git tar findutils which
 
+      - name: Refresh Ubuntu package lists
+        if: matrix.name == 'Ubuntu (deb)'
+        run: sudo apt-get update
+
       - name: Check out
         uses: actions/checkout@v7
         with:
