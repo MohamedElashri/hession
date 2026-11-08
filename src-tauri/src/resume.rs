@@ -349,6 +349,8 @@ const KNOWN_TERMINAL_IDS: &[&str] = &[
 
 fn terminal_label(id: &str) -> String {
     match id {
+        "default" => "Default terminal (automatic)".to_string(),
+        "custom" => "Custom terminal".to_string(),
         "terminal" => "Terminal".to_string(),
         "iterm" => "iTerm2".to_string(),
         "wezterm" => "WezTerm".to_string(),
@@ -393,6 +395,9 @@ fn mac_bundle_cli(bundle: &str, rel: &str, name: &str) -> Option<PathBuf> {
 
 /// Whether a terminal choice can be launched right now.
 fn is_terminal_available(id: &str) -> bool {
+    if id == "custom" {
+        return validate_custom_terminal(&load_terminal_settings()).is_ok();
+    }
     #[cfg(target_os = "macos")]
     {
         match id {
@@ -442,6 +447,7 @@ fn linux_terminal_candidates() -> Vec<String> {
         "kitty",
         "wezterm",
         "foot",
+        "ghostty",
         "xterm",
     ] {
         ids.push(n.to_string());
@@ -466,6 +472,16 @@ fn available_terminals() -> Vec<Value> {
         .into_iter()
         .map(|id| (id, true))
         .collect();
+    let mut choices = choices;
+    if let Some(saved) = load_terminal_pref().filter(|id| id != "default" && id != "custom") {
+        if !choices.iter().any(|(id, _)| id == &saved) {
+            choices.push((saved.clone(), is_terminal_available(&saved)));
+        }
+    }
+    choices.insert(0, ("default".to_string(), true));
+    if load_terminal_settings().custom_path.is_some() {
+        choices.push(("custom".to_string(), is_terminal_available("custom")));
+    }
     choices
         .into_iter()
         .map(|(id, available)| json!({ "id": id, "label": terminal_label(&id), "available": available }))
@@ -496,89 +512,177 @@ fn terminal_pref_path() -> PathBuf {
     db::data_dir().join("terminal-preference.json")
 }
 
+#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalSettings {
+    terminal: Option<String>,
+    custom_path: Option<String>,
+    custom_args: Option<Vec<String>>,
+}
+
+fn read_terminal_settings(path: &Path) -> TerminalSettings {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn load_terminal_settings() -> TerminalSettings {
+    read_terminal_settings(&terminal_pref_path())
+}
+
 fn load_terminal_pref() -> Option<String> {
-    let raw = std::fs::read_to_string(terminal_pref_path()).ok()?;
-    let id = serde_json::from_str::<Value>(&raw)
-        .ok()?
-        .get("terminal")?
-        .as_str()?
-        .trim()
-        .to_string();
-    if id.is_empty() {
-        None
-    } else {
-        Some(id)
-    }
+    load_terminal_settings()
+        .terminal
+        .filter(|s| !s.trim().is_empty())
 }
 
 fn validate_terminal_id(id: &str) -> Result<(), String> {
     let t = id.trim();
+    #[cfg(not(target_os = "macos"))]
+    if Path::new(t).is_absolute() && t.len() <= 4096 && !t.chars().any(|c| c.is_control()) {
+        return if executable_file(Path::new(t)) {
+            Ok(())
+        } else {
+            Err("Terminal executable is unavailable.".into())
+        };
+    }
+    if t == "default" || t == "custom" {
+        return Ok(());
+    }
     if t.is_empty() || t.len() > 64 || t.chars().any(|c| c.is_control()) {
         return Err("Unknown terminal.".to_string());
     }
     #[cfg(target_os = "macos")]
-    {
-        if !KNOWN_TERMINAL_IDS.contains(&t) {
-            return Err("Unknown terminal.".to_string());
-        }
+    if !KNOWN_TERMINAL_IDS.contains(&t) {
+        return Err("Unknown terminal.".to_string());
     }
     #[cfg(not(target_os = "macos"))]
+    if !t
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '.'))
     {
-        if !t
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '.'))
-        {
-            return Err("Unknown terminal.".to_string());
-        }
+        return Err("Unknown terminal.".to_string());
     }
     Ok(())
 }
 
-fn save_terminal_pref(id: &str) -> Result<(), String> {
-    validate_terminal_id(id)?;
-    let id = id.trim().to_string();
-    let dir = db::data_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Could not save terminal preference: {e}"))?;
-    let path = terminal_pref_path();
-    std::fs::write(&path, format!("{{\"terminal\":{}}}", json!(id)))
-        .map_err(|e| format!("Could not save terminal preference: {e}"))?;
+fn executable_file(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return false;
+        }
+    }
+    true
+}
+
+fn validate_custom_terminal(settings: &TerminalSettings) -> Result<(), String> {
+    let path = settings.custom_path.as_deref().unwrap_or("");
+    if !Path::new(path).is_absolute()
+        || path.chars().any(|c| c.is_control())
+        || !executable_file(Path::new(path))
+    {
+        return Err("Choose an existing terminal executable using its absolute path.".into());
+    }
+    let args = settings.custom_args.as_deref().unwrap_or(&[]);
+    if args.len() > 64
+        || args
+            .iter()
+            .any(|arg| arg.len() > 4096 || arg.contains('\0'))
+        || args.iter().filter(|arg| arg.as_str() == "{script}").count() != 1
+    {
+        return Err(
+            "Launch arguments must include {script} exactly once as a separate argument.".into(),
+        );
     }
     Ok(())
+}
+
+fn write_terminal_settings(path: &Path, settings: &TerminalSettings) -> Result<(), String> {
+    use std::io::Write;
+    let dir = path.parent().ok_or("Invalid settings path")?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("Could not save terminal preference: {e}"))?;
+    let mut file = tempfile::NamedTempFile::new_in(dir).map_err(|e| e.to_string())?;
+    serde_json::to_writer(&mut file, settings).map_err(|e| e.to_string())?;
+    file.flush().map_err(|e| e.to_string())?;
+    file.persist(path)
+        .map_err(|e| format!("Could not save terminal preference: {e}"))?;
+    Ok(())
+}
+
+fn save_terminal_pref(
+    id: &str,
+    custom_path: Option<String>,
+    custom_args: Option<Vec<String>>,
+) -> Result<(), String> {
+    let settings =
+        updated_terminal_settings(load_terminal_settings(), id, custom_path, custom_args)?;
+    write_terminal_settings(&terminal_pref_path(), &settings)
+}
+
+fn updated_terminal_settings(
+    mut settings: TerminalSettings,
+    id: &str,
+    custom_path: Option<String>,
+    custom_args: Option<Vec<String>>,
+) -> Result<TerminalSettings, String> {
+    validate_terminal_id(id)?;
+    settings.terminal = Some(id.trim().to_string());
+    if let Some(path) = custom_path {
+        settings.custom_path = Some(path.trim().to_string());
+    }
+    if let Some(args) = custom_args {
+        settings.custom_args = Some(args);
+    }
+    if id.trim() == "custom" {
+        validate_custom_terminal(&settings)?;
+    }
+    Ok(settings)
 }
 
 /// Effective terminal: explicit request → saved preference → default.
 /// Returns `(id, fell_back)`; `None` when nothing can launch.
 fn resolve_terminal(requested: Option<&str>) -> (Option<String>, bool) {
-    let saved = load_terminal_pref();
+    resolve_terminal_choice(
+        requested,
+        load_terminal_pref(),
+        default_terminal_id(),
+        first_available_terminal(),
+        is_terminal_available,
+    )
+}
+
+fn resolve_terminal_choice(
+    requested: Option<&str>,
+    saved: Option<String>,
+    default: String,
+    first: Option<String>,
+    available: impl Fn(&str) -> bool,
+) -> (Option<String>, bool) {
     let want = requested
-        .map(|s| s.trim().to_string())
+        .map(str::trim)
         .filter(|s| !s.is_empty())
-        .or(saved);
-    match want {
-        Some(id) if is_terminal_available(&id) => (Some(id), false),
-        Some(id) => {
-            let def = default_terminal_id();
-            if def != id && is_terminal_available(&def) {
-                return (Some(def), true);
-            }
-            match first_available_terminal() {
-                Some(first) if first != id => (Some(first), true),
-                other => (other, true),
-            }
-        }
-        None => {
-            let def = default_terminal_id();
-            if def.is_empty() || !is_terminal_available(&def) {
-                return (first_available_terminal(), false);
-            }
-            (Some(def), false)
+        .map(str::to_string)
+        .or(saved)
+        .filter(|id| id != "default");
+    if let Some(ref id) = want {
+        if available(id) {
+            return (want, false);
         }
     }
+    let fell_back = want.is_some();
+    if !default.is_empty() && available(&default) {
+        return (Some(default), fell_back);
+    }
+    (first, fell_back)
 }
 
 // Session row + resume plan
@@ -1241,7 +1345,6 @@ fn applescript_quote(s: &str) -> String {
 
 /// Shell launcher body shared by every script-file launcher: cd, env, CLI,
 /// then a login shell so the window stays open after the agent exits.
-#[cfg(target_os = "macos")]
 fn launcher_script_text(plan: &ResumePlan, cli_path: &Path) -> String {
     let mut script = String::from("#!/bin/sh\n");
     // `open` strips our environment (LaunchServices), and GUI apps inherit a
@@ -1270,7 +1373,6 @@ fn launcher_script_text(plan: &ResumePlan, cli_path: &Path) -> String {
 
 /// Write a launcher script to the temp dir (`.command` for Terminal.app,
 /// `.sh` for wrappers run by other terminals).
-#[cfg(target_os = "macos")]
 fn write_launcher_file(plan: &ResumePlan, cli_path: &Path, ext: &str) -> Result<PathBuf, String> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1286,7 +1388,18 @@ fn write_launcher_file(plan: &ResumePlan, cli_path: &Path, ext: &str) -> Result<
         nanos,
         ext
     ));
-    std::fs::write(&file, script).map_err(|e| format!("Could not write launcher script: {e}"))?;
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o700);
+    }
+    options
+        .open(&file)
+        .and_then(|mut f| f.write_all(script.as_bytes()))
+        .map_err(|e| format!("Could not write launcher script: {e}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1363,10 +1476,42 @@ fn spawn_iterm(plan: &ResumePlan, cli_path: &Path) -> Result<String, String> {
     Err(format!("Could not open iTerm2: {short}"))
 }
 
+// Pass each argument directly to the terminal; no user-provided shell template.
+fn custom_terminal_command(settings: &TerminalSettings, script: &Path) -> Result<Command, String> {
+    validate_custom_terminal(settings)?;
+    let mut command = Command::new(settings.custom_path.as_deref().unwrap_or_default());
+    for arg in settings.custom_args.as_deref().unwrap_or(&[]) {
+        if arg == "{script}" {
+            command.arg(script);
+        } else {
+            command.arg(arg);
+        }
+    }
+    Ok(command)
+}
+
+fn spawn_custom_plan(plan: &ResumePlan, cli_path: &Path) -> Result<String, String> {
+    let settings = load_terminal_settings();
+    validate_custom_terminal(&settings)?;
+    let script = write_launcher_file(plan, cli_path, "sh")?;
+    let mut command = custom_terminal_command(&settings, &script)?;
+    command.current_dir(&plan.cwd).env("PATH", augmented_path());
+    for (key, value) in &plan.env {
+        command.env(key, value);
+    }
+    command
+        .spawn()
+        .map_err(|e| format!("Could not open custom terminal: {e}"))?;
+    Ok(terminal_label("custom"))
+}
+
 /// Open a terminal running the plan. Spawning uses the resolved absolute CLI
 /// path; the displayed command keeps the plain binary name.
 #[cfg(target_os = "macos")]
 fn spawn_plan(plan: &ResumePlan, cli_path: &Path, terminal_id: &str) -> Result<String, String> {
+    if terminal_id == "custom" {
+        return spawn_custom_plan(plan, cli_path);
+    }
     match terminal_id {
         "iterm" => spawn_iterm(plan, cli_path),
         "wezterm" => {
@@ -1465,6 +1610,9 @@ fn spawn_plan(plan: &ResumePlan, cli_path: &Path, terminal_id: &str) -> Result<S
 /// path; the displayed command keeps the plain binary name.
 #[cfg(not(target_os = "macos"))]
 fn spawn_plan(plan: &ResumePlan, cli_path: &Path, terminal_id: &str) -> Result<String, String> {
+    if terminal_id == "custom" {
+        return spawn_custom_plan(plan, cli_path);
+    }
     if !is_terminal_available(terminal_id) {
         return Err("Selected terminal is not installed.".to_string());
     }
@@ -1683,6 +1831,8 @@ pub fn list_terminals() -> Result<Value, String> {
         "terminals": available_terminals(),
         "defaultId": default_terminal_id(),
         "saved": load_terminal_pref(),
+        "customPath": load_terminal_settings().custom_path,
+        "customArgs": load_terminal_settings().custom_args,
     }))
 }
 
@@ -1694,8 +1844,12 @@ pub fn get_terminal_preference() -> Result<Value, String> {
 
 /// Persist the terminal preference for future invocations.
 #[tauri::command]
-pub fn set_terminal_preference(terminal: String) -> Result<Value, String> {
-    save_terminal_pref(&terminal)?;
+pub fn set_terminal_preference(
+    terminal: String,
+    custom_path: Option<String>,
+    custom_args: Option<Vec<String>>,
+) -> Result<Value, String> {
+    save_terminal_pref(&terminal, custom_path, custom_args)?;
     Ok(json!({ "ok": true, "terminal": terminal.trim() }))
 }
 
@@ -1779,4 +1933,189 @@ pub(crate) fn run_in_terminal(program: &str, args: Vec<String>) -> Result<String
         remote: None,
     };
     spawn_plan(&plan, &program_path, &terminal)
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::*;
+
+    fn custom(path: &Path) -> TerminalSettings {
+        TerminalSettings {
+            terminal: Some("custom".into()),
+            custom_path: Some(path.to_string_lossy().into()),
+            custom_args: Some(vec!["-e".into(), "sh".into(), "{script}".into()]),
+        }
+    }
+
+    #[test]
+    fn terminal_selection_handles_defaults_overrides_and_missing_preferences() {
+        let resolve = |requested, saved: Option<&str>| {
+            resolve_terminal_choice(
+                requested,
+                saved.map(str::to_string),
+                "system".into(),
+                Some("fallback".into()),
+                |id| ["system", "custom", "installed"].contains(&id),
+            )
+        };
+        assert_eq!(resolve(None, None), (Some("system".into()), false));
+        assert_eq!(
+            resolve(None, Some("custom")),
+            (Some("custom".into()), false)
+        );
+        assert_eq!(
+            resolve(Some("default"), Some("custom")),
+            (Some("system".into()), false)
+        );
+        assert_eq!(
+            resolve(Some("installed"), Some("custom")),
+            (Some("installed".into()), false)
+        );
+        assert_eq!(
+            resolve(None, Some("missing")),
+            (Some("system".into()), true)
+        );
+        assert_eq!(
+            resolve_terminal_choice(None, Some("missing".into()), "system".into(), None, |_| {
+                false
+            }),
+            (None, true)
+        );
+        assert_eq!(
+            resolve_terminal_choice(None, None, "".into(), Some("fallback".into()), |_| false),
+            (Some("fallback".into()), false)
+        );
+    }
+
+    #[test]
+    fn preferences_migrate_roundtrip_and_keep_custom_configuration_when_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"terminal":"kitty"}"#).unwrap();
+        assert_eq!(
+            read_terminal_settings(&path).terminal.as_deref(),
+            Some("kitty")
+        );
+        let configured = custom(Path::new("/bin/sh"));
+        write_terminal_settings(&path, &configured).unwrap();
+        let saved = read_terminal_settings(&path);
+        assert_eq!(saved.custom_path, configured.custom_path);
+        assert_eq!(saved.custom_args, configured.custom_args);
+        let reset = updated_terminal_settings(saved, "default", None, None).unwrap();
+        write_terminal_settings(&path, &reset).unwrap();
+        assert_eq!(
+            read_terminal_settings(&path).terminal.as_deref(),
+            Some("default")
+        );
+        assert_eq!(
+            read_terminal_settings(&path).custom_args,
+            configured.custom_args
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        std::fs::write(&path, "corrupt").unwrap();
+        assert!(read_terminal_settings(&path).terminal.is_none());
+    }
+
+    #[test]
+    fn custom_terminal_validation_rejects_invalid_paths_and_argument_templates() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not executable");
+        std::fs::write(&file, "text").unwrap();
+        for path in [
+            Path::new("relative"),
+            Path::new("/missing/terminal"),
+            dir.path(),
+            file.as_path(),
+        ] {
+            assert!(validate_custom_terminal(&custom(path)).is_err());
+        }
+        for args in [
+            vec![],
+            vec!["-e sh {script}"],
+            vec!["{script}", "{script}"],
+            vec!["{script}", "bad\0argument"],
+        ] {
+            let mut settings = custom(Path::new("/bin/sh"));
+            settings.custom_args = Some(args.into_iter().map(str::to_string).collect());
+            assert!(validate_custom_terminal(&settings).is_err());
+        }
+        assert!(validate_custom_terminal(&custom(Path::new("/bin/sh"))).is_ok());
+        assert!(validate_terminal_id("default").is_ok());
+        assert!(validate_terminal_id("custom").is_ok());
+        assert!(validate_terminal_id("bad; command").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_launcher_passes_paths_and_metacharacters_as_literal_arguments() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let terminal = dir.path().join("terminal ' with spaces");
+        std::fs::write(&terminal, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&terminal, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut settings = custom(&terminal);
+        settings.custom_args = Some(vec![
+            "--title".into(),
+            "coding; $HOME 'session'".into(),
+            "{script}".into(),
+        ]);
+        let script = dir.path().join("resume ' script.sh");
+        let output = custom_terminal_command(&settings, &script)
+            .unwrap()
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("--title\ncoding; $HOME 'session'\n{}\n", script.display())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_resume_script_preserves_workspace_environment_and_cli_arguments() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("my 'workspace'");
+        std::fs::create_dir(&work).unwrap();
+        let cli = dir.path().join("agent ' cli");
+        std::fs::write(
+            &cli,
+            "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$CUSTOM_VALUE\" \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let argument = "session ' ; $(echo injection)";
+        let plan = ResumePlan {
+            binary: "agent".into(),
+            args: vec!["--resume".into(), argument.into()],
+            cwd: work.clone(),
+            cwd_fallback: false,
+            env: HashMap::from([
+                ("CUSTOM_VALUE".into(), "value ' $literal".into()),
+                ("SHELL".into(), "/usr/bin/true".into()),
+            ]),
+            display: String::new(),
+            warnings: vec![],
+            source_file: PathBuf::new(),
+            resume_key: String::new(),
+            profile: None,
+            remote: None,
+        };
+        let script = write_launcher_file(&plan, &cli, "sh").unwrap();
+        let output = Command::new("sh").arg(&script).output().unwrap();
+        std::fs::remove_file(script).unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!(
+                "{}\nvalue ' $literal\n--resume\n{argument}\n",
+                work.display()
+            )
+        );
+    }
 }

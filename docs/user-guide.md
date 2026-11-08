@@ -25,6 +25,27 @@ startup. **Reset to defaults** restores the system theme, green accent,
 default text size, and comfortable spacing. Existing light/dark preferences
 are kept when upgrading.
 
+## Terminal settings
+
+Open **Settings** using the gear icon at the bottom of the sidebar. Choose
+**Default terminal (automatic)**, an installed terminal discovered on this
+computer, or **Custom executable…**. Automatic uses Terminal on macOS; on Linux
+it tries `$TERMINAL`, `x-terminal-emulator`, and installed emulators. Click
+**Discover again** after installing a terminal. Click **Save** to keep the choice
+for future local and SSH resumes, and updates opened in a terminal.
+
+For a custom terminal, enter its absolute executable path or use **Browse**.
+On macOS choose the executable inside the `.app` bundle. Pick its launch
+convention, or edit the arguments, one per line. For example, a terminal that
+accepts `-e` uses three lines: `-e`, `sh`, and `{script}`. Include `{script}`
+exactly once as a separate argument; Hession replaces it with the resume script
+path. Arguments are literal, so paths with spaces do not need shell quotes.
+Saving checks that the executable exists and has execute permission.
+
+You can still change the terminal from the Resume dialog. If your saved choice
+becomes unavailable, Resume warns and falls back to an installed terminal.
+Choose **Default terminal (automatic)** to reset a previous choice.
+
 ## Syncing
 
 **Sync now** (bottom of the sidebar) imports new and changed sessions. It also

@@ -6,7 +6,7 @@ import {
   Bot, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Code2,
   Copy, Database, Download, FileCode2, Folder, GitBranch, Info, Laptop, Layers3,
   LoaderCircle, Menu, MessageSquareText, Palette, Plus, RefreshCw, Search,
-  Server, Sparkles, Square, Star, Tag, Terminal, TrendingUp, User, X,
+  Server, Settings, Sparkles, Square, Star, Tag, Terminal, TrendingUp, User, X,
 } from 'lucide-react';
 import { api, hasTauriRuntime } from './api.js';
 import { save } from '@tauri-apps/plugin-dialog';
@@ -39,6 +39,7 @@ const DataManagement=lazy(()=>import('./components/DataManagement.jsx'));
 const RemoteHosts=lazy(()=>import('./components/RemoteHosts.jsx'));
 const AboutDialog=lazy(()=>import('./components/AboutDialog.jsx'));
 const AppearanceDialog=lazy(()=>import('./components/AppearanceDialog.jsx'));
+const TerminalSettings=lazy(()=>import('./components/TerminalSettings.jsx'));
 const DETAIL_PAGE_SIZE=500; // transcript entries per page (the backend maximum)
 // Maps the metadata endpoint suffix used by loadMeta to its Tauri command.
 const META_COMMANDS={
@@ -106,6 +107,7 @@ function App(){
   const [collapsedEntries,setCollapsedEntries]=useState(()=>new Set());
   const [copiedEntry,setCopiedEntry]=useState(null);
   const [appearanceOpen,setAppearanceOpen]=useState(false);
+  const [terminalSettingsOpen,setTerminalSettingsOpen]=useState(false);
   const {preferences,update:updateAppearance,saveError:appearanceSaveError}=useAppearance();
   const [currentTime,setCurrentTime]=useState(()=>Date.now());
   const [reportRevision,setReportRevision]=useState(0);
@@ -185,7 +187,7 @@ function App(){
       ]);
       const list=terms?.terminals||[];
       setResumeTerminals(list);
-      setResumeTerminal(info?.terminalId||terms?.saved||terms?.defaultId||'');
+      setResumeTerminal(terms?.saved||'default');
       setResumeInfo(info);
     }catch(e){setResumeError(e.message||'Could not prepare resume command.');}
     finally{setResumeBusy(false);}
@@ -494,6 +496,7 @@ function App(){
 
   return <div className="app-shell">
     <Suspense fallback={<div className="export-backdrop" role="status"><span className="data-status"><LoaderCircle className="spin" size={16}/>Opening settings…</span></div>}>
+      {terminalSettingsOpen&&<TerminalSettings onClose={()=>setTerminalSettingsOpen(false)}/>}
       {appearanceOpen&&<AppearanceDialog preferences={preferences} onChange={updateAppearance} saveError={appearanceSaveError} onClose={()=>setAppearanceOpen(false)}/>}
       {remoteHostsOpen&&<RemoteHosts onClose={()=>{setRemoteHostsOpen(false);loadMeta({silent:true});}} onSyncNow={()=>startSync()} syncRunning={sync.running||syncStarting}/>}
       {aboutOpen&&<AboutDialog onClose={()=>setAboutOpen(false)}/>}
@@ -551,6 +554,7 @@ function App(){
           <button type="button" className="icon-button" onClick={()=>setRemoteHostsOpen(true)} title="Remote hosts" aria-label="Remote hosts"><Server size={16}/></button>
           <button type="button" className="icon-button" onClick={()=>{setSyncMenuOpen(false);setDataManagementOpen(true);}} title="Manage saved data" aria-label="Manage saved data" aria-haspopup="dialog"><Database size={16}/></button>
           <button type="button" className="icon-button" onClick={()=>setAboutOpen(true)} title={`About ${BRAND.name} and updates`} aria-label={`About ${BRAND.name} and updates`} aria-haspopup="dialog"><Info size={16}/></button>
+          <button type="button" className="icon-button" onClick={()=>setTerminalSettingsOpen(true)} title="Settings" aria-label="Settings" aria-haspopup="dialog"><Settings size={16}/></button>
           <button type="button" className="icon-button" onClick={()=>setAppearanceOpen(true)} title="Appearance" aria-label="Appearance" aria-haspopup="dialog"><Palette size={16}/></button>
         </div>
       </div>
