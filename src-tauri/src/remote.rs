@@ -739,7 +739,7 @@ fn remote_hosts_in(text: &str) -> Vec<String> {
 /// when the destination contains characters invalid in a URI authority.
 fn decode_remote_authority(authority: &str) -> Option<String> {
     if authority.len() > 2
-        && authority.len() % 2 == 0
+        && authority.len().is_multiple_of(2)
         && authority.starts_with("7b")
         && authority.bytes().all(|b| b.is_ascii_hexdigit())
     {

@@ -6,7 +6,7 @@ It supports Linux and macOS.
 
 ## Setup
 
-You need Node.js 20.19+ or 22.12+, Rust stable ≥ 1.85, and Tauri's system
+You need Node.js 20.19+ or 22.12+, Rust stable ≥ 1.90, and Tauri's system
 libraries:
 
 | OS | Command |
@@ -79,6 +79,7 @@ src-tauri/src/
   importer.rs           source discovery, incremental import (+ import_*.rs formats)
   remote.rs             SSH hosts: probe, rsync mirror, host suggestions, ssh commands
   resume.rs             resume in a terminal (local or ssh), open in VS Code
+  updates.rs            installation metadata, safe restart, release-page fallback
   commands.rs           IPC commands for search, sessions, facets, and export
   db.rs                 SQLite schema and connections
   analytics.rs, pricing.rs, data_management.rs, sync.rs
@@ -152,5 +153,37 @@ use `make preview` to inspect both sessions and analytics with sample data.
 4. Commit, then push a `vX.Y.Z` tag. The workflow in
    `.github/workflows/release.yml` builds a universal macOS DMG (Apple silicon
    and Intel, on the newest macOS runner) and Linux AppImage/deb/rpm for x64
-   and ARM64 into a draft release, checks all seven installers, and
-   publishes it.
+   and ARM64 into a draft release. It also signs the macOS updater archive and
+   Linux packages, verifies all seven installers and signatures, builds the
+   eight-target `latest.json` update feed, and publishes only after everything
+   passes. Both macOS architectures use the universal archive; Linux targets
+   include their package format so updates never switch formats.
+
+### Update signing
+
+The updater public key is committed in `src-tauri/tauri.conf.json`. Its matching
+private key belongs in the repository's `TAURI_SIGNING_PRIVATE_KEY` Actions
+secret. For password-protected keys, also set
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. A missing private key stops the release
+before it creates a draft. Keep a secure backup: replacing the public key
+breaks updates for existing installations.
+
+Local private keys can live in the git-ignored `.updater/` directory. Never
+commit them. To build signed updater artifacts locally:
+
+```sh
+TAURI_SIGNING_PRIVATE_KEY="$PWD/.updater/signing.key" \
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD='' \
+npm run tauri -- build --config src-tauri/tauri.release.conf.json
+```
+
+Normal development builds and `make bundle` do not require a signing key.
+The release config enables updater artifacts only for signed builds. Tauri CLI
+2.12+ binds the release version into each signature; the updater requires it.
+`.github/scripts/update-manifest.mjs` checks every expected package and signature
+before writing the feed. The updater verifies the cryptographic signature at
+installation. `npm test` covers the update controller and feed validation.
+
+Publish the first version containing the updater before testing checks against
+GitHub. Older versions still need the existing installer once; in-app updates
+work from the new version onward.

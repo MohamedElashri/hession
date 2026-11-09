@@ -30,6 +30,7 @@ pub fn run() {
     let db_path_for_setup = db_path.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(commands::ExportState::default())
         .manage(AppState {
             db_path: Mutex::new(db_path),
@@ -90,9 +91,7 @@ pub fn run() {
             remote::set_remote_hosts,
             remote::test_remote_host,
             updates::app_version,
-            updates::check_for_update,
-            updates::update_command,
-            updates::run_update,
+            updates::restart_after_update,
             updates::open_release_page,
             data_management::preview_saved_data,
             data_management::export_saved_data,

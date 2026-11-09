@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Hession",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "identifier": "io.github.mohamedelashri.hession",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -43,5 +43,14 @@
     "shortDescription": "A local-first home for your coding agent sessions, local and remote.",
     "longDescription": "Hession is a local-first desktop app for browsing, searching, and analyzing your coding agent sessions on this machine and on your SSH hosts."
   },
-  "mainBinaryName": "hession"
+  "mainBinaryName": "hession",
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY0QzAzQ0UyRDBEMERGRDMKUldUVDM5RFE0anpBWklpMlQ0YVM0Zk1MR21tTFlxa09zdVhrU01Kd2RYWWx6RCtMVlViQzRsWHYK",
+      "endpoints": [
+        "https://github.com/MohamedElashri/hession/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true
+    }
+  }
 }

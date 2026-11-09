@@ -19,6 +19,7 @@ const tauri = JSON.parse(read(tauriPath));
 tauri.productName = brand.name;
 tauri.mainBinaryName = brand.slug;
 tauri.identifier = brand.identifier;
+if (tauri.plugins?.updater) tauri.plugins.updater.endpoints = [`https://github.com/${brand.repository}/releases/latest/download/latest.json`];
 for (const window of tauri.app?.windows ?? []) window.title = brand.name;
 tauri.bundle.shortDescription = brand.tagline;
 tauri.bundle.longDescription = `${brand.name} is a local-first desktop app for browsing, searching, and analyzing your coding agent sessions on this machine and on your SSH hosts.`;

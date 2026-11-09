@@ -108,14 +108,26 @@ const handlers = {
   get_resume_info: resumeInfo,
   resume_session: () => ({ ok: false, message: 'Resuming is disabled in the browser preview.' }),
   open_in_editor: () => Promise.reject('Opening VS Code is disabled in the browser preview.'),
-  app_version: () => ({ name: 'Hession', version: appPackage.version }),
-  check_for_update: async () => {
+  app_version: () => ({ name: 'Hession', version: appPackage.version, supported: true, needsAuthorization: false }),
+  'plugin:updater|check': async () => {
     await delay(600);
-    return { current: appPackage.version, latest: '0.2.0', tag: 'v0.2.0', newer: true, publishedAt: new Date().toISOString(), url: '#',
-      notes: '### Features\n- A sample release note for the preview.\n\n### Fixes\n- Another sample entry.' };
+    const [major, minor, patch] = appPackage.version.split('.').map(Number);
+    return { rid: 1, currentVersion: appPackage.version, version: `${major}.${minor}.${patch + 1}`, date: new Date().toISOString(),
+      body: '### Features\n- Signed updates directly in Hession.\n- Download progress and restart when you’re ready.\n\n### Fixes\n- Update state is kept when you close this dialog.' };
   },
-  update_command: ({ tag }) => `curl -fsSL https://raw.githubusercontent.com/example/app/${tag}/install.sh | sh -s -- --version ${tag}`,
-  run_update: () => Promise.reject('Updating is disabled in the browser preview.'),
+  'plugin:updater|download': async ({ onEvent }) => {
+    onEvent.onmessage({ event: 'Started', data: { contentLength: 25 * 1048576 } });
+    for (let step = 0; step < 10; step++) {
+      await delay(200);
+      onEvent.onmessage({ event: 'Progress', data: { chunkLength: 2.5 * 1048576 } });
+    }
+    onEvent.onmessage({ event: 'Finished' });
+    await delay(400);
+    return 2;
+  },
+  'plugin:updater|install': () => delay(700),
+  'plugin:resources|close': () => null,
+  restart_after_update: () => Promise.reject('This is a browser preview. No update was installed; restart is available in the desktop app.'),
   open_release_page: () => Promise.reject('Opening the browser is disabled in the preview.'),
   get_remote_hosts: () => ({ hosts: state.hosts, suggestions: [{ name: 'staging', source: 'vscode' }, { name: 'ci-runner', source: 'ssh-config' }], tools: { ssh: true, rsync: true } }),
   set_remote_hosts: ({ hosts }) => { state.hosts = hosts.map((h) => ({ ...h, lastSync: null, agents: [], ...state.hosts.find((x) => x.name === h.name), enabled: h.enabled })); return { ok: true }; },

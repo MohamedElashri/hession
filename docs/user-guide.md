@@ -32,7 +32,7 @@ Open **Settings** using the gear icon at the bottom of the sidebar. Choose
 computer, or **Custom executable…**. Automatic uses Terminal on macOS; on Linux
 it tries `$TERMINAL`, `x-terminal-emulator`, and installed emulators. Click
 **Discover again** after installing a terminal. Click **Save** to keep the choice
-for future local and SSH resumes, and updates opened in a terminal.
+for future local and SSH resumes.
 
 For a custom terminal, enter its absolute executable path or use **Browse**.
 On macOS choose the executable inside the `.app` bundle. Pick its launch
@@ -143,19 +143,29 @@ Long sessions are split into pages of 500 entries.
 
 ## Updates
 
-Hession never checks for updates or updates itself on its own. Open the
-**info button** at the bottom of the sidebar and click **Check for updates**:
-that sends one request to GitHub for the latest release, and nothing about you
-or your library is included. If a newer version exists you see its release
-notes and can:
+Open **Software update** (the download icon at the bottom of the sidebar), or
+choose **Software update** from About. Opening the dialog only reads your
+installed version. Hession contacts GitHub only after you click **Check for
+updates**; your sessions and library are never sent.
 
-- **Update in terminal**: opens a terminal running that release's install
-  script, which verifies the download's checksum before installing (it may ask
-  for your password to install a system package)
-- **Copy command**: the same command, to run yourself
-- **View release**: the release page on GitHub
+If a newer stable version is available, review the release notes and choose
+**Download and install**. Progress stays visible in the dialog, and closing it
+keeps the update running. The download's signature and release version are
+verified before installation. Failed checks or installations can be retried.
 
-Running the [install command](../README.md#install) again also updates.
+Updates preserve your installation format: macOS app, Linux AppImage, `.deb`,
+or `.rpm`. Linux system packages ask for administrator authorization using the
+system's graphical authentication tools. If installation fails because the
+app location is not writable or authorization is unavailable, use **All
+releases** or rerun the [install command](../README.md#install). Source builds
+must be rebuilt from source.
+
+When installation finishes, choose **Restart Hession**, or close the dialog
+and restart later. Wait for session sync and saved-data operations to finish
+before restarting. Your session library stays in place.
+
+Versions released before the integrated updater need one manual update to a
+release containing it. After that, updates can be installed inside the app.
 
 ## Your data
 
