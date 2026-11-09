@@ -3,12 +3,18 @@ name: Build and publish desktop release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build or resume
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -19,10 +25,11 @@ jobs:
     permissions:
       contents: write
     env:
-      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     outputs:
       release_id: ${{ steps.release.outputs.release_id }}
       source_sha: ${{ steps.source.outputs.source_sha }}
+      release_tag: ${{ steps.source.outputs.release_tag }}
       brand_name: ${{ steps.source.outputs.brand_name }}
       asset_prefix: ${{ steps.source.outputs.asset_prefix }}
     steps:
@@ -54,6 +61,7 @@ jobs:
           set -euo pipefail
           node .github/scripts/check-release.mjs
           echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "brand_name=$(node -p "require('./brand.json').name")" >> "$GITHUB_OUTPUT"
           echo "asset_prefix=$(node -p "require('./brand.json').name.replace(/\\s+/g, '')")" >> "$GITHUB_OUTPUT"
 
@@ -123,7 +131,7 @@ jobs:
             os: macos
             rust_target: universal-apple-darwin
             rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
           - name: Linux x64
             runner: ubuntu-22.04
             os: linux
@@ -188,7 +196,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           releaseId: ${{ needs.prepare.outputs.release_id }}
-          tagName: ${{ github.ref_name }}
+          tagName: ${{ needs.prepare.outputs.release_tag }}
           releaseDraft: true
           releaseAssetNamePattern: '${{ needs.prepare.outputs.asset_prefix }}-v[version]-[platform]-[arch]-[bundle][setup][ext]'
           uploadUpdaterJson: false
@@ -218,7 +226,7 @@ jobs:
       - name: Verify uploaded installers
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
         shell: bash
         run: |
@@ -231,7 +239,7 @@ jobs:
       - name: Build and upload the complete signed update feed
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -246,7 +254,7 @@ jobs:
       - name: Attach SHA256SUMS
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -271,7 +279,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
         shell: bash
         run: |
@@ -288,9 +296,9 @@ jobs:
 
   test-installer:
     name: Test the install script
-    needs: publish-release
+    needs: [prepare, publish-release]
     permissions:
       contents: read
     uses: ./.github/workflows/installer.yml
     with:
-      version: ${{ github.ref_name }}
+      version: ${{ needs.prepare.outputs.release_tag }}
