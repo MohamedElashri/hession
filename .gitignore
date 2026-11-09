@@ -1,6 +1,8 @@
 node_modules
 dist
 target
+# Private updater signing key; only the public key belongs in the app config.
+.updater/
 .vite
 .DS_Store
 src-tauri/gen

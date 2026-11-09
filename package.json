@@ -1,7 +1,7 @@
 {
   "name": "hession",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
@@ -12,7 +12,7 @@
     "icons": "node scripts/icons.mjs",
     "lint": "eslint .",
     "unused": "knip",
-    "test": "node --test 'src/**/*.test.js'",
+    "test": "node --test 'src/**/*.test.js' '.github/scripts/*.test.mjs'",
     "benchmark": "node scripts/benchmark.mjs"
   },
   "dependencies": {
@@ -20,6 +20,7 @@
     "@fontsource-variable/geist-mono": "^5.3.0",
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.14.1",
     "lucide-react": "^0.468.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
@@ -29,7 +30,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
-    "@tauri-apps/cli": "^2.8.0",
+    "@tauri-apps/cli": "^2.12.4",
     "@vitejs/plugin-react": "^4.7.0",
     "eslint": "^9.39.5",
     "eslint-plugin-react": "^7.37.5",

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1] - 2026-11-09
+
+- Install updates inside Hession with release notes, download progress, and
+  restart when ready.
+- Verify signed updates for the macOS app and Linux AppImage, deb, and rpm
+  installations, preserving the installed package format.
+- Keep update progress when the dialog closes and allow retries after errors.
+
 ## [0.2.0] - 2026-11-09
 
 - Search complete sessions with highlighted excerpts and jumps to matches.
@@ -50,6 +58,7 @@ Initial release for macOS (universal) and Linux.
 - Light/dark themes and bundled Geist fonts.
 - Download installer with SHA-256 verification.
 
+[0.2.1]: https://github.com/MohamedElashri/hession/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/MohamedElashri/hession/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/MohamedElashri/hession/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/MohamedElashri/hession/compare/v0.1.0...v0.1.1

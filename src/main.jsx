@@ -38,6 +38,7 @@ const AnalyticsView=lazy(()=>import('./Analytics.jsx'));
 const DataManagement=lazy(()=>import('./components/DataManagement.jsx'));
 const RemoteHosts=lazy(()=>import('./components/RemoteHosts.jsx'));
 const AboutDialog=lazy(()=>import('./components/AboutDialog.jsx'));
+const SoftwareUpdate=lazy(()=>import('./components/SoftwareUpdate.jsx'));
 const AppearanceDialog=lazy(()=>import('./components/AppearanceDialog.jsx'));
 const TerminalSettings=lazy(()=>import('./components/TerminalSettings.jsx'));
 const DETAIL_PAGE_SIZE=500; // transcript entries per page (the backend maximum)
@@ -62,7 +63,7 @@ function App(){
   const [stats,setStats]=useState({sessions:0,entries:0,agents:0,files:0}),[detail,setDetail]=useState(null);
   const [query,setQuery]=useState(''),[agentFilter,setAgentFilter]=useState(''),[projectFilter,setProjectFilter]=useState('');
   // '' = every machine, '@local' = this computer, otherwise an SSH host.
-  const [hostFilter,setHostFilter]=useState(''),[remoteHostsOpen,setRemoteHostsOpen]=useState(false),[aboutOpen,setAboutOpen]=useState(false);
+  const [hostFilter,setHostFilter]=useState(''),[remoteHostsOpen,setRemoteHostsOpen]=useState(false),[aboutOpen,setAboutOpen]=useState(false),[updatesOpen,setUpdatesOpen]=useState(false);
   const [starredOnly,setStarredOnly]=useState(false),[tagFilters,setTagFilters]=useState([]);
   const [tagDraft,setTagDraft]=useState(''),[annotationBusy,setAnnotationBusy]=useState(false);
   const [exportOpen,setExportOpen]=useState(false),[exportScope,setExportScope]=useState('filtered'),[exportFormat,setExportFormat]=useState('markdown'),[exportBusy,setExportBusy]=useState(false);
@@ -499,7 +500,8 @@ function App(){
       {terminalSettingsOpen&&<TerminalSettings onClose={()=>setTerminalSettingsOpen(false)}/>}
       {appearanceOpen&&<AppearanceDialog preferences={preferences} onChange={updateAppearance} saveError={appearanceSaveError} onClose={()=>setAppearanceOpen(false)}/>}
       {remoteHostsOpen&&<RemoteHosts onClose={()=>{setRemoteHostsOpen(false);loadMeta({silent:true});}} onSyncNow={()=>startSync()} syncRunning={sync.running||syncStarting}/>}
-      {aboutOpen&&<AboutDialog onClose={()=>setAboutOpen(false)}/>}
+      {aboutOpen&&<AboutDialog onClose={()=>setAboutOpen(false)} onUpdates={()=>{setAboutOpen(false);setUpdatesOpen(true);}}/>}
+      {updatesOpen&&<SoftwareUpdate onClose={()=>setUpdatesOpen(false)} syncRunning={sync.running}/>}
       {dataManagementOpen&&<DataManagement onClose={()=>setDataManagementOpen(false)} onChanged={refreshManagedData} syncRunning={sync.running||syncStarting}/>}
     </Suspense>
     {mobileNav&&<div className="sidebar-scrim" onClick={()=>setMobileNav(false)}/>}
@@ -553,7 +555,8 @@ function App(){
         <div className="sidebar-tools">
           <button type="button" className="icon-button" onClick={()=>setRemoteHostsOpen(true)} title="Remote hosts" aria-label="Remote hosts"><Server size={16}/></button>
           <button type="button" className="icon-button" onClick={()=>{setSyncMenuOpen(false);setDataManagementOpen(true);}} title="Manage saved data" aria-label="Manage saved data" aria-haspopup="dialog"><Database size={16}/></button>
-          <button type="button" className="icon-button" onClick={()=>setAboutOpen(true)} title={`About ${BRAND.name} and updates`} aria-label={`About ${BRAND.name} and updates`} aria-haspopup="dialog"><Info size={16}/></button>
+          <button type="button" className="icon-button" onClick={()=>setUpdatesOpen(true)} title="Software update" aria-label="Software update" aria-haspopup="dialog"><Download size={16}/></button>
+          <button type="button" className="icon-button" onClick={()=>setAboutOpen(true)} title={`About ${BRAND.name}`} aria-label={`About ${BRAND.name}`} aria-haspopup="dialog"><Info size={16}/></button>
           <button type="button" className="icon-button" onClick={()=>setTerminalSettingsOpen(true)} title="Settings" aria-label="Settings" aria-haspopup="dialog"><Settings size={16}/></button>
           <button type="button" className="icon-button" onClick={()=>setAppearanceOpen(true)} title="Appearance" aria-label="Appearance" aria-haspopup="dialog"><Palette size={16}/></button>
         </div>

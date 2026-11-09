@@ -45,7 +45,12 @@ checksum, and installs it:
 | Fedora, openSUSE, RHEL | the `.rpm` package (asks for `sudo`) |
 | Other Linux, or `--appimage` | the AppImage in `~/.local`, with a `hession` command and menu entry |
 
-Run the same command again to update. Options go after `sh -s --`, for example
+To update from inside Hession, open **Software update** at the bottom of the
+sidebar: check for a release, download and install it, then restart when ready.
+Updates are signed and verified before installation. Linux system packages may
+ask for administrator authorization.
+
+You can also run the install command again to update. Options go after `sh -s --`, for example
 `... | sh -s -- --appimage`: `--version v0.1.0`, `--force`, `--uninstall`, and
 `--help`. Your session library in `~/.hession` is never touched. Installers are
 also on the [releases page](https://github.com/MohamedElashri/hession/releases).
@@ -74,7 +79,8 @@ To build from source instead, see [development](docs/development.md).
 - **Nothing is uploaded.** Besides your SSH hosts, the app makes network
   requests only when you click for them: a model-price download from
   [models.dev](https://models.dev) in Analytics, and an update check against
-  GitHub releases in the About dialog.
+  GitHub releases in Software update, followed by the signed package download
+  when you choose to install.
 
 ## Documentation
 
