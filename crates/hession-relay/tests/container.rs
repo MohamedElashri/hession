@@ -64,6 +64,32 @@ impl Runtime {
         name
     }
 
+    fn ready(&self, name: &str, stage: &str) -> SocketAddr {
+        // A runtime may allocate a different ephemeral host port on restart.
+        let address = self
+            .checked(&["port", name, "8744/tcp"])
+            .parse()
+            .expect("loopback published address");
+        println!("Checking container {stage} at {address}");
+        if let Err(error) = wait_ready(address) {
+            let state = self.command(&[
+                "inspect",
+                "--format",
+                "{{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}",
+                name,
+            ]);
+            let logs = self.command(&["logs", "--tail", "20", name]);
+            panic!(
+                "Container {stage} failed: {error}\nState: {}{}\nLogs: {}{}",
+                String::from_utf8_lossy(&state.stdout),
+                String::from_utf8_lossy(&state.stderr),
+                String::from_utf8_lossy(&logs.stdout),
+                String::from_utf8_lossy(&logs.stderr)
+            );
+        }
+        address
+    }
+
     fn start(&mut self, volume: &str, secret: &Path) -> (String, SocketAddr) {
         let name = format!("hession-qa-{}", uuid::Uuid::new_v4());
         self.containers.push(name.clone());
@@ -100,11 +126,7 @@ impl Runtime {
             "HESSION_RELAY_QUOTA_BYTES=8388608",
             &self.image,
         ]);
-        let address = self
-            .checked(&["port", &name, "8744/tcp"])
-            .parse()
-            .expect("loopback published address");
-        wait_ready(address);
+        let address = self.ready(&name, "startup");
         (name, address)
     }
 }
@@ -168,18 +190,17 @@ fn try_request(
     Ok((code, serde_json::from_slice(&bytes[boundary + 4..])?))
 }
 
-fn wait_ready(address: SocketAddr) {
+fn wait_ready(address: SocketAddr) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        if try_request(address, "GET", "/v1/status", None, Value::Null)
-            .is_ok_and(|(status, _)| status == 200)
-        {
-            return;
+        let error = match try_request(address, "GET", "/v1/status", None, Value::Null) {
+            Ok((200, _)) => return Ok(()),
+            Ok((status, _)) => format!("HTTP {status}"),
+            Err(error) => error.to_string(),
+        };
+        if Instant::now() >= deadline {
+            return Err(format!("{address} did not become ready: {error}"));
         }
-        assert!(
-            Instant::now() < deadline,
-            "container did not become ready at {address}"
-        );
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -356,7 +377,7 @@ fn relay_image_auth_encryption_limits_restart_and_backup_restore() {
             && !logs.contains(std::str::from_utf8(plaintext).unwrap())
     );
     runtime.checked(&["restart", "--time", "5", &name]);
-    wait_ready(address);
+    let address = runtime.ready(&name, "restart");
     assert_eq!(
         request(address, "GET", "/v1/records", Some(token), Value::Null).1,
         feed
