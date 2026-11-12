@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.0] - 2026-11-13
+
+### Improved
+
+- **One Settings window:** organize appearance, terminal, history refresh,
+  remote hosts, private sync, continuation, saved data, and About in one place.
+- **About and updates:** check for signed updates, download and install them,
+  and restart when ready from Settings → About. The Settings button shows
+  download progress and when an update is ready to apply.
+- Keep unfinished edits when switching sections, remember the last section,
+  and support keyboard navigation. Keep Settings open after saving a terminal.
+- Prevent closing or switching sections while saves and backup operations finish.
+- Adapt Settings to smaller windows and all appearance themes. Correct accessible
+  names for the terminal path and the About update indicator.
+- Update the user guide and preserve sync/continuation as separate, optional
+  features that remain disabled until enabled.
+
 ## [0.3.0] - 2026-11-12
 
 ### New
@@ -92,6 +109,7 @@ Initial release for macOS (universal) and Linux.
 - Light/dark themes and bundled Geist fonts.
 - Download installer with SHA-256 verification.
 
+[0.4.0]: https://github.com/MohamedElashri/hession/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/MohamedElashri/hession/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/MohamedElashri/hession/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/MohamedElashri/hession/compare/v0.1.2...v0.2.0

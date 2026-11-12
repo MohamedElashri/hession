@@ -1,17 +1,9 @@
-import { Palette, RotateCcw, X } from 'lucide-react';
+import { RotateCcw } from 'lucide-react';
 import { ACCENTS, DEFAULT_APPEARANCE, THEMES } from '../appearance.js';
-import useModalDialog from './useModalDialog.js';
 
-export default function AppearanceDialog({ preferences, onChange, saveError, onClose }) {
-  const dialog = useModalDialog();
-
-  return <dialog ref={dialog} className="data-dialog appearance-dialog" aria-labelledby="appearance-title"
-    onCancel={event => { event.preventDefault(); onClose(); }}>
-    <div className="export-heading">
-      <h2 id="appearance-title"><Palette size={18}/>Appearance</h2>
-      <button type="button" className="icon-button" aria-label="Close appearance" onClick={onClose}><X size={18}/></button>
-    </div>
-    <p>Make your library comfortable to read. Changes apply immediately and save on this device.</p>
+export default function AppearanceSettings({ preferences, onChange, saveError }) {
+  return <section aria-label="Appearance preferences">
+    <p>Changes apply immediately and save on this device.</p>
 
     <fieldset className="appearance-section">
       <legend>Theme</legend>
@@ -53,7 +45,6 @@ export default function AppearanceDialog({ preferences, onChange, saveError, onC
     {saveError && <div className="data-warning" role="status">{saveError}</div>}
     <div className="data-actions">
       <button type="button" className="btn" onClick={() => onChange(DEFAULT_APPEARANCE)}><RotateCcw size={14}/>Reset to defaults</button>
-      <button type="button" className="btn primary" onClick={onClose}>Done</button>
     </div>
-  </dialog>;
+  </section>;
 }

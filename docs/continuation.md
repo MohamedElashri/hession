@@ -76,4 +76,4 @@ Continuation → Delete saved handoff packages**, after the destination has read
 Disable continuation in Settings to hide the action and block new handoffs.
 Already launched agents keep running; saved packages remain until cleanup.
 Private sync is controlled separately. Native transcript conversion is not
-available in 0.3.0. See [Security](sync-security.md) for privacy boundaries.
+available in 0.4.0. See [Security](sync-security.md) for privacy boundaries.

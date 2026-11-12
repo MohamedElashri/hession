@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Database, Download, Upload, Trash2, LoaderCircle, RefreshCw, X } from 'lucide-react';
+import { Download, Upload, Trash2, LoaderCircle, RefreshCw } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { BRAND } from '../brand.js';
-import useModalDialog from './useModalDialog.js';
 
 const emptyFilters = () => ({ query: '', agent: '', workspace: '', since: '', until: '', starred: false, tag: '' });
 const errorMessage = error => error instanceof Error ? error.message : String(error);
@@ -18,8 +17,7 @@ const filtersForCommand = filters => {
   return { ...filters, since: boundary(filters.since, false), until: boundary(filters.until, true) };
 };
 
-export default function DataManagement({ onClose, onChanged, syncRunning }) {
-  const dialog = useModalDialog();
+export default function DataManagement({ onChanged, syncRunning, onBusyChange }) {
   const requestId = useRef(0);
   const operation = useRef(false);
   const [tab, setTab] = useState('saved');
@@ -72,10 +70,10 @@ export default function DataManagement({ onClose, onChanged, syncRunning }) {
   const refreshPreview = useCallback(() => { setPreview(null); setPreviewLoading(true); setRevision(value => value + 1); }, []);
   const perform = async (label, action) => {
     if (operation.current) return;
-    operation.current = true; setBusy(label); setError(''); setMessage('');
+    operation.current = true; setBusy(label); onBusyChange(true); setError(''); setMessage('');
     try { await action(); }
     catch (error) { setError(errorMessage(error)); }
-    finally { operation.current = false; setBusy(''); }
+    finally { operation.current = false; setBusy(''); onBusyChange(false); }
   };
   const chooseImport = () => perform('Choosing backup…', async () => {
     const path = await open({ title: `Import ${BRAND.name} database backup`, multiple: false, directory: false, filters: [{ name: 'SQLite backup', extensions: ['sqlite'] }] });
@@ -102,10 +100,7 @@ export default function DataManagement({ onClose, onChanged, syncRunning }) {
     refreshPreview(); await onChanged();
   });
 
-  return <dialog ref={dialog} className="data-dialog" aria-labelledby="data-title" aria-describedby="data-description"
-    onCancel={event => { event.preventDefault(); if (!operation.current) onClose(); }}
-    onClick={event => { if (event.target === dialog.current && !operation.current) { const rect = dialog.current.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose(); } }}>
-    <div className="export-heading"><h2 id="data-title"><Database size={18}/>Manage saved data</h2><button type="button" className="icon-button" aria-label="Close data management" disabled={Boolean(busy)} onClick={onClose}><X size={18}/></button></div>
+  return <section aria-label="Saved data management">
     <p id="data-description">Back up, restore, or remove the data saved by {BRAND.name}. Backups include full transcripts, tool activity, file activity, stars, tags, and pricing overrides.</p>
     <div className="data-tabs" role="tablist" aria-label="Data operations" onKeyDown={event => {
       if (busy || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -118,7 +113,7 @@ export default function DataManagement({ onClose, onChanged, syncRunning }) {
       <button type="button" role="tab" id="data-import-tab" aria-controls="data-panel" aria-selected={tab === 'import'} tabIndex={tab === 'import' ? 0 : -1} disabled={Boolean(busy)} onClick={() => changeTab('import')}>Import backup</button>
     </div>
     <div id="data-panel" role="tabpanel" aria-labelledby={tab === 'saved' ? 'data-saved-tab' : 'data-import-tab'}>
-      {tab === 'import' && <div className="data-file"><button type="button" className="data-button" disabled={Boolean(busy) || !desktop} onClick={chooseImport}><Upload size={14}/>{importPath ? 'Choose another backup' : 'Choose SQLite backup'}</button>{importPath && <span title={importPath}>{fileLabel(importPath)}</span>}<p>Use a .sqlite backup from this dialog. Markdown and transcript JSON exports cannot be restored.</p></div>}
+      {tab === 'import' && <div className="data-file"><button type="button" className="data-button" disabled={Boolean(busy) || !desktop} onClick={chooseImport}><Upload size={14}/>{importPath ? 'Choose another backup' : 'Choose SQLite backup'}</button>{importPath && <span title={importPath}>{fileLabel(importPath)}</span>}<p>Use a .sqlite backup exported from Saved data. Markdown and transcript JSON exports cannot be restored.</p></div>}
       {(tab === 'saved' || importPath) && <>
         <fieldset className="data-filters" disabled={Boolean(busy) || !desktop}>
           <legend>{tab === 'import' ? <>Filter incoming&nbsp;sessions</> : <>Filter saved&nbsp;sessions</>}</legend>
@@ -158,9 +153,9 @@ export default function DataManagement({ onClose, onChanged, syncRunning }) {
         <button type="button" className="data-button" disabled={actionsDisabled || (!preview?.sessions && !(includePricing && preview?.pricingOverrides)) || (mode === 'keep' && !preview?.newSessions && !(includePricing && preview?.pricingOverrides))} onClick={importData}><Upload size={14}/>{mode === 'replace' ? 'Import and replace matches' : 'Import new sessions'}</button>
       </>}
     </div>
-    {syncRunning && <p className="data-warning" role="status">Session sync is running. Close this dialog and stop sync before exporting, importing, or deleting data.</p>}
+    {syncRunning && <p className="data-warning" role="status">History refresh is running. Wait for it to finish or stop it before exporting, importing, or deleting data.</p>}
     {busy && <div className="data-status" role="status"><LoaderCircle className="spin" size={14}/>{busy} Keep the app open until this finishes.</div>}
     {error && <div className="data-error" role="alert">{error}<button type="button" disabled={Boolean(busy) || !desktop} onClick={refreshPreview}>Refresh preview</button></div>}
     {message && <div className="data-success" role="status">{message}</div>}
-  </dialog>;
+  </section>;
 }

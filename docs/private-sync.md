@@ -77,7 +77,7 @@ or restarting for an update. Those operations cannot run together.
 | Older relay backup restored | Disable sync, open **Repair after restoring a relay backup → Replay after relay restore**, preview and re-enable, then sync. Surviving devices republish selected history; data absent from both devices and backup cannot be recovered. |
 | Device or key compromised | Revoke relay access through the server API. Previously downloaded data remains readable; a compromised key requires a new library/key and trusted-device enrollment. See [server management](self-hosting.md). |
 
-Version 0.3.0 has no automatic/background sync, remote deletion, encryption-key
+Version 0.4.0 has no automatic/background sync, remote deletion, encryption-key
 rotation, or automatic field-by-field annotation merging. Local deletion does
 not erase relay history. The initial sync protocol has not had an independent
 security audit. See [Security](sync-security.md) and [server limits](self-hosting.md).

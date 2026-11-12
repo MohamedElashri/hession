@@ -5,7 +5,7 @@ const modes = [
   { value: 'full', label: 'Full rescan' },
 ];
 
-export default function SyncMenu({ agents, disabled, autoSync, toggleAutoSync, startSync, agentStatus, checkpointStatus, agentDescription, onClose }) {
+export default function SyncMenu({ agents, disabled, startSync, agentStatus, checkpointStatus, agentDescription, onClose }) {
   const [mode, setMode] = useState('incremental');
   const tabs = useRef([]);
 
@@ -30,11 +30,6 @@ export default function SyncMenu({ agents, disabled, autoSync, toggleAutoSync, s
         trigger?.focus();
       }
     }}>
-      <button type="button" role="switch" aria-checked={autoSync} className="sync-auto-toggle" onClick={toggleAutoSync}>
-        <span>Refresh histories on startup</span>
-        <span className={`sync-auto-switch ${autoSync ? 'enabled' : ''}`} aria-hidden="true" />
-      </button>
-      <div className="sync-menu-divider" />
       <div className="sync-tabs" role="tablist" aria-label="Sync mode">
         {modes.map((tab, index) => (
           <button type="button" role="tab" id={`sync-tab-${tab.value}`} key={tab.value}

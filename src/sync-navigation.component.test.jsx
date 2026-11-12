@@ -46,6 +46,40 @@ beforeEach(() => {
   });
 });
 
+test('one Settings entry opens About and its updater inside the same window', async () => {
+  const user = userEvent.setup();
+  const handler = api.getMockImplementation();
+  api.mockImplementation(async (command, args) => command === 'app_version'
+    ? { version: '0.3.0', supported: true } : handler(command, args));
+  render(boot.tree);
+  expect(screen.getAllByRole('button', { name: 'Settings' })).toHaveLength(1);
+  expect(screen.queryByRole('button', { name: 'Appearance' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Remote hosts' })).toBeNull();
+  await user.click(await screen.findByRole('button', { name: 'Settings' }));
+  await user.click(await screen.findByRole('tab', { name: 'About' }));
+  expect(screen.getAllByRole('dialog')).toHaveLength(1);
+  await screen.findByText('Hession · Version 0.3.0');
+  expect(screen.getByRole('button', { name: 'Check for updates' })).toBeTruthy();
+  expect(api.mock.calls.filter(([command]) => command.includes('update') || command === 'app_version'))
+    .toEqual([['app_version']]);
+});
+
+test('history refresh preferences are saved through Settings and the last section reopens', async () => {
+  const user = userEvent.setup();
+  render(boot.tree);
+  await user.click(screen.getByRole('button', { name: 'Settings', exact: true }));
+  await user.click(await screen.findByRole('tab', { name: 'History refresh' }));
+  const checkbox = screen.getByRole('checkbox', { name: 'Refresh histories on startup' });
+  expect(checkbox.checked).toBe(true);
+  await user.click(checkbox);
+  expect(checkbox.checked).toBe(false);
+  await user.click(screen.getByRole('button', { name: 'Done' }));
+  await user.click(screen.getByRole('button', { name: 'Settings', exact: true }));
+  expect((await screen.findByRole('checkbox', { name: 'Refresh histories on startup' })).checked).toBe(false);
+  expect(screen.getByRole('tab', { name: 'History refresh' }).getAttribute('aria-selected')).toBe('true');
+  expect(api.mock.calls.some(([command]) => command === 'start_sync' || command === 'run_device_sync')).toBe(false);
+});
+
 test.each(['success', 'failure'])('a sync %s preserves the selected session and transcript page while refreshing imports', async outcome => {
   const user = userEvent.setup();
   const handler = api.getMockImplementation();
@@ -62,7 +96,7 @@ test.each(['success', 'failure'])('a sync %s preserves the selected session and 
   await user.click(screen.getByRole('button', { name: 'Next transcript page' }));
   await screen.findByRole('textbox', { name: 'Go to transcript page, current page 2 of 2' });
   await user.click(screen.getByRole('button', { name: 'Settings' }));
-  await user.click(await screen.findByRole('button', { name: 'Private sync' }));
+  await user.click(await screen.findByRole('tab', { name: 'Private sync' }));
   const callsBefore = api.mock.calls.length;
   await user.click(await screen.findByRole('button', { name: 'Sync now' }));
   await screen.findByText(outcome === 'failure' ? 'Could not reach the relay' : /Sync complete/);

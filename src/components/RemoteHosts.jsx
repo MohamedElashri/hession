@@ -1,16 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Server, Plus, Trash2, LoaderCircle, PlugZap, X } from 'lucide-react';
+import { Plus, Trash2, LoaderCircle, PlugZap } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { BRAND } from '../brand.js';
 import { familyLabel } from '../labels.js';
-import useModalDialog from './useModalDialog.js';
 
 const agentList = agents => agents.map(familyLabel).join(', ');
 const when = value => value ? new Date(value).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'never';
 
 /** Configure SSH hosts whose agent sessions are mirrored and imported on sync. */
-export default function RemoteHosts({ onClose, onSyncNow, syncRunning }) {
-  const dialog = useModalDialog();
+export default function RemoteHosts({ onSyncNow, syncRunning, onBusyChange, onChanged }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [custom, setCustom] = useState('');
@@ -30,13 +28,14 @@ export default function RemoteHosts({ onClose, onSyncNow, syncRunning }) {
   }, [load]);
 
   const save = async hosts => {
-    setSaving(true); setError('');
+    setSaving(true); onBusyChange(true); setError('');
     try {
       await invoke('set_remote_hosts', { hosts: hosts.map(({ name, enabled }) => ({ name, enabled })) });
       setChanged(true);
       await load();
+      await onChanged();
     } catch (e) { setError(String(e?.message || e)); }
-    finally { setSaving(false); }
+    finally { setSaving(false); onBusyChange(false); }
   };
   const hosts = data?.hosts || [];
   const add = name => { const n = name.trim(); if (n && !hosts.some(h => h.name === n)) save([...hosts, { name: n, enabled: true }]); };
@@ -55,12 +54,9 @@ export default function RemoteHosts({ onClose, onSyncNow, syncRunning }) {
     if (!t.rsync) return <span className="remote-test remote-bad">Connected, but rsync is not installed on the host.</span>;
     return <span className="remote-test remote-good">Connected · {t.agents.length ? agentList(t.agents) : 'no agent history found'}</span>;
   };
-  const close = () => { if (!saving) onClose(); };
   const missingTools = data && (!data.tools.ssh || !data.tools.rsync);
 
-  return <dialog ref={dialog} className="data-dialog remote-dialog" aria-labelledby="remote-title" aria-describedby="remote-description"
-    onCancel={event => { event.preventDefault(); close(); }}>
-    <div className="export-heading"><h2 id="remote-title"><Server size={18}/>Remote hosts</h2><button type="button" className="icon-button" aria-label="Close remote hosts" disabled={saving} onClick={close}><X size={18}/></button></div>
+  return <section aria-label="Remote host preferences">
     <p id="remote-description">Sessions you run on SSH hosts (including through VS Code Remote-SSH) are copied here on each sync and appear next to your local ones. {BRAND.name} connects with your own <code>ssh</code> configuration, without prompting, so hosts need key, agent, or Kerberos login. Only transcript files are copied, using <code>rsync</code>; nothing on the host is changed.</p>
     {missingTools && <p className="data-warning">Install {[!data.tools.ssh && 'ssh', !data.tools.rsync && 'rsync'].filter(Boolean).join(' and ')} on this computer to sync remote hosts.</p>}
 
@@ -95,8 +91,8 @@ export default function RemoteHosts({ onClose, onSyncNow, syncRunning }) {
 
     {error && <div className="data-error" role="alert">{error}</div>}
     {changed && <div className="data-actions remote-footer">
-      <button type="button" className="data-button" disabled={syncRunning || saving} onClick={() => { onSyncNow(); onClose(); }}>Refresh histories</button>
+      <button type="button" className="data-button" disabled={syncRunning || saving} onClick={onSyncNow}>Refresh histories</button>
       {syncRunning && <span className="remote-meta">A sync is running; changes apply to the next one.</span>}
     </div>}
-  </dialog>;
+  </section>;
 }

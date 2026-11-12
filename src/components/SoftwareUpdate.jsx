@@ -1,16 +1,14 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Check, Download, ExternalLink, LoaderCircle, RefreshCw, RotateCcw, ShieldCheck, X } from 'lucide-react';
+import { Check, Download, ExternalLink, LoaderCircle, RefreshCw, RotateCcw, ShieldCheck } from 'lucide-react';
 import { api } from '../api.js';
 import { BRAND } from '../brand.js';
 import { updates } from '../updates.js';
-import useModalDialog from './useModalDialog.js';
 
 const working = new Set(['checking', 'downloading', 'verifying', 'installing', 'restarting']);
 
-export default function SoftwareUpdate({ onClose, syncRunning }) {
-  const dialog = useModalDialog();
+export default function SoftwareUpdate({ syncRunning }) {
   const state = useSyncExternalStore(updates.subscribe, updates.getSnapshot);
   const [linkError, setLinkError] = useState('');
   useEffect(() => { void updates.loadInfo(); }, []);
@@ -35,7 +33,7 @@ export default function SoftwareUpdate({ onClose, syncRunning }) {
     checking: 'Looking for the latest stable release.',
     current: `You’re running the latest available version, ${info?.version}.`,
     available: info?.needsAuthorization ? 'Review the release notes, then download and install. Your system will ask for administrator authorization.' : 'Review the release notes, then download and install.',
-    downloading: 'You can close this dialog while the download continues.',
+    downloading: 'You can leave Settings while the download continues.',
     verifying: 'Checking the download’s signature and release version.',
     installing: `Keep ${BRAND.name} open until installation finishes.`,
     ready: `${BRAND.name} ${release?.version} is installed. Restart to use it. Your session library stays in place.`,
@@ -53,12 +51,7 @@ export default function SoftwareUpdate({ onClose, syncRunning }) {
   };
   const Icon = busy ? LoaderCircle : ['current', 'ready'].includes(phase) ? Check : Download;
 
-  return <dialog ref={dialog} className="data-dialog software-update-dialog" aria-labelledby="software-update-title"
-    onCancel={event => { event.preventDefault(); onClose(); }}>
-    <div className="export-heading">
-      <h2 id="software-update-title">Software update</h2>
-      <button type="button" className="icon-button" aria-label="Close software update" onClick={onClose}><X size={18}/></button>
-    </div>
+  return <section aria-label="Software update">
     <p className="about-version">{BRAND.name} · Version {info?.version || '…'}</p>
     <section className={`update-status-card${failed ? ' has-error' : ''}`} aria-busy={busy}>
       <span className="update-status-icon"><Icon size={24} className={busy ? 'spin' : undefined}/></span>
@@ -81,5 +74,5 @@ export default function SoftwareUpdate({ onClose, syncRunning }) {
       <div className="update-notes markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{release.notes}</ReactMarkdown></div>
     </section>}
     <div className="update-footer"><span><ShieldCheck size={14}/>Signed updates · Checked only when you ask</span><button type="button" className="btn" onClick={openReleases}><ExternalLink size={14}/>All releases</button></div>
-  </dialog>;
+  </section>;
 }

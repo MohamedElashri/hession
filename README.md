@@ -26,10 +26,12 @@ The installer verifies checksums and selects a macOS app, Debian/RPM package,
 or AppImage. Download packages directly from
 [Releases](https://github.com/MohamedElashri/hession/releases).
 
-Update through **Software update → Check for updates**, or rerun the installer.
+Open **Settings** for appearance, terminal, history refresh, remote hosts, private
+sync, continuation, and saved data. Update through **Settings → About → Check for
+updates → Download and install → Restart Hession**.
 In-app downloads are signature-verified. Linux system packages may request
 administrator authorization. Your library is kept when updating or uninstalling.
-Installer options: `--appimage`, `--version v0.3.0`, `--force`, `--uninstall`,
+Installer options: `--appimage`, `--version v0.4.0`, `--force`, `--uninstall`,
 `--help`; pass them after `sh -s --`.
 
 ## Start here
@@ -45,7 +47,14 @@ Supported histories: Claude Code, Codex, OpenCode, Cline, Pi, Command Code,
 Muse, Hermes Agent, and Antigravity. Stars, tags, Markdown/JSON export, token
 and cost analytics, appearance options, and terminal preferences are included.
 
-## New in 0.3.0
+## New in 0.4.0
+
+One **Settings** window brings preferences, remote hosts, saved data, and
+**About** together. Check for updates and restart to apply them from About;
+the Settings button keeps update progress visible. Section changes preserve
+unfinished edits, and saves and backup operations finish before you can leave.
+
+## Optional features
 
 Both features are **optional and disabled by default**, independently on each device.
 

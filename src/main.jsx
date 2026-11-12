@@ -4,9 +4,9 @@ import Markdown from './components/Markdown.jsx';
 import SessionSearch from './components/SessionSearch.jsx';
 import {
   ArrowRight, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Code2,
-  Copy, Database, Download, FileCode2, Folder, GitBranch, Info, Laptop, Layers3,
-  LoaderCircle, Menu, MessageSquareText, Palette, Plus, RefreshCw, Search,
-  Server, Settings, Sparkles, Square, Star, Tag, Terminal, TrendingUp, User, X,
+  Copy, Download, FileCode2, Folder, GitBranch, Laptop, Layers3,
+  LoaderCircle, Menu, MessageSquareText, Plus, RefreshCw, Search,
+  Server, Sparkles, Square, Star, Tag, Terminal, TrendingUp, User, X,
 } from 'lucide-react';
 import { api, hasTauriRuntime } from './api.js';
 import { save } from '@tauri-apps/plugin-dialog';
@@ -16,6 +16,7 @@ import { listen } from '@tauri-apps/api/event';
 import ExportSelect from './components/ExportSelect.jsx';
 import SyncMenu from './components/SyncMenu.jsx';
 import BrandMark from './components/BrandMark.jsx';
+import SettingsButton from './components/SettingsButton.jsx';
 import useAppearance from './useAppearance.js';
 import { Conversation, PromptIndex } from './components/Conversation.jsx';
 import { readNavigation, writeNavigation } from './navigation.js';
@@ -35,12 +36,6 @@ import { agentColors, familyLabel, shortPath } from './labels.js';
 
 const PAGE_SIZE=20;
 const AnalyticsView=lazy(()=>import('./Analytics.jsx'));
-const DataManagement=lazy(()=>import('./components/DataManagement.jsx'));
-const RemoteHosts=lazy(()=>import('./components/RemoteHosts.jsx'));
-const AboutDialog=lazy(()=>import('./components/AboutDialog.jsx'));
-const SoftwareUpdate=lazy(()=>import('./components/SoftwareUpdate.jsx'));
-const AppearanceDialog=lazy(()=>import('./components/AppearanceDialog.jsx'));
-const TerminalSettings=lazy(()=>import('./components/TerminalSettings.jsx'));
 const SettingsDialog=lazy(()=>import('./components/SettingsDialog.jsx'));
 const ContinuationDialog=lazy(()=>import('./components/ContinuationDialog.jsx'));
 const DETAIL_PAGE_SIZE=500; // transcript entries per page (the backend maximum)
@@ -65,7 +60,7 @@ function App(){
   const [stats,setStats]=useState({sessions:0,entries:0,agents:0,files:0}),[detail,setDetail]=useState(null);
   const [query,setQuery]=useState(''),[agentFilter,setAgentFilter]=useState(''),[projectFilter,setProjectFilter]=useState('');
   // '' = every machine, '@local' = this computer, otherwise an SSH host.
-  const [hostFilter,setHostFilter]=useState(''),[remoteHostsOpen,setRemoteHostsOpen]=useState(false),[aboutOpen,setAboutOpen]=useState(false),[updatesOpen,setUpdatesOpen]=useState(false);
+  const [hostFilter,setHostFilter]=useState('');
   const [starredOnly,setStarredOnly]=useState(false),[tagFilters,setTagFilters]=useState([]);
   const [tagDraft,setTagDraft]=useState(''),[annotationBusy,setAnnotationBusy]=useState(false);
   const [exportOpen,setExportOpen]=useState(false),[exportScope,setExportScope]=useState('filtered'),[exportFormat,setExportFormat]=useState('markdown'),[exportBusy,setExportBusy]=useState(false);
@@ -95,7 +90,6 @@ function App(){
     setAutoSync(next);
   };
   const [mobileNav,setMobileNav]=useState(false);
-  const [dataManagementOpen,setDataManagementOpen]=useState(false);
   const [resumeOpen,setResumeOpen]=useState(false),[resumeBusy,setResumeBusy]=useState(false),[resumeInfo,setResumeInfo]=useState(null),[resumeError,setResumeError]=useState(''),[resumeCopied,setResumeCopied]=useState(false),[resumeTerminals,setResumeTerminals]=useState([]),[resumeTerminal,setResumeTerminal]=useState('');
   const resumeDialogRef=useRef(null);
   const [loading,setLoading]=useState(true),[detailLoading,setDetailLoading]=useState(false),[notice,setNotice]=useState('');
@@ -109,9 +103,7 @@ function App(){
   const [searchEntry,setSearchEntry]=useState(null);
   const [collapsedEntries,setCollapsedEntries]=useState(()=>new Set());
   const [copiedEntry,setCopiedEntry]=useState(null);
-  const [appearanceOpen,setAppearanceOpen]=useState(false);
-  const [terminalSettingsOpen,setTerminalSettingsOpen]=useState(false);
-  const [settingsOpen,setSettingsOpen]=useState(false),[settingsTab,setSettingsTab]=useState('terminal');
+  const [settingsOpen,setSettingsOpen]=useState(false),[settingsTab,setSettingsTab]=useState('appearance');
   const [optionalFeatures,setOptionalFeatures]=useState({continuationEnabled:false});
   const [continuationOpen,setContinuationOpen]=useState(false);
   useEffect(()=>{
@@ -416,7 +408,7 @@ function App(){
   },[sync.running]);
 
   useEffect(()=>{
-    if(startupSyncHandled.current||!hasTauriRuntime()||!libraryReady||!syncStatusReady||view!=='sessions'||loading||dataManagementOpen)return;
+    if(startupSyncHandled.current||!hasTauriRuntime()||!libraryReady||!syncStatusReady||view!=='sessions'||loading||settingsOpen)return;
     if(!autoSync){startupSyncHandled.current=true;return;}
     if(sync.running||syncStarting){startupSyncHandled.current=true;return;}
     if(selected&&!detailError&&String(detail?.session.id)!==String(selected))return;
@@ -426,7 +418,7 @@ function App(){
       if(!startupSyncHandled.current)startSync();
     });});
     return()=>{cancelAnimationFrame(firstFrame);if(secondFrame)cancelAnimationFrame(secondFrame);};
-  },[autoSync,libraryReady,syncStatusReady,view,loading,dataManagementOpen,sync.running,syncStarting,selected,detail,detailError,startSync]);
+  },[autoSync,libraryReady,syncStatusReady,view,loading,settingsOpen,sync.running,syncStarting,selected,detail,detailError,startSync]);
 
   const stopSync=async()=>{
     if(!sync.running||syncStarting||syncStopping||sync.phase==='stopping')return;
@@ -514,14 +506,12 @@ function App(){
 
   return <div className="app-shell">
     <Suspense fallback={<div className="export-backdrop" role="status"><span className="data-status"><LoaderCircle className="spin" size={16}/>Opening settings…</span></div>}>
-      {settingsOpen&&<SettingsDialog initialTab={settingsTab} onClose={()=>setSettingsOpen(false)} onTerminal={()=>{setSettingsOpen(false);setTerminalSettingsOpen(true);}} onFeaturesChanged={setOptionalFeatures} onLibraryChanged={refreshSyncedData}/>}
+      {settingsOpen&&<SettingsDialog initialTab={settingsTab} onClose={()=>setSettingsOpen(false)} onSectionChange={setSettingsTab}
+        preferences={preferences} onAppearanceChange={updateAppearance} appearanceSaveError={appearanceSaveError}
+        autoSync={autoSync} onAutoSyncChange={toggleAutoSync} onRefreshHistories={()=>startSync()} syncRunning={sync.running||syncStarting}
+        onFeaturesChanged={setOptionalFeatures} onLibraryChanged={refreshSyncedData} onManagedDataChanged={refreshManagedData}
+        onRemotesChanged={()=>loadMeta({silent:true})}/>}
       {continuationOpen&&detail&&<ContinuationDialog sessionId={String(detail.session.id)} onClose={()=>setContinuationOpen(false)}/>}
-      {terminalSettingsOpen&&<TerminalSettings onClose={()=>setTerminalSettingsOpen(false)}/>}
-      {appearanceOpen&&<AppearanceDialog preferences={preferences} onChange={updateAppearance} saveError={appearanceSaveError} onClose={()=>setAppearanceOpen(false)}/>}
-      {remoteHostsOpen&&<RemoteHosts onClose={()=>{setRemoteHostsOpen(false);loadMeta({silent:true});}} onSyncNow={()=>startSync()} syncRunning={sync.running||syncStarting}/>}
-      {aboutOpen&&<AboutDialog onClose={()=>setAboutOpen(false)} onUpdates={()=>{setAboutOpen(false);setUpdatesOpen(true);}}/>}
-      {updatesOpen&&<SoftwareUpdate onClose={()=>setUpdatesOpen(false)} syncRunning={sync.running}/>}
-      {dataManagementOpen&&<DataManagement onClose={()=>setDataManagementOpen(false)} onChanged={refreshManagedData} syncRunning={sync.running||syncStarting}/>}
     </Suspense>
     {mobileNav&&<div className="sidebar-scrim" onClick={()=>setMobileNav(false)}/>}
     <aside className={`sidebar ${mobileNav?'sidebar-open':''}`}>
@@ -536,10 +526,10 @@ function App(){
       </nav>
       <div className="sidebar-scroll">
         <section className="nav-section">
-          <div className="section-heading"><span className="section-label">Hosts</span><button className="tiny-icon" title="Manage remote hosts" aria-label="Manage remote hosts" onClick={()=>setRemoteHostsOpen(true)}><Plus size={14}/></button></div>
+          <div className="section-heading"><span className="section-label">Hosts</span><button className="tiny-icon" title="Manage remote hosts" aria-label="Manage remote hosts" onClick={()=>{setSettingsTab('remotes');setSettingsOpen(true);}}><Plus size={14}/></button></div>
           <button className={`nav-item ${hostFilter==='@local'?'nav-active':''}`} aria-pressed={hostFilter==='@local'} onClick={()=>{showSessions();setHostFilter(hostFilter==='@local'?'':'@local');}}><Laptop size={15}/><span>This computer</span></button>
           {(facets.hosts||[]).map(h=><button key={h.value} title={`Sessions from ${h.value}`} aria-pressed={hostFilter===h.value} className={`nav-item ${hostFilter===h.value?'nav-active':''}`} onClick={()=>{showSessions();setHostFilter(hostFilter===h.value?'':h.value);}}><Server size={15}/><span className="ellipsis">{h.value}</span>{navCount(h.sessions)}</button>)}
-          {!(facets.hosts||[]).length&&<button className="nav-item nav-hint" onClick={()=>setRemoteHostsOpen(true)}><Plus size={15}/><span>Add an SSH host</span></button>}
+          {!(facets.hosts||[]).length&&<button className="nav-item nav-hint" onClick={()=>{setSettingsTab('remotes');setSettingsOpen(true);}}><Plus size={15}/><span>Add an SSH host</span></button>}
         </section>
         <section className="nav-section">
           <div className="section-heading"><span className="section-label">Agents</span></div>
@@ -562,8 +552,8 @@ function App(){
             <button type="button" className={`sync-button ${sync.running?'sync-stop':''}`} onClick={sync.running?stopSync:()=>startSync()} disabled={syncStarting||syncStopping||(sync.running&&sync.phase==='stopping')} title={sync.running?'Stop history refresh':'Refresh histories from local files and SSH hosts'} aria-label={sync.running?'Stop history refresh':'Refresh histories'}>{sync.running?<Square size={13}/>:<RefreshCw size={14}/>}<span>{sync.running?'Stop refresh':syncLabel==='Sync'?'Refresh histories':syncLabel}</span></button>
             <button type="button" className="sync-options-button" onClick={()=>setSyncMenuOpen(!syncMenuOpen)} aria-label="History refresh options" title="History refresh options" aria-haspopup="dialog" aria-expanded={syncMenuOpen}><ChevronDown size={14}/></button>
             {syncMenuOpen&&<SyncMenu
-              agents={agents} disabled={sync.running||syncStarting} autoSync={autoSync}
-              toggleAutoSync={toggleAutoSync} startSync={startSync} onClose={()=>setSyncMenuOpen(false)}
+              agents={agents} disabled={sync.running||syncStarting}
+              startSync={startSync} onClose={()=>setSyncMenuOpen(false)}
               agentStatus={metadataStatus('agents','Loading agents…')}
               checkpointStatus={metadataStatus('sync/checkpoints','Loading sync history…')}
               agentDescription={family=>metadataState['sync/checkpoints']==='loading'?'Loading sync history…':metadataState['sync/checkpoints']==='error'?'Sync history unavailable':checkpointFor(family)?`Since ${formatSyncTime(checkpointFor(family),currentTime)}`:'First sync · scans all history'}
@@ -571,14 +561,7 @@ function App(){
           </div>
           {sync.running&&<div className="sync-progress"><span style={{width:`${sync.filesTotal?Math.min(100,sync.filesDone/sync.filesTotal*100):4}%`}}/></div>}
         </div>
-        <div className="sidebar-tools">
-          <button type="button" className="icon-button" onClick={()=>setRemoteHostsOpen(true)} title="Remote hosts" aria-label="Remote hosts"><Server size={16}/></button>
-          <button type="button" className="icon-button" onClick={()=>{setSyncMenuOpen(false);setDataManagementOpen(true);}} title="Manage saved data" aria-label="Manage saved data" aria-haspopup="dialog"><Database size={16}/></button>
-          <button type="button" className="icon-button" onClick={()=>setUpdatesOpen(true)} title="Software update" aria-label="Software update" aria-haspopup="dialog"><Download size={16}/></button>
-          <button type="button" className="icon-button" onClick={()=>setAboutOpen(true)} title={`About ${BRAND.name}`} aria-label={`About ${BRAND.name}`} aria-haspopup="dialog"><Info size={16}/></button>
-          <button type="button" className="icon-button" onClick={()=>{setSettingsTab('terminal');setSettingsOpen(true);}} title="Settings" aria-label="Settings" aria-haspopup="dialog"><Settings size={16}/></button>
-          <button type="button" className="icon-button" onClick={()=>setAppearanceOpen(true)} title="Appearance" aria-label="Appearance" aria-haspopup="dialog"><Palette size={16}/></button>
-        </div>
+        <SettingsButton onClick={section=>{if(section)setSettingsTab(section);setSyncMenuOpen(false);setSettingsOpen(true);}}/>
       </div>
     </aside>
 

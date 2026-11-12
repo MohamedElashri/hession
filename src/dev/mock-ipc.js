@@ -162,7 +162,7 @@ const handlers = {
   get_remote_hosts: () => ({ hosts: state.hosts, suggestions: [{ name: 'staging', source: 'vscode' }, { name: 'ci-runner', source: 'ssh-config' }], tools: { ssh: true, rsync: true } }),
   set_remote_hosts: ({ hosts }) => { state.hosts = hosts.map((h) => ({ ...h, lastSync: null, agents: [], ...state.hosts.find((x) => x.name === h.name), enabled: h.enabled })); return { ok: true }; },
   test_remote_host: async ({ name }) => { await delay(700); return { ok: true, home: `/home/${name}`, rsync: true, agents: ['claude'] }; },
-  preview_saved_data: () => ({ sessions: state.sessions.length, entries: fixtures.stats.entries, tools: 14, totalSessions: state.sessions.length, databaseBytes: 2_400_000, databasePath: '~/.hession/sessions.sqlite', token: 'preview' }),
+  preview_saved_data: () => ({ sessions: state.sessions.length, entries: fixtures.stats.entries, tools: 14, totalSessions: state.sessions.length, databaseBytes: 2_400_000, databasePath: '~/.hession/sessions.sqlite', token: 'preview', options: { agents: [], workspaces: [], tags: [] } }),
   'plugin:event|listen': () => callbacks++,
   'plugin:event|unlisten': () => null,
 };

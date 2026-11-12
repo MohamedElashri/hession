@@ -5,10 +5,10 @@ For installation, see [Install](../README.md#install).
 ## Import histories
 
 **Refresh histories** imports new and changed local/SSH sessions. It also runs at
-startup unless disabled in its menu. The same menu offers a per-agent refresh
+startup unless disabled under **Settings → History refresh**. Its menu offers a per-agent refresh
 and **Full rescan**. Stopping keeps completed imports; original files are unchanged.
 
-To add a remote machine, choose **+** beside **Hosts**, select an SSH suggestion
+To add a remote machine, open **Settings → Remote hosts** (or **+** beside **Hosts**), select an SSH suggestion
 or enter an alias or `user@host`, then **Test** and refresh. Both machines need
 `rsync`; this computer needs `ssh` and a login that works without prompts:
 
@@ -60,9 +60,13 @@ copy repository files or install history into agent stores.
 
 ## Preferences and analytics
 
-- **Appearance** (palette icon): theme, accent, text size, spacing, code wrapping,
+Open the single **Settings** button in the sidebar. All preferences, remote hosts,
+saved data, and **About** live in this window. Switch sections without losing
+unfinished edits; use **Save** where shown.
+
+- **Settings → Appearance**: theme, accent, text size, spacing, code wrapping,
   and reduced motion. Changes are saved per device; **Reset to defaults** resets them.
-- **Settings → Terminal → Choose terminal**: automatic, discovered, or custom
+- **Settings → Terminal**: automatic, discovered, or custom
   executable. **Discover again** finds newly installed terminals. Resume can
   override the saved choice and warns if it becomes unavailable.
 - A custom terminal needs an absolute executable path (inside the `.app` on
@@ -76,7 +80,7 @@ copy repository files or install history into agent stores.
 
 ## Backups and updates
 
-The **database icon → Export SQLite backup** creates a restorable library copy;
+Use **Settings → Saved data → Export SQLite backup** to create a restorable library copy;
 filter it if needed. **Import backup** can preserve or replace matching sessions;
 review its preview first. Markdown/JSON transcript exports cannot be restored.
 Backups exclude sync queues, credentials, device settings, and handoff files.
@@ -85,9 +89,10 @@ Keep the sync recovery key separately.
 **Delete / reset…** removes indexed data, not original agent files or relay
 records. Deleted histories can return on the next refresh or sync. Back up first.
 
-**Software update → Check for updates → Download and install** verifies a signed
-release and preserves your installation format. Closing the dialog keeps the
-update running. Finish refresh/sync and saved-data operations before restarting.
+Open **Settings → About** for your version and software updates.
+**Check for updates → Download and install** verifies a signed
+release and preserves your installation format. Leaving Settings keeps the update
+running. Finish refresh/sync and saved-data operations before restarting.
 If installation fails, rerun the [installer](../README.md#install); source builds
 must be rebuilt. Releases predating the updater need one manual update first.
 
