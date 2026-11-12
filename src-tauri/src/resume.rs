@@ -127,7 +127,7 @@ fn posix_quote(s: &str) -> String {
 }
 
 /// Copyable command shown in the UI.
-fn display_command(cwd: &Path, binary: &str, args: &[String]) -> String {
+pub(crate) fn display_command(cwd: &Path, binary: &str, args: &[String]) -> String {
     let mut invocation = vec![posix_quote(binary)];
     invocation.extend(args.iter().map(|s| posix_quote(s)));
     format!(
@@ -143,7 +143,7 @@ fn path_dirs() -> Vec<PathBuf> {
     std::env::split_paths(&augmented_path()).collect()
 }
 
-fn find_cli_binary(candidates: &[&str]) -> Option<PathBuf> {
+pub(crate) fn find_cli_binary(candidates: &[&str]) -> Option<PathBuf> {
     let dirs = path_dirs();
     for name in candidates {
         for d in &dirs {
@@ -185,12 +185,9 @@ fn login_shell_path() -> Option<String> {
         }
     }
     for sh in shells {
-        let Ok(out) = Command::new(&sh)
-            .arg("-l")
-            .arg("-c")
-            .arg("printf '%s' \"$PATH\"")
-            .output()
-        else {
+        let mut command = Command::new(&sh);
+        command.args(["-l", "-c", "printf '%s' \"$PATH\""]);
+        let Ok(out) = bounded_output(command, std::time::Duration::from_secs(2), 32 * 1024) else {
             continue;
         };
         if !out.status.success() {
@@ -298,14 +295,186 @@ fn augmented_path() -> String {
 /// `(version_text, error_text)`: version on success, stderr on failure
 /// so callers can surface *why* a found CLI doesn't run (deleted conda env,
 /// missing node, …) instead of opening a dead terminal.
-fn cli_check(cli: &Path) -> (Option<String>, Option<String>) {
-    let out = match Command::new(cli)
-        .arg("--version")
-        .env("PATH", augmented_path())
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => return (None, Some(format!("could not execute: {e}"))),
+pub(crate) fn cli_check(cli: &Path) -> (Option<String>, Option<String>) {
+    cli_check_with_timeout(cli, std::time::Duration::from_secs(5))
+}
+
+#[cfg(not(unix))]
+fn output_reader(
+    stream: impl std::io::Read + Send + 'static,
+    limit: u64,
+) -> std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>> {
+    use std::io::Read;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = stream
+            .take(limit + 1)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes);
+        let _ = sender.send(result);
+    });
+    receiver
+}
+
+/// Capture bounded process output and stop the subprocess group on every exit.
+/// Nonblocking pipes avoid hanging when descendants inherit stdout/stderr.
+#[cfg(unix)]
+pub(crate) fn bounded_output(
+    mut command: Command,
+    timeout: std::time::Duration,
+    limit: u64,
+) -> Result<std::process::Output, String> {
+    use std::io::{ErrorKind, Read};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Stdio};
+    struct ProcessGroup(Child);
+    impl Drop for ProcessGroup {
+        fn drop(&mut self) {
+            // SAFETY: process_group(0) creates a new group whose ID is this
+            // child's PID. Only processes started for this probe join it.
+            unsafe {
+                libc::kill(-(self.0.id() as libc::pid_t), libc::SIGKILL);
+            }
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    fn nonblocking(stream: &impl AsRawFd) -> Result<(), String> {
+        let fd = stream.as_raw_fd();
+        // SAFETY: fd is borrowed from a live owned pipe; fcntl only changes
+        // its file status flags and neither transfers nor closes ownership.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err("could not configure bounded process output".into());
+        }
+        Ok(())
+    }
+    fn drain(stream: &mut impl Read, bytes: &mut Vec<u8>, limit: u64) -> Result<bool, String> {
+        let mut chunk = [0u8; 8_192];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => return Ok(true),
+                Ok(n) => {
+                    if bytes.len() as u64 + n as u64 > limit {
+                        return Err("process output exceeded the size limit".into());
+                    }
+                    bytes.extend_from_slice(&chunk[..n]);
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => return Ok(false),
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(_) => return Err("could not read bounded process output".into()),
+            }
+        }
+    }
+    command
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = ProcessGroup(
+        command
+            .spawn()
+            .map_err(|e| format!("could not execute: {e}"))?,
+    );
+    let mut stdout = child
+        .0
+        .stdout
+        .take()
+        .ok_or("process stdout is unavailable")?;
+    let mut stderr = child
+        .0
+        .stderr
+        .take()
+        .ok_or("process stderr is unavailable")?;
+    nonblocking(&stdout)?;
+    nonblocking(&stderr)?;
+    let deadline = std::time::Instant::now() + timeout;
+    let (mut stdout_bytes, mut stderr_bytes) = (Vec::new(), Vec::new());
+    let (mut stdout_done, mut stderr_done) = (false, false);
+    let mut status = None;
+    loop {
+        if !stdout_done {
+            stdout_done = drain(&mut stdout, &mut stdout_bytes, limit)?;
+        }
+        if !stderr_done {
+            stderr_done = drain(&mut stderr, &mut stderr_bytes, limit)?;
+        }
+        if status.is_none() {
+            status = child
+                .0
+                .try_wait()
+                .map_err(|_| "could not inspect process status")?;
+        }
+        if stdout_done && stderr_done && status.is_some() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("process timed out or could not complete".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    Ok(std::process::Output {
+        status: status.expect("completed process status"),
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
+    })
+}
+
+#[cfg(not(unix))]
+pub(crate) fn bounded_output(
+    mut command: Command,
+    timeout: std::time::Duration,
+    limit: u64,
+) -> Result<std::process::Output, String> {
+    use std::process::Stdio;
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not execute: {e}"))?;
+    let stdout = output_reader(child.stdout.take().expect("piped command stdout"), limit);
+    let stderr = output_reader(child.stderr.take().expect("piped command stderr"), limit);
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("process timed out or could not complete".into());
+            }
+        }
+    };
+    let collect = |receiver: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>| {
+        receiver
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .ok()
+            .and_then(Result::ok)
+            .filter(|bytes| bytes.len() as u64 <= limit)
+    };
+    let (Some(stdout), Some(stderr)) = (collect(stdout), collect(stderr)) else {
+        return Err("process output exceeded the size or time limit".into());
+    };
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn cli_check_with_timeout(
+    cli: &Path,
+    timeout: std::time::Duration,
+) -> (Option<String>, Option<String>) {
+    let mut command = Command::new(cli);
+    command.arg("--version").env("PATH", augmented_path());
+    let out = match bounded_output(command, timeout, 16_384) {
+        Ok(output) => output,
+        Err(error) => return (None, Some(format!("version check {error}"))),
     };
     if out.status.success() {
         let mut s = String::from_utf8_lossy(&out.stdout).to_string();
@@ -940,6 +1109,9 @@ fn derive_resume_key(
 }
 
 fn build_plan(row: &SessionRow) -> Result<ResumePlan, String> {
+    if row.source_uri.starts_with("hession-sync://") {
+        return Err("This is a library copy received through private sync, not a native harness session. Use Continue in… to start a new session here, or resume on its original machine.".into());
+    }
     if !RESUME_FAMILIES.contains(&row.family.as_str()) {
         return Err("Unknown agent family.".to_string());
     }
@@ -1785,6 +1957,49 @@ fn resume_inner(db_path: &Path, id: i64, terminal: Option<&str>) -> Result<Value
 
 // Tauri commands
 
+/// Launch a new local CLI session through the user's existing terminal settings.
+/// Callers supply only the allowlisted destination and its initial prompt; this
+/// does not read or write the original harness's transcript store.
+pub(crate) fn launch_new_session(
+    cwd: &Path,
+    binary: &str,
+    args: Vec<String>,
+    terminal: Option<&str>,
+    validate_review: impl FnOnce() -> Result<(), String>,
+) -> Result<Value, String> {
+    if !matches!(binary, "claude" | "codex") {
+        return Err("Unsupported continuation destination.".into());
+    }
+    if !cwd.is_dir() {
+        return Err("Choose an existing local workspace folder.".into());
+    }
+    let cli = find_cli_binary(&[binary])
+        .ok_or_else(|| format!("`{binary}` was not found. Install and sign in to it first."))?;
+    if let Some(error) = cli_check(&cli).1 {
+        return Err(format!("`{binary}` could not run: {error}"));
+    }
+    let (terminal_id, fallback) = resolve_terminal(terminal);
+    let terminal_id = terminal_id.ok_or("No terminal emulator found. Choose one in Settings.")?;
+    let plan = ResumePlan {
+        binary: binary.into(),
+        display: display_command(cwd, binary, &args),
+        args,
+        cwd: cwd.into(),
+        cwd_fallback: false,
+        env: HashMap::new(),
+        warnings: vec![],
+        source_file: PathBuf::new(),
+        resume_key: String::new(),
+        profile: None,
+        remote: None,
+    };
+    validate_review()?;
+    let label =
+        crate::features::with_continuation_enabled(|| spawn_plan(&plan, &cli, &terminal_id))?;
+    Ok(json!({"terminal": label, "terminalId": terminal_id,
+        "terminalFallback": fallback, "displayCommand": plan.display}))
+}
+
 /// Side-effect free preflight for the Resume dialog. `terminal` is an
 /// optional override; otherwise the saved preference, then the default.
 #[tauri::command]
@@ -1919,6 +2134,93 @@ mod terminal_tests {
             terminal: Some("custom".into()),
             custom_path: Some(path.to_string_lossy().into()),
             custom_args: Some(vec!["-e".into(), "sh".into(), "{script}".into()]),
+        }
+    }
+
+    #[test]
+    fn synced_library_copies_cannot_be_resumed_as_native_sessions() {
+        let row = SessionRow {
+            family: "codex".into(),
+            product: "Codex".into(),
+            external_id: String::new(),
+            source_uri: "hession-sync://portable-id/revision-id".into(),
+            cwd: "/work/project".into(),
+            project: "/work/project".into(),
+            host: None,
+        };
+        let error = build_plan(&row)
+            .err()
+            .expect("synced copy must not resume natively");
+        assert!(error.contains("library copy"));
+        assert!(error.contains("Continue in"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_version_checks_are_bounded_and_preserve_regular_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let cli = root.path().join("test-cli");
+        std::fs::write(&cli, "#!/bin/sh\nprintf 'version-test 1.0\\n'\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            cli_check_with_timeout(&cli, std::time::Duration::from_secs(1)),
+            (Some("version-test 1.0".into()), None)
+        );
+        std::fs::write(&cli, "#!/bin/sh\nexec /bin/sleep 3\n").unwrap();
+        let started = std::time::Instant::now();
+        assert!(
+            cli_check_with_timeout(&cli, std::time::Duration::from_millis(50))
+                .1
+                .unwrap()
+                .contains("timed out")
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_capture_stops_descendants_that_hold_output_pipes() {
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("must-not-be-written");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "( /bin/sleep 0.3; printf unexpected > \"$1\" ) & printf ready; exit 0",
+                "bounded-probe",
+            ])
+            .arg(&marker);
+        let started = std::time::Instant::now();
+        let error =
+            bounded_output(command, std::time::Duration::from_millis(50), 1024).unwrap_err();
+        assert!(error.contains("timed out"));
+        assert!(started.elapsed() < std::time::Duration::from_millis(250));
+        std::thread::sleep(std::time::Duration::from_millis(350));
+        assert!(
+            !marker.exists(),
+            "timed-out descendants must not keep running"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_capture_limits_both_streams_and_retains_nonzero_exit_status() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf stdout; printf stderr >&2; exit 7"]);
+        let output = bounded_output(command, std::time::Duration::from_secs(1), 1024).unwrap();
+        assert_eq!(output.stdout, b"stdout");
+        assert_eq!(output.stderr, b"stderr");
+        assert_eq!(output.status.code(), Some(7));
+        for stream in ["", " >&2"] {
+            let mut command = Command::new("/bin/sh");
+            command.args([
+                "-c",
+                &format!("while :; do printf '01234567890123456789'{stream}; done"),
+            ]);
+            let error =
+                bounded_output(command, std::time::Duration::from_secs(1), 128).unwrap_err();
+            assert!(error.contains("size limit"));
         }
     }
 

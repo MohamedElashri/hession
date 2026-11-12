@@ -1,194 +1,126 @@
 # User guide
 
-## Searching sessions
+For installation, see [Install](../README.md#install).
 
-Use the search field above the session list to search transcript text, titles,
-and workspace paths across local and remote sessions. Sidebar filters narrow
-the results; clear them to search the whole library. Transcript words match
-prefixes, ignore case and accents, and multiple words match any word.
+## Import histories
 
-Use **Search this session** above an open transcript to search every indexed
-entry, including tool arguments and output, beyond the currently loaded page.
-Results include highlighted excerpts and pagination. Select a result to open
-its entry in the full log. Clear the field or press Escape to dismiss results.
+**Refresh histories** imports new and changed local/SSH sessions. It also runs at
+startup unless disabled in its menu. The same menu offers a per-agent refresh
+and **Full rescan**. Stopping keeps completed imports; original files are unchanged.
 
-## Appearance
+To add a remote machine, choose **+** beside **Hosts**, select an SSH suggestion
+or enter an alias or `user@host`, then **Test** and refresh. Both machines need
+`rsync`; this computer needs `ssh` and a login that works without prompts:
 
-Open **Appearance** using the palette icon at the bottom of the sidebar.
-Choose **System** to follow your device’s light/dark setting, or pick **Dark**,
-**Light**, **Midnight**, or **Sepia**. You can also change the accent color,
-text size, and spacing, wrap code and tool output, or reduce animation.
-The device’s reduced motion setting is always respected.
+```sh
+ssh -o BatchMode=yes <host> true
+```
 
-Changes apply immediately and are remembered on this device, including at
-startup. **Reset to defaults** restores the system theme, green accent,
-default text size, and comfortable spacing. Existing light/dark preferences
-are kept when upgrading.
+Your SSH configuration is respected. Uncheck a host to pause imports. Copied
+history stays available while a host is offline or removes its original files.
 
-## Terminal settings
+## Find and read sessions
 
-Open **Settings** using the gear icon at the bottom of the sidebar. Choose
-**Default terminal (automatic)**, an installed terminal discovered on this
-computer, or **Custom executable…**. Automatic uses Terminal on macOS; on Linux
-it tries `$TERMINAL`, `x-terminal-emulator`, and installed emulators. Click
-**Discover again** after installing a terminal. Click **Save** to keep the choice
-for future local and SSH resumes.
+- The main search covers transcript text, titles, and workspace paths. Use
+  sidebar and toolbar filters to narrow it. Words match prefixes, ignore case
+  and accents, and match **any** word in a multiword search.
+- **Search this session** searches the complete history, including tool inputs
+  and output. Open a result to jump to it in **Full log**; Escape clears results.
+- **Conversation** groups prompts, replies, and tools. Expand tool calls,
+  thinking, pasted context, and long messages as needed.
+- **Prompts** lists prompts on the current page. **Full log** includes events
+  and role filters. Long histories use pages of 500 entries.
+- Star sessions or add tags above the transcript. Multiple selected tags require
+  every tag. **Export** saves a session, filtered results, or the whole library
+  as Markdown or JSON, optionally with statistics.
 
-For a custom terminal, enter its absolute executable path or use **Browse**.
-On macOS choose the executable inside the `.app` bundle. Pick its launch
-convention, or edit the arguments, one per line. For example, a terminal that
-accepts `-e` uses three lines: `-e`, `sh`, and `{script}`. Include `{script}`
-exactly once as a separate argument; Hession replaces it with the resume script
-path. Arguments are literal, so paths with spaces do not need shell quotes.
-Saving checks that the executable exists and has execute permission.
+## Resume or continue a task
 
-You can still change the terminal from the Resume dialog. If your saved choice
-becomes unavailable, Resume warns and falls back to an installed terminal.
-Choose **Default terminal (automatic)** to reset a previous choice.
+| Action | Result |
+| --- | --- |
+| **Resume** | Reopens the original session in its own CLI and folder, locally or over SSH. Use **Copy command** if you prefer your terminal. |
+| **VS Code** | Opens the recorded local folder or an SSH workspace through Remote-SSH. Install the `code` shell command and, for remote folders, the extension. |
+| **Continue in…** | Starts a new Claude Code or Codex session from reviewed context. Enable **Settings → Continuation** first; see [Continuation](continuation.md). |
 
-## Syncing
+The destination CLI must be installed and signed in. Cline editor-extension
+histories resume through **Cline → History** in the editor. Synced library
+copies use **Continue in…**; they are not native harness sessions.
 
-**Sync now** (bottom of the sidebar) imports new and changed sessions. It also
-runs at startup. The arrow next to it opens sync options: turn off startup sync,
-sync one agent, or **Full rescan** to re-read everything. Unchanged files are
-skipped by size and modification time.
-Stopping a sync keeps everything that was already imported.
+## Sync between devices — optional
 
-## Remote hosts
+**Settings → Private sync** connects to your self-hosted relay. Select upload
+workspaces, preview, save your recovery key, and explicitly enable sync. Empty
+selection means download-only. Transfers run only when you choose **Sync now**.
+Each other device joins with an invitation and recovery key, verifies the
+fingerprint, and enables separately. Local/SSH refresh and continuation are independent.
 
-Click **+** next to **Hosts** in the sidebar (or the server icon at the bottom).
+See [Private sync](private-sync.md) for setup, pause, recovery, and limitations,
+and [Self-hosting](self-hosting.md) for Docker and server backups. Sync does not
+copy repository files or install history into agent stores.
 
-- **Add** a host from the suggestions (folders you opened with VS Code
-  Remote-SSH, or entries in `~/.ssh/config`), or type an SSH alias or
-  `user@host`.
-- **Test** connects to the host and lists the agent histories it found.
-- Uncheck a host to pause it without removing it.
+## Preferences and analytics
 
-Each sync copies the hosts' transcript files (`.jsonl`, `.json`, `.db`) into
-`~/.hession/remotes/<host>/` with `rsync`. Copies are never pruned, so sessions
-stay even after an agent deletes old history on the host.
+- **Appearance** (palette icon): theme, accent, text size, spacing, code wrapping,
+  and reduced motion. Changes are saved per device; **Reset to defaults** resets them.
+- **Settings → Terminal → Choose terminal**: automatic, discovered, or custom
+  executable. **Discover again** finds newly installed terminals. Resume can
+  override the saved choice and warns if it becomes unavailable.
+- A custom terminal needs an absolute executable path (inside the `.app` on
+  macOS). Enter arguments one per line, with `{script}` exactly once as a separate
+  argument. For `-e` terminals: `-e`, `sh`, `{script}`. Arguments are literal;
+  do not shell-quote paths with spaces.
+- **Analytics** shows tokens, estimated costs, tools, failures, and activity.
+  **Sync prices** explicitly downloads models.dev rates. Change the **Pricing
+  matrix** or custom overrides if your provider's prices differ. Estimates are
+  not billing records; reported usage is used when available.
 
-**Requirements**
+## Backups and updates
 
-- `ssh` and `rsync` on this computer, and `rsync` on the host
-- A login that doesn't prompt: SSH keys, an agent, or Kerberos. The app never
-  asks for passwords.
-- Your `~/.ssh/config` is used as is, so `ProxyJump`, `ControlMaster`, and
-  similar options all apply.
+The **database icon → Export SQLite backup** creates a restorable library copy;
+filter it if needed. **Import backup** can preserve or replace matching sessions;
+review its preview first. Markdown/JSON transcript exports cannot be restored.
+Backups exclude sync queues, credentials, device settings, and handoff files.
+Keep the sync recovery key separately.
 
-A host that can't be reached (off VPN, expired ticket) is reported after the
-sync, and its previously copied sessions stay available.
+**Delete / reset…** removes indexed data, not original agent files or relay
+records. Deleted histories can return on the next refresh or sync. Back up first.
 
-Click **This computer** or a host name in the sidebar to filter by machine.
-Active filters appear as chips above the list; click × to remove one. Remote sessions
-show a host label, and their workspaces appear as `host:/path`.
+**Software update → Check for updates → Download and install** verifies a signed
+release and preserves your installation format. Closing the dialog keeps the
+update running. Finish refresh/sync and saved-data operations before restarting.
+If installation fails, rerun the [installer](../README.md#install); source builds
+must be rebuilt. Releases predating the updater need one manual update first.
 
-## Resume and VS Code
+## Supported history stores
 
-**Resume** opens a terminal and runs the agent's own resume command in the
-session's original folder. For a remote session it runs `ssh -t <host>`, moves
-into the recorded folder, and starts the agent with your login shell, so
-`nvm`, `conda`, and `~/.local/bin` are available. When the agent exits, you're
-left in a shell on that host. The dialog warns if the agent isn't installed
-there. Use **Copy command** to paste the command into your own terminal.
+Paths are defaults; environment overrides must be set when launching Hession
+(or on the SSH host). Hession data is separate, under `~/.hession/`; change it
+with `HESSION_DATA_DIR`.
 
-The terminal you pick is remembered (on Linux, `$TERMINAL` is the default).
-
-**VS Code** opens the session's folder: locally with `code <folder>`, and on a
-remote host through Remote-SSH. This needs the `code` command on your `PATH`;
-in VS Code, run *Shell Command: Install 'code' command in PATH*.
-
-## Supported agents
-
-| Agent | Default location (macOS / Linux) | Override |
+| Agent | Default store | Override |
 | --- | --- | --- |
 | Claude Code | `~/.claude/projects` | `CLAUDE_CONFIG_DIR` |
 | Codex | `~/.codex/sessions` | `CODEX_HOME` |
 | OpenCode | `~/.local/share/opencode/opencode.db` | `XDG_DATA_HOME` |
-| Cline | `~/.cline/data`, VS Code (and Server) extension storage | `CLINE_DIR`, `CLINE_DATA_DIR`, `CLINE_STORAGE_DIR` |
+| Cline | `~/.cline/data`, VS Code/Server extension storage | `CLINE_DIR`, `CLINE_DATA_DIR`, `CLINE_STORAGE_DIR` |
 | Pi | `~/.pi/agent/sessions` | `PI_CODING_AGENT_DIR` |
 | Command Code | `~/.commandcode/projects` | `COMMANDCODE_HOME` |
 | Muse | `~/.local/share/muse/sessions` | `XDG_DATA_HOME` |
 | Hermes Agent | `~/.hermes/state.db`, `profiles/*/state.db` | `HERMES_HOME` |
 | Antigravity | `~/.gemini/antigravity/brain` | `ANTIGRAVITY_HOME` |
 
-Overrides come from the environment that launches the app, or on a remote
-host, from that host's environment.
-
-Cline task folders created by the editor extension can't be resumed from the
-CLI; resume them from *Cline → History* in the editor.
-
-## Reading a session
-
-A session opens in **Conversation** view: each of your prompts in a blue card,
-followed by the agent's reply and a one-line entry per tool call it made
-(click one for the command and its output). Thinking, pasted text, and context
-that tools inject (system reminders, environment details) are collapsed, and
-bookkeeping such as mode changes is hidden. Long runs of tool calls and very
-long messages are shortened until you expand them.
-
-- **Prompts** lists every prompt on the page; click one to jump to it.
-- **Full log** shows every recorded entry, including events, with filters.
-
-Long sessions are split into pages of 500 entries.
-
-## Bookmarks, tags, and export
-
-- **Star** a session with the icon on its card.
-- **Tags** are added above the transcript. Selecting several tags matches
-  sessions that have all of them.
-- **Export** saves the selected session, the current filtered view, or the
-  whole library as Markdown or JSON. You can optionally include stats such as
-  tokens, cost, and duration.
-
-## Updates
-
-Open **Software update** (the download icon at the bottom of the sidebar), or
-choose **Software update** from About. Opening the dialog only reads your
-installed version. Hession contacts GitHub only after you click **Check for
-updates**; your sessions and library are never sent.
-
-If a newer stable version is available, review the release notes and choose
-**Download and install**. Progress stays visible in the dialog, and closing it
-keeps the update running. The download's signature and release version are
-verified before installation. Failed checks or installations can be retried.
-
-Updates preserve your installation format: macOS app, Linux AppImage, `.deb`,
-or `.rpm`. Linux system packages ask for administrator authorization using the
-system's graphical authentication tools. If installation fails because the
-app location is not writable or authorization is unavailable, use **All
-releases** or rerun the [install command](../README.md#install). Source builds
-must be rebuilt from source.
-
-When installation finishes, choose **Restart Hession**, or close the dialog
-and restart later. Wait for session sync and saved-data operations to finish
-before restarting. Your session library stays in place.
-
-Versions released before the integrated updater need one manual update to a
-release containing it. After that, updates can be installed inside the app.
-
-## Your data
-
-Everything lives in `~/.hession/` (set `HESSION_DATA_DIR` to change this):
-
-| Path | Contents |
-| --- | --- |
-| `sessions.sqlite` | The library: transcripts, tools, stars, tags, prices |
-| `remotes.json` | Your remote host list |
-| `remotes/<host>/` | Files copied from each host |
-| `terminal-preference.json` | Terminal chosen for Resume |
-
-Open the **database icon** at the bottom of the sidebar to back up the database,
-restore a backup, or delete sessions matching a filter. Deleted sessions come
-back on the next sync while their source files still exist. Backups and copies
-contain your prompts and code, so treat them as private.
+The data directory holds `sessions.sqlite`, `remotes.json`, copied files under
+`remotes/`, terminal/feature/sync settings, and `handoffs/`. Local history and
+backups contain private prompts and code; protect them as you would your projects.
 
 ## Troubleshooting
 
-| Problem | Fix |
+| Problem | Try |
 | --- | --- |
-| Host "could not be reached" | Run `ssh -o BatchMode=yes <host> true` in a terminal; it must succeed without prompting |
-| "rsync is not installed on the host" | Install `rsync` on the host |
-| Remote resume says the agent wasn't found | Make sure the CLI is on `PATH` in your login shell on the host |
-| VS Code button fails | Install the `code` command (see above) and the Remote-SSH extension |
-| Costs look wrong | Adjust model prices in the **Pricing matrix** in **Analytics** |
+| Missing or stale history | Clear filters, check the store path above, then **Full rescan**. |
+| SSH host unavailable | Run the SSH command above; check VPN, keys, tickets, and `rsync`. |
+| Agent CLI not found | Check its login-shell `PATH` locally or on the host; sign in there. |
+| Terminal fails | Choose an installed terminal or correct the custom executable/arguments. |
+| VS Code fails | Install its `code` command and Remote-SSH support. |
+| Sync or continuation blocked | Read the warning and the relevant [sync](private-sync.md) or [continuation](continuation.md) guide. |
+| Costs look wrong | Adjust **Analytics → Pricing matrix** and price overrides. |

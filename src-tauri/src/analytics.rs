@@ -745,7 +745,7 @@ fn rows_to_json(
     stmt: &mut Statement,
     params: &[&dyn rusqlite::types::ToSql],
 ) -> Result<Vec<Value>, rusqlite::Error> {
-    let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let cols: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
     let mapped = stmt.query_map(params, {
         let cols = cols.clone();
         move |row: &Row| {
@@ -767,7 +767,7 @@ fn one_to_json(
     stmt: &mut Statement,
     params: &[&dyn rusqlite::types::ToSql],
 ) -> Result<Option<Value>, rusqlite::Error> {
-    let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let cols: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
     let mut rows = stmt.query(params)?;
     match rows.next()? {
         Some(row) => {

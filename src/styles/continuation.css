@@ -1,0 +1,17 @@
+.continuation-dialog { width: min(780px, calc(100vw - 32px)); }
+.continuation-fields { border: 0; padding: 0; margin: 16px 0; display: flex; flex-direction: column; gap: 14px; }
+.continuation-fields label { display: flex; flex-direction: column; gap: 6px; font-size: var(--text-sm); }
+.continuation-fields textarea { width: 100%; resize: vertical; }
+.continuation-fields .continuation-checkbox { flex-direction: row; align-items: center; gap: 8px; }
+.continuation-checkbox input { width: auto; }
+.continuation-hint { color: var(--text-3); font-size: var(--text-sm); }
+.continuation-preview { border-top: 1px solid var(--border); padding-top: 14px; }
+.continuation-preview details, .continuation-storage { margin: 12px 0; }
+.continuation-preview summary, .continuation-storage summary { cursor: pointer; font-size: var(--text-sm); }
+.continuation-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; padding: 12px; margin-top: 8px; background: var(--surface-2); font-size: var(--text-sm); }
+.continuation-warnings { margin: 10px 0; padding-left: 22px; color: var(--text-2); font-size: var(--text-sm); }
+.continuation-warnings li, .continuation-preview details li { margin: 6px 0; }
+.continuation-provider { padding: 12px; border: 1px solid var(--border); border-radius: 6px; font-size: var(--text-sm); line-height: 1.6; }
+.continuation-package-path { overflow-wrap: anywhere; font-size: var(--text-sm); }
+.continuation-storage { padding-top: 12px; border-top: 1px solid var(--border); color: var(--text-3); font-size: var(--text-sm); }
+.continuation-storage p { margin: 10px 0; line-height: 1.6; }

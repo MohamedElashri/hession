@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import Markdown from './components/Markdown.jsx';
 import SessionSearch from './components/SessionSearch.jsx';
 import {
-  Bot, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Code2,
+  ArrowRight, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Code2,
   Copy, Database, Download, FileCode2, Folder, GitBranch, Info, Laptop, Layers3,
   LoaderCircle, Menu, MessageSquareText, Palette, Plus, RefreshCw, Search,
   Server, Settings, Sparkles, Square, Star, Tag, Terminal, TrendingUp, User, X,
@@ -41,6 +41,8 @@ const AboutDialog=lazy(()=>import('./components/AboutDialog.jsx'));
 const SoftwareUpdate=lazy(()=>import('./components/SoftwareUpdate.jsx'));
 const AppearanceDialog=lazy(()=>import('./components/AppearanceDialog.jsx'));
 const TerminalSettings=lazy(()=>import('./components/TerminalSettings.jsx'));
+const SettingsDialog=lazy(()=>import('./components/SettingsDialog.jsx'));
+const ContinuationDialog=lazy(()=>import('./components/ContinuationDialog.jsx'));
 const DETAIL_PAGE_SIZE=500; // transcript entries per page (the backend maximum)
 // Maps the metadata endpoint suffix used by loadMeta to its Tauri command.
 const META_COMMANDS={
@@ -109,6 +111,14 @@ function App(){
   const [copiedEntry,setCopiedEntry]=useState(null);
   const [appearanceOpen,setAppearanceOpen]=useState(false);
   const [terminalSettingsOpen,setTerminalSettingsOpen]=useState(false);
+  const [settingsOpen,setSettingsOpen]=useState(false),[settingsTab,setSettingsTab]=useState('terminal');
+  const [optionalFeatures,setOptionalFeatures]=useState({continuationEnabled:false});
+  const [continuationOpen,setContinuationOpen]=useState(false);
+  useEffect(()=>{
+    let active=true;
+    api('get_optional_features').then(value=>{if(active)setOptionalFeatures(value);}).catch(()=>{});
+    return()=>{active=false;};
+  },[]);
   const {preferences,update:updateAppearance,saveError:appearanceSaveError}=useAppearance();
   const [currentTime,setCurrentTime]=useState(()=>Date.now());
   const [reportRevision,setReportRevision]=useState(0);
@@ -125,6 +135,7 @@ function App(){
   const [shownSelection,setShownSelection]=useState(selected);
   if(shownSelection!==selected){
     setShownSelection(selected);
+    setContinuationOpen(false);
     setResumeOpen(false);setResumeInfo(null);setResumeError('');setResumeCopied(false);setResumeTerminals([]);setResumeTerminal('');
     setSearchEntry(null);setCollapsedEntries(new Set());setDetailPage(1);setDetailJump('');setTagDraft('');
   }
@@ -318,6 +329,12 @@ function App(){
     setReportRevision(value=>value+1);
     await Promise.all([loadMeta({silent:true}),loadSessions({silent:true})]);
   };
+  const refreshSyncedData=async()=>{
+    // Replication only adds or updates sessions. Preserve navigation and the
+    // transcript page, including when a failed transfer still imports records.
+    setReportRevision(value=>value+1);
+    await Promise.all([loadMeta({silent:true}),loadSessions({silent:true}),loadDetail({silent:true})]);
+  };
 
   const updateAnnotations=async(patch)=>{
     if(!detail||annotationBusy)return;
@@ -497,6 +514,8 @@ function App(){
 
   return <div className="app-shell">
     <Suspense fallback={<div className="export-backdrop" role="status"><span className="data-status"><LoaderCircle className="spin" size={16}/>Opening settings…</span></div>}>
+      {settingsOpen&&<SettingsDialog initialTab={settingsTab} onClose={()=>setSettingsOpen(false)} onTerminal={()=>{setSettingsOpen(false);setTerminalSettingsOpen(true);}} onFeaturesChanged={setOptionalFeatures} onLibraryChanged={refreshSyncedData}/>}
+      {continuationOpen&&detail&&<ContinuationDialog sessionId={String(detail.session.id)} onClose={()=>setContinuationOpen(false)}/>}
       {terminalSettingsOpen&&<TerminalSettings onClose={()=>setTerminalSettingsOpen(false)}/>}
       {appearanceOpen&&<AppearanceDialog preferences={preferences} onChange={updateAppearance} saveError={appearanceSaveError} onClose={()=>setAppearanceOpen(false)}/>}
       {remoteHostsOpen&&<RemoteHosts onClose={()=>{setRemoteHostsOpen(false);loadMeta({silent:true});}} onSyncNow={()=>startSync()} syncRunning={sync.running||syncStarting}/>}
@@ -526,7 +545,7 @@ function App(){
           <div className="section-heading"><span className="section-label">Agents</span></div>
           {agents.map(a=><button key={a.family} aria-pressed={agentFilter===a.family} className={`nav-item ${agentFilter===a.family?'nav-active':''}`} onClick={()=>{showSessions();setAgentFilter(agentFilter===a.family?'':a.family);}}><span className={`agent-dot ${agentColors[a.family]||'gray'}`}/><span className="ellipsis">{a.product}</span>{navCount(a.sessions)}</button>)}
           {metadataStatus('agents','Loading agents…')}
-          {metadataState.agents==='ready'&&!agents.length&&<div className="nav-empty">Sync to discover agents</div>}
+          {metadataState.agents==='ready'&&!agents.length&&<div className="nav-empty">Refresh to discover agents</div>}
         </section>
         <section className="nav-section">
           <div className="section-heading"><span className="section-label">Workspaces</span>{matchingProjects.length>9&&!workspaceQuery&&<button className="section-link" onClick={()=>setAllWorkspaces(!allWorkspaces)}>{allWorkspaces?'Fewer':`All ${matchingProjects.length}`}</button>}</div>
@@ -538,10 +557,10 @@ function App(){
       </div>
       <div className="sidebar-foot">
         <div className="sync-card">
-          <div className="sync-card-text"><span className={`sync-dot ${sync.running?'running':''}`}/><span>{sync.running?(sync.filesTotal?`Syncing ${sync.filesDone||0} of ${sync.filesTotal}`:'Checking sources…'):`Synced ${lastSyncText}`}</span></div>
+          <div className="sync-card-text"><span className={`sync-dot ${sync.running?'running':''}`}/><span>{sync.running?(sync.filesTotal?`Refreshing ${sync.filesDone||0} of ${sync.filesTotal}`:'Checking sources…'):`Refreshed ${lastSyncText}`}</span></div>
           <div className="sync-action">
-            <button type="button" className={`sync-button ${sync.running?'sync-stop':''}`} onClick={sync.running?stopSync:()=>startSync()} disabled={syncStarting||syncStopping||(sync.running&&sync.phase==='stopping')} title={sync.running?'Stop sync':'Sync updates'} aria-label={sync.running?'Stop sync':'Sync updates'}>{sync.running?<Square size={13}/>:<RefreshCw size={14}/>}<span>{sync.running?'Stop sync':syncLabel==='Sync'?'Sync now':syncLabel}</span></button>
-            <button type="button" className="sync-options-button" onClick={()=>setSyncMenuOpen(!syncMenuOpen)} aria-label="Sync options" title="Sync options" aria-haspopup="dialog" aria-expanded={syncMenuOpen}><ChevronDown size={14}/></button>
+            <button type="button" className={`sync-button ${sync.running?'sync-stop':''}`} onClick={sync.running?stopSync:()=>startSync()} disabled={syncStarting||syncStopping||(sync.running&&sync.phase==='stopping')} title={sync.running?'Stop history refresh':'Refresh histories from local files and SSH hosts'} aria-label={sync.running?'Stop history refresh':'Refresh histories'}>{sync.running?<Square size={13}/>:<RefreshCw size={14}/>}<span>{sync.running?'Stop refresh':syncLabel==='Sync'?'Refresh histories':syncLabel}</span></button>
+            <button type="button" className="sync-options-button" onClick={()=>setSyncMenuOpen(!syncMenuOpen)} aria-label="History refresh options" title="History refresh options" aria-haspopup="dialog" aria-expanded={syncMenuOpen}><ChevronDown size={14}/></button>
             {syncMenuOpen&&<SyncMenu
               agents={agents} disabled={sync.running||syncStarting} autoSync={autoSync}
               toggleAutoSync={toggleAutoSync} startSync={startSync} onClose={()=>setSyncMenuOpen(false)}
@@ -557,7 +576,7 @@ function App(){
           <button type="button" className="icon-button" onClick={()=>{setSyncMenuOpen(false);setDataManagementOpen(true);}} title="Manage saved data" aria-label="Manage saved data" aria-haspopup="dialog"><Database size={16}/></button>
           <button type="button" className="icon-button" onClick={()=>setUpdatesOpen(true)} title="Software update" aria-label="Software update" aria-haspopup="dialog"><Download size={16}/></button>
           <button type="button" className="icon-button" onClick={()=>setAboutOpen(true)} title={`About ${BRAND.name}`} aria-label={`About ${BRAND.name}`} aria-haspopup="dialog"><Info size={16}/></button>
-          <button type="button" className="icon-button" onClick={()=>setTerminalSettingsOpen(true)} title="Settings" aria-label="Settings" aria-haspopup="dialog"><Settings size={16}/></button>
+          <button type="button" className="icon-button" onClick={()=>{setSettingsTab('terminal');setSettingsOpen(true);}} title="Settings" aria-label="Settings" aria-haspopup="dialog"><Settings size={16}/></button>
           <button type="button" className="icon-button" onClick={()=>setAppearanceOpen(true)} title="Appearance" aria-label="Appearance" aria-haspopup="dialog"><Palette size={16}/></button>
         </div>
       </div>
@@ -612,7 +631,7 @@ function App(){
                   <strong className="session-title">{s.title||'Untitled session'}</strong>
                   <div className="card-meta"><span title={s.project||s.cwd}><Folder size={12}/>{shortPath(s.project||s.cwd)}</span>{s.branch&&<span><GitBranch size={12}/>{s.branch}</span>}{s.tags?.map(tag=><span className="tag-chip" key={tag}>{tag}</span>)}</div>
                 </button><button type="button" className={`card-star ${s.starred?'is-starred':''}`} aria-label={`${s.starred?'Unstar':'Star'} ${s.title||'session'}`} aria-pressed={Boolean(s.starred)} title={s.starred?'Unstar':'Star'} disabled={starPending.has(s.id)} onClick={e=>{e.stopPropagation();toggleSessionStar(s);}}><Star size={14} fill={s.starred?'currentColor':'none'}/></button></div>)}</div>)}
-                {!loading&&!sessions.length&&<div className="empty-list"><div className="empty-orb"><MessageSquareText size={20}/></div><strong>{query||!filterDefaults?'No matching sessions':'Your library is empty'}</strong><p>{query||!filterDefaults?'Try another search or clear a filter.':'Sync to import agent history from this computer and your SSH hosts.'}</p>{!filterDefaults?<button className="btn" onClick={clearAllFilters}>Clear filters</button>:!query&&<button className="btn primary" disabled={sync.running||syncStarting} onClick={()=>startSync()}><RefreshCw size={14}/>Sync now</button>}</div>}
+                {!loading&&!sessions.length&&<div className="empty-list"><div className="empty-orb"><MessageSquareText size={20}/></div><strong>{query||!filterDefaults?'No matching sessions':'Your library is empty'}</strong><p>{query||!filterDefaults?'Try another search or clear a filter.':'Refresh histories to import sessions from this computer and your SSH hosts.'}</p>{!filterDefaults?<button className="btn" onClick={clearAllFilters}>Clear filters</button>:!query&&<button className="btn primary" disabled={sync.running||syncStarting} onClick={()=>startSync()}><RefreshCw size={14}/>Refresh histories</button>}</div>}
               </div>
               {total>PAGE_SIZE&&<div className="list-footer"><span>{`${(page*PAGE_SIZE)+1}–${(page*PAGE_SIZE)+sessions.length} of ${total.toLocaleString()}`}</span><div className="pagination-controls"><button aria-label="Previous page" disabled={page===0||loading} onClick={()=>setPage(current=>Math.max(0,current-1))}><ChevronLeft size={14}/></button><button aria-label="Next page" disabled={(page+1)*PAGE_SIZE>=total||loading} onClick={()=>setPage(current=>current+1)}><ChevronRight size={14}/></button></div></div>}
             </section>
@@ -629,6 +648,7 @@ function App(){
                       <button type="button" className="icon-button" title="Export this session" aria-label="Export this session" onClick={()=>{setExportScope('session');setExportOpen(true);}}><Download size={15}/></button>
                       <button type="button" className="btn" title={detail.session.host?`Open the workspace on ${detail.session.host} with VS Code Remote-SSH`:'Open the workspace in VS Code'} onClick={openInEditor}><Code2 size={14}/><span>VS Code</span></button>
                       <button type="button" className="btn primary" title="Resume this session in its agent CLI" onClick={openResume}><Terminal size={14}/><span>Resume</span></button>
+                      {optionalFeatures.continuationEnabled&&<button type="button" className="btn" title="Start a new session in another harness with reviewed context" onClick={()=>setContinuationOpen(true)}><ArrowRight size={14}/><span>Continue in…</span></button>}
                     </div>
                   </div>
                   <div className="detail-subline"><span className="mono" title={detail.session.cwd||detail.session.project}><Folder size={13}/>{detail.session.cwd||shortPath(detail.session.project)}</span>{detail.session.branch&&<span><GitBranch size={13}/>{detail.session.branch}</span>}{detail.session.model&&<span><Sparkles size={13}/>{detail.session.model}</span>}</div>

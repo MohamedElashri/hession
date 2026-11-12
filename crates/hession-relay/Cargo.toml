@@ -1,0 +1,23 @@
+[package]
+name = "hession-relay"
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.90"
+description = "Self-hosted encrypted record relay for Hession"
+license = "MIT"
+
+[dependencies]
+axum = "0.8"
+base64 = "0.22"
+rusqlite = { version = "0.41", features = ["bundled", "backup"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tower = { version = "0.5", features = ["limit", "util"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+hession-sync = { path = "../hession-sync" }

@@ -71,7 +71,7 @@ fn query_all(conn: &Connection, sql: &str, params: &[SqlValue]) -> Result<Vec<Va
     let mut stmt = conn
         .prepare_cached(sql)
         .map_err(|e| format!("Could not prepare query: {e}"))?;
-    let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let cols: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
     let mapped = stmt
         .query_map(refs.as_slice(), |row| row_to_json(&cols, row))
         .map_err(|e| format!("Query failed: {e}"))?;

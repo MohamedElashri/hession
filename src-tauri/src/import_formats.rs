@@ -822,7 +822,6 @@ pub(super) fn rows(
         .map_err(|e| format!("read source schema: {e}"))?;
     let names = stmt
         .column_names()
-        .iter()
         .map(|s| s.to_string())
         .collect::<Vec<_>>();
     let mut rows = match session {

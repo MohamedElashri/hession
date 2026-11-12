@@ -172,7 +172,12 @@ mod tests {
         let changed = managed_token(&conn, &[]).unwrap().unwrap();
         assert_ne!(original, changed);
         let backup_path = directory.path().join("backup.sqlite");
-        conn.backup(rusqlite::MAIN_DB, &backup_path, None).unwrap();
+        conn.backup(
+            rusqlite::MAIN_DB,
+            &backup_path,
+            None::<fn(rusqlite::backup::Progress)>,
+        )
+        .unwrap();
         let backup = Connection::open(&backup_path).unwrap();
         assert_eq!(snapshot_token(&backup, &[]).unwrap().unwrap(), changed);
         assert_eq!(managed_token(&backup, &[]).unwrap(), None);

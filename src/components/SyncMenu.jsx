@@ -22,7 +22,7 @@ export default function SyncMenu({ agents, disabled, autoSync, toggleAutoSync, s
   };
 
   return (
-    <div className="sync-menu" role="dialog" aria-label="Sync options" onKeyDown={event => {
+    <div className="sync-menu" role="dialog" aria-label="History refresh options" onKeyDown={event => {
       if (event.key === 'Escape') {
         event.stopPropagation();
         const trigger = event.currentTarget.parentElement.querySelector('[aria-haspopup="dialog"]');
@@ -31,7 +31,7 @@ export default function SyncMenu({ agents, disabled, autoSync, toggleAutoSync, s
       }
     }}>
       <button type="button" role="switch" aria-checked={autoSync} className="sync-auto-toggle" onClick={toggleAutoSync}>
-        <span>Sync on startup</span>
+        <span>Refresh histories on startup</span>
         <span className={`sync-auto-switch ${autoSync ? 'enabled' : ''}`} aria-hidden="true" />
       </button>
       <div className="sync-menu-divider" />

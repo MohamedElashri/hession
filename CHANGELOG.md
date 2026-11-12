@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.3.0] - 2026-11-12
+
+### New
+
+- **Private device sync:** exchange selected histories, stars, and tags through
+  your own end-to-end encrypted relay. Includes Docker Compose setup, device
+  invitations, recovery keys, download-only scope, and retryable transfers.
+- **Cross-harness continuation:** review session context and a matching local
+  checkout, then start a new Claude Code or Codex session in your chosen terminal.
+- Both features are **optional and disabled by default**, with separate controls
+  and offline setup guides in Settings. Local/SSH imports are now called
+  **Refresh histories**.
+
+### Improved
+
+- Preserve the selected session and transcript page after successful or failed sync.
+- Retain the latest user request in long handoffs and detect further changes in
+  dirty submodules before launch. Correct Unicode sync estimates and multipart counts.
+- Strengthen interrupted setup, cancellation, backup/restore, subprocess limits,
+  and dependencies. Add large-history, native desktop, and container checks.
+- Shorten user guides while keeping setup, recovery, privacy, and current limits explicit.
+
+### Before upgrading
+
+Existing local/SSH histories continue to work; neither new feature enables itself.
+Back up your library through the database menu before upgrading. Sync credentials
+and recovery keys are separate from portable library backups.
+
+Sync is manual and does not transfer project files, delete remote history, or
+rotate encryption keys. The initial protocol has not had an independent security
+audit. Continuation starts a new session with reviewed context; it does not migrate
+a running agent or convert native transcript files. The chosen harness may send
+that context to its model provider.
+
 ## [0.2.1] - 2026-11-09
 
 - Install updates inside Hession with release notes, download progress, and
@@ -58,6 +92,7 @@ Initial release for macOS (universal) and Linux.
 - Light/dark themes and bundled Geist fonts.
 - Download installer with SHA-256 verification.
 
+[0.3.0]: https://github.com/MohamedElashri/hession/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/MohamedElashri/hession/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/MohamedElashri/hession/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/MohamedElashri/hession/compare/v0.1.1...v0.1.2

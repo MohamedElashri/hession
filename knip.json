@@ -4,7 +4,8 @@
     "src/dev/mock-ipc.js",
     "scripts/*.mjs",
     ".github/scripts/*.mjs",
-    "src/**/*.test.js"
+    "src/**/*.test.js",
+    "src/**/*.component.test.jsx"
   ],
   "project": [
     "src/**/*.{js,jsx}",

@@ -68,7 +68,7 @@ fn columns(conn: &Connection, table: &str) -> Result<Vec<String>, String> {
 }
 fn rows(conn: &Connection, table: &str, condition: &str) -> Result<Vec<Row>, String> {
     let mut stmt = sql(conn.prepare(&format!("SELECT * FROM \"{table}\" {condition}")))?;
-    let names: Vec<String> = stmt.column_names().iter().map(|n| n.to_string()).collect();
+    let names: Vec<String> = stmt.column_names().map(|n| n.to_string()).collect();
     let mapped = sql(stmt.query_map([], |r| {
         names
             .iter()
@@ -203,7 +203,7 @@ fn token(conn: &Connection, ids: &[i64]) -> Result<String, String> {
             .collect::<Vec<_>>()
             .join(",");
         let mut stmt = sql(conn.prepare(&format!("SELECT * FROM \"{table}\" ORDER BY {order}")))?;
-        let names = stmt.column_names();
+        let names = stmt.column_names().collect::<Vec<_>>();
         names.hash(&mut hash);
         let count = stmt.column_count();
         let mut rows = sql(stmt.query([]))?;
@@ -274,6 +274,94 @@ fn prune(conn: &Connection) -> Result<(), String> {
         DELETE FROM workspace WHERE id NOT IN (SELECT workspace_id FROM session WHERE workspace_id IS NOT NULL);
         DELETE FROM model WHERE id NOT IN (SELECT model_id FROM session_context WHERE model_id IS NOT NULL);
         DELETE FROM repository WHERE id NOT IN (SELECT repository_id FROM session_context WHERE repository_id IS NOT NULL);"))
+}
+
+fn has_table(conn: &Connection, name: &str) -> Result<bool, String> {
+    sql(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?)",
+        [name],
+        |row| row.get(0),
+    ))
+}
+
+/// Replication queues, partial plaintext chunks, and cursors belong to this
+/// installation. A portable backup must never retain excluded session content
+/// through a replication table, including tables introduced in future versions.
+fn strip_replication_state(conn: &Connection) -> Result<(), String> {
+    let mut statement = sql(conn.prepare(
+        "SELECT name FROM sqlite_schema WHERE type='table' AND name GLOB 'replication_*'",
+    ))?;
+    let tables = sql(sql(statement.query_map([], |row| row.get::<_, String>(0)))?
+        .collect::<rusqlite::Result<Vec<_>>>())?;
+    drop(statement);
+    for table in tables {
+        let quoted = table.replace('"', "\"\"");
+        sql(conn.execute_batch(&format!("DROP TABLE IF EXISTS \"{quoted}\"")))?;
+    }
+    Ok(())
+}
+
+/// Forget queued copies before a local session is deleted or replaced. Do not
+/// let a dangling local row ID later attach these revisions to unrelated data.
+fn forget_replication_session(conn: &Connection, id: i64) -> Result<(), String> {
+    if has_table(conn, "replication_revision")? {
+        if has_table(conn, "replication_outbox")? {
+            sql(conn.execute(
+                "DELETE FROM replication_outbox WHERE revision_id IN (SELECT revision_id FROM replication_revision WHERE local_session_id=?)",
+                [id],
+            ))?;
+        }
+        if has_table(conn, "replication_chunk")? {
+            sql(conn.execute(
+                "DELETE FROM replication_chunk WHERE snapshot_id IN (SELECT revision_id FROM replication_revision WHERE local_session_id=?)",
+                [id],
+            ))?;
+        }
+        sql(conn.execute(
+            "DELETE FROM replication_revision WHERE local_session_id=?",
+            [id],
+        ))?;
+    }
+    for table in ["replication_publication", "replication_identity"] {
+        if has_table(conn, table)? {
+            sql(conn.execute(
+                &format!("DELETE FROM {table} WHERE local_session_id=?"),
+                [id],
+            ))?;
+        }
+    }
+    Ok(())
+}
+
+/// A partial snapshot cannot yet be attributed to a session. Clear its text
+/// during destructive maintenance and rewind the feed so it can be downloaded
+/// consistently on the next explicit sync.
+fn reset_partial_downloads(conn: &Connection) -> Result<(), String> {
+    for table in ["replication_chunk", "replication_checkpoint"] {
+        if has_table(conn, table)? {
+            sql(conn.execute(&format!("DELETE FROM {table}"), []))?;
+        }
+    }
+    Ok(())
+}
+
+fn prepare_backup_contents(conn: &Connection, ids: &[i64]) -> Result<(), String> {
+    select_ids(conn, ids)?;
+    strip_replication_state(conn)?;
+    let total: i64 = sql(conn.query_row("SELECT COUNT(*) FROM session", [], |row| row.get(0)))?;
+    sql(conn.execute(
+        "DELETE FROM session WHERE id NOT IN (SELECT id FROM selected_session)",
+        [],
+    ))?;
+    if ids.len() as i64 != total {
+        sql(conn.execute("DELETE FROM sync_checkpoint", []))?;
+        // Also remove excluded text retained in full-text index segments.
+        sql(conn.execute("INSERT INTO entry_fts(entry_fts) VALUES ('rebuild')", []))?;
+    }
+    prune(conn)?;
+    sql(conn.pragma_update(None, "application_id", BACKUP_ID))?;
+    sql(conn.pragma_update(None, "user_version", BACKUP_VERSION))?;
+    Ok(())
 }
 fn different_file(file: &Path, database: &Path) -> Result<(), String> {
     let existing_db = std::fs::canonicalize(database).map_err(|e| e.to_string())?;
@@ -385,7 +473,7 @@ pub async fn export_saved_data(
 ) -> Result<Json, String> {
     let database = path_of(&state)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = sync::acquire_data_management()?;
+        let _guard = sync::acquire_data_management_for(&database)?;
         let _writer = crate::db::user_write();
         let conn = open(&database)?;
         let destination = PathBuf::from(path);
@@ -397,7 +485,11 @@ pub async fn export_saved_data(
             .tempfile_in(parent)
             .map_err(|e| e.to_string())?
             .into_temp_path();
-        sql(conn.backup(rusqlite::MAIN_DB, &temp, None))?;
+        sql(conn.backup(
+            rusqlite::MAIN_DB,
+            &temp,
+            None::<fn(rusqlite::backup::Progress)>,
+        ))?;
         let mut backup = sql(Connection::open(&temp))?;
         sql(backup.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL",
@@ -411,20 +503,7 @@ pub async fn export_saved_data(
             token(&tx, &ids)?
         };
         verify_token(&actual, &expected_token)?;
-        select_ids(&tx, &ids)?;
-        let total: i64 = sql(tx.query_row("SELECT COUNT(*) FROM session", [], |r| r.get(0)))?;
-        sql(tx.execute(
-            "DELETE FROM session WHERE id NOT IN (SELECT id FROM selected_session)",
-            [],
-        ))?;
-        if ids.len() as i64 != total {
-            sql(tx.execute("DELETE FROM sync_checkpoint", []))?;
-            // Remove excluded text from FTS segments as well as normal tables.
-            sql(tx.execute("INSERT INTO entry_fts(entry_fts) VALUES ('rebuild')", []))?;
-        }
-        prune(&tx)?;
-        sql(tx.pragma_update(None, "application_id", BACKUP_ID))?;
-        sql(tx.pragma_update(None, "user_version", BACKUP_VERSION))?;
+        prepare_backup_contents(&tx, &ids)?;
         sql(tx.commit())?;
         sql(backup.execute_batch("DROP TABLE selected_session; VACUUM"))?;
         drop(backup);
@@ -582,7 +661,7 @@ pub async fn import_saved_data(
 ) -> Result<Json, String> {
     let database = path_of(&state)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = sync::acquire_data_management()?;
+        let _guard = sync::acquire_data_management_for(&database)?;
         let _writer = crate::db::user_write();
         if mode != "keep" && mode != "replace" { return Err("Invalid import mode".into()); }
         let mut destination = open(&database)?;
@@ -610,6 +689,7 @@ pub async fn import_saved_data(
                 let (old_uri, old_family): (String, String) = sql(tx.query_row("SELECT s.source_uri,a.family FROM session s JOIN agent a ON a.id=s.agent_id WHERE s.id=?", [id], |r| Ok((r.get(0)?, r.get(1)?))))?;
                 changed_families.insert(old_family);
                 sql(tx.execute("DELETE FROM sync_state WHERE source_uri=?", [old_uri]))?;
+                forget_replication_session(&tx, id)?;
                 sql(tx.execute("DELETE FROM session WHERE id=?", [id]))?;
                 replaced += 1;
             } else { inserted += 1; }
@@ -656,6 +736,7 @@ pub async fn import_saved_data(
             }
             if pricing_count > 0 { crate::analytics::queue_recalculation(&tx)?; }
         }
+        if replaced > 0 { reset_partial_downloads(&tx)?; }
         prune(&tx)?;
         sql(tx.commit())?;
         crate::analytics::shared_state().clear_cache();
@@ -677,7 +758,7 @@ pub async fn delete_saved_data(
 ) -> Result<Json, String> {
     let path = path_of(&state)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = sync::acquire_data_management()?;
+        let _guard = sync::acquire_data_management_for(&path)?;
         let _writer = crate::db::user_write();
         if confirmation != if reset_database { "RESET" } else { "DELETE" } { return Err("Type the confirmation word before deleting data.".into()); }
         let mut conn = open(&path)?;
@@ -693,6 +774,9 @@ pub async fn delete_saved_data(
         // Clearing family checkpoints allows deleted local sources to return on an explicit sync.
         sql(tx.execute("DELETE FROM sync_checkpoint WHERE family IN (SELECT a.family FROM agent a JOIN session s ON s.agent_id=a.id JOIN selected_session x ON x.id=s.id)", []))?;
         sql(tx.execute("DELETE FROM sync_state WHERE source_uri IN (SELECT source_uri FROM session WHERE id IN (SELECT id FROM selected_session))", []))?;
+        for id in &ids { forget_replication_session(&tx, *id)?; }
+        if reset_database { strip_replication_state(&tx)?; }
+        else if !ids.is_empty() { reset_partial_downloads(&tx)?; }
         sql(tx.execute("DELETE FROM session WHERE id IN (SELECT id FROM selected_session)", []))?;
         sql(tx.execute("INSERT INTO entry_fts(entry_fts) VALUES ('rebuild')", []))?;
         prune(&tx)?;
@@ -733,9 +817,19 @@ mod tests {
         let source = library();
         let first_path = directory.path().join("first.sqlite");
         let second_path = directory.path().join("second.sqlite");
-        source.backup(rusqlite::MAIN_DB, &first_path, None).unwrap();
         source
-            .backup(rusqlite::MAIN_DB, &second_path, None)
+            .backup(
+                rusqlite::MAIN_DB,
+                &first_path,
+                None::<fn(rusqlite::backup::Progress)>,
+            )
+            .unwrap();
+        source
+            .backup(
+                rusqlite::MAIN_DB,
+                &second_path,
+                None::<fn(rusqlite::backup::Progress)>,
+            )
             .unwrap();
         let first = Connection::open(first_path).unwrap();
         let second = Connection::open(second_path).unwrap();
@@ -790,5 +884,212 @@ mod tests {
         )
         .unwrap();
         assert_ne!(token(&conn, &[1]).unwrap(), before);
+    }
+
+    fn replication_fixture(conn: &Connection) {
+        conn.execute_batch("PRAGMA foreign_keys=ON;
+            INSERT INTO session(id,agent_id,source_uri,title) VALUES(2,1,'test://2','Excluded');
+            INSERT INTO entry(id,session_id,ordinal,kind,search_text) VALUES(2,2,0,'message','Excluded transcript');
+            ").unwrap();
+        crate::device_sync::init_schema(conn).unwrap();
+        for id in [1, 2] {
+            conn.execute("INSERT INTO replication_identity(local_session_id,portable_id,head_revision,digest) VALUES(?,?,?,?)",params![id,format!("portable-{id}"),format!("revision-{id}"),format!("digest-{id}")]).unwrap();
+            conn.execute("INSERT INTO replication_revision(revision_id,portable_id,content_digest,local_session_id) VALUES(?,?,?,?)",params![format!("revision-{id}"),format!("portable-{id}"),format!("digest-{id}"),id]).unwrap();
+            conn.execute("INSERT INTO replication_publication(vault_id,local_session_id,digest,revision_id) VALUES('vault',?,?,?)",params![id,format!("digest-{id}"),format!("revision-{id}")]).unwrap();
+            conn.execute("INSERT INTO replication_outbox(record_id,vault_id,revision_id,record_json,workspace) VALUES(?,'vault',?,?,'/work/project')",params![format!("record-{id}"),format!("revision-{id}"),format!("excluded-queued-session-marker-{id}")]).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO replication_checkpoint(vault_id,cursor) VALUES('vault',42)",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO replication_chunk(vault_id,snapshot_id,part,total,data,writer_id) VALUES('vault','incomplete-unknown-revision',0,2,?,'desktop')",[b"excluded-partial-session-text-never-backup".as_slice()]).unwrap();
+    }
+
+    #[test]
+    fn portable_backups_strip_all_replication_payloads_and_still_validate_for_restore() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = library();
+        replication_fixture(&source);
+        source.execute_batch("CREATE TABLE replication_future_private(secret TEXT); INSERT INTO replication_future_private VALUES('future-replication-private-marker');").unwrap();
+        for (label, ids) in [("filtered", vec![1]), ("full", vec![1, 2])] {
+            let path = directory.path().join(format!("{label}.sqlite"));
+            source
+                .backup(
+                    rusqlite::MAIN_DB,
+                    &path,
+                    None::<fn(rusqlite::backup::Progress)>,
+                )
+                .unwrap();
+            let mut backup = Connection::open(&path).unwrap();
+            backup
+                .execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE")
+                .unwrap();
+            let tx = backup.transaction().unwrap();
+            prepare_backup_contents(&tx, &ids).unwrap();
+            tx.commit().unwrap();
+            backup
+                .execute_batch("DROP TABLE selected_session; VACUUM")
+                .unwrap();
+            assert_eq!(backup.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name GLOB 'replication_*'",[],|row|row.get::<_,i64>(0)).unwrap(),0);
+            assert_eq!(
+                backup
+                    .query_row("SELECT count(*) FROM session", [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                ids.len() as i64
+            );
+            drop(backup);
+            let bytes = std::fs::read(&path).unwrap();
+            for secret in [
+                b"excluded-partial-session-text-never-backup".as_slice(),
+                b"excluded-queued-session-marker".as_slice(),
+                b"future-replication-private-marker".as_slice(),
+            ] {
+                assert!(
+                    !bytes.windows(secret.len()).any(|window| window == secret),
+                    "retained private replication bytes in {label} backup"
+                );
+            }
+            // Exercise the real import validation and restore-plan path using
+            // the resulting portable file, with no replication state installed.
+            let destination = library();
+            let restored = open_backup(&path, &destination).unwrap();
+            let selected = selection(&restored, &DataFilters::default()).unwrap();
+            select_ids(&restored, &selected).unwrap();
+            let (plan, _) = import_plan(&destination, &restored, &selected).unwrap();
+            assert_eq!(plan.len(), ids.len());
+            assert_eq!(
+                plan.iter().filter(|(_, matched)| matched.is_some()).count(),
+                1
+            );
+            assert_eq!(
+                plan.iter().filter(|(_, matched)| matched.is_none()).count(),
+                ids.len() - 1
+            );
+        }
+        // Export scrubbing must never erase the active device's retry queue.
+        assert_eq!(
+            source
+                .query_row("SELECT count(*) FROM replication_outbox", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            source
+                .query_row("SELECT count(*) FROM replication_chunk", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn local_session_maintenance_discards_its_queued_state_without_touching_other_sessions() {
+        let conn = library();
+        replication_fixture(&conn);
+        let tx = conn.unchecked_transaction().unwrap();
+        forget_replication_session(&tx, 1).unwrap();
+        reset_partial_downloads(&tx).unwrap();
+        tx.execute("DELETE FROM session WHERE id=1", []).unwrap();
+        tx.commit().unwrap();
+        for table in [
+            "replication_identity",
+            "replication_revision",
+            "replication_publication",
+            "replication_outbox",
+        ] {
+            assert_eq!(
+                conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1,
+                "lost another session's state from {table}"
+            );
+        }
+        assert_eq!(
+            conn.query_row(
+                "SELECT local_session_id FROM replication_revision",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row("SELECT record_id FROM replication_outbox", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+            "record-2"
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM replication_chunk", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM replication_checkpoint", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        // A reused SQLite ID must not inherit the deleted session's revisions.
+        conn.execute("INSERT INTO session(id,agent_id,source_uri,title) VALUES(1,1,'test://replacement','Replacement')",[]).unwrap();
+        assert!(!conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM replication_revision WHERE local_session_id=1)",
+                [],
+                |row| row.get::<_, bool>(0)
+            )
+            .unwrap());
+        strip_replication_state(&conn).unwrap();
+        assert_eq!(conn.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name GLOB 'replication_*'",[],|row|row.get::<_,i64>(0)).unwrap(),0);
+        // Disabled installations need no replication tables for maintenance.
+        forget_replication_session(&conn, 1).unwrap();
+        reset_partial_downloads(&conn).unwrap();
+    }
+
+    #[test]
+    fn aborted_maintenance_keeps_history_and_replication_recovery_state_atomic() {
+        let conn = library();
+        replication_fixture(&conn);
+        let tx = conn.unchecked_transaction().unwrap();
+        forget_replication_session(&tx, 1).unwrap();
+        reset_partial_downloads(&tx).unwrap();
+        tx.execute("DELETE FROM session WHERE id=1", []).unwrap();
+        // Model a later validation/write failure before the maintenance commits.
+        tx.rollback().unwrap();
+        for table in [
+            "session",
+            "replication_identity",
+            "replication_revision",
+            "replication_publication",
+            "replication_outbox",
+        ] {
+            assert_eq!(
+                conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                2,
+                "rollback lost {table}"
+            );
+        }
+        assert_eq!(
+            conn.query_row(
+                "SELECT cursor FROM replication_checkpoint WHERE vault_id='vault'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            42
+        );
+        let bytes: Vec<u8> = conn
+            .query_row("SELECT data FROM replication_chunk", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bytes, b"excluded-partial-session-text-never-backup");
     }
 }

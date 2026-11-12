@@ -21,6 +21,7 @@ const state = {
   terminal: 'default',
   customPath: null,
   customArgs: null,
+  optionalFeatures: { continuationEnabled: false },
 };
 let callbacks = 0;
 
@@ -70,6 +71,35 @@ function resumeInfo({ id, terminal }) {
 }
 
 const handlers = {
+  get_optional_features: () => ({ ...state.optionalFeatures }),
+  set_continuation_enabled: ({ enabled }) => { state.optionalFeatures.continuationEnabled = !!enabled; return { ...state.optionalFeatures }; },
+  get_device_sync_settings: () => ({ enabled: false, configured: false, relayUrl: '', deviceName: '', scope: [], workspaces: fixtures.projects.map(project => ({ path: project.path, count: project.sessions || 0 })), status: { running: false, phase: 'disabled', uploaded: 0, downloaded: 0 } }),
+  preview_device_sync: ({ workspaces }) => {
+    const selected = state.sessions.filter(session => workspaces.includes(session.project || session.cwd));
+    return { sessions: selected.length, entries: selected.reduce((sum, session) => sum + (session.entry_count || 0), 0), estimatedBytes: selected.length * 4096 };
+  },
+  test_device_sync_relay: () => Promise.reject('Relay connections are disabled in the browser preview. Use the desktop app to configure private sync.'),
+  setup_device_sync: () => Promise.reject('Library creation is disabled in the browser preview.'),
+  join_device_sync: () => Promise.reject('Device pairing is disabled in the browser preview.'),
+  get_continuation_info: ({ id, target, cwd, note, includeTools }) => {
+    if (!state.optionalFeatures.continuationEnabled) throw 'Enable cross-harness continuation in Settings first.';
+    const detail = fixtures.details[id];
+    if (!detail) throw 'Session not found';
+    const session = detail.session;
+    const text = detail.entries.filter(entry => ['user', 'assistant'].includes(entry.role))
+      .slice(-12).map(entry => `${entry.role}: ${(entry.parts || []).filter(part => part.kind === 'text').map(part => part.text).join('\n')}`).join('\n\n');
+    return {
+      source: { id, family: session.agent, title: session.title, cwd: session.cwd, host: session.host, importedAt: fixtures.generatedAt },
+      workspace: { path: cwd || session.cwd, exists: true, repositoryRoot: cwd || session.cwd, branch: session.branch || 'main', commit: 'preview', dirty: false, status: '' },
+      target, checkpoint: 'browser-preview', content: `# Hession handoff preview\n\n${note || ''}\n\n${text}`,
+      omissions: ['Images, private reasoning, permissions, and running processes are omitted.', ...(includeTools ? ['This browser preview does not include tool payloads.'] : ['Tool inputs and outputs are excluded.'])],
+      warnings: ['Browser preview: launching real harnesses is disabled.'], cliFound: true, cliVersion: 'preview', canLaunch: false,
+      nativeConversionAvailable: false, providerNotice: 'The selected harness may send the reviewed context to its model provider when launched in the desktop app.',
+    };
+  },
+  launch_continuation: () => Promise.reject('Launching a harness is disabled in the browser preview.'),
+  list_continuation_packages: () => ({ packages: [] }),
+  cleanup_continuation_packages: () => ({ removed: 0 }),
   get_agents: () => fixtures.agents,
   get_projects: () => fixtures.projects,
   get_stats: () => fixtures.stats,

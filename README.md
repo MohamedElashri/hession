@@ -5,90 +5,75 @@
   </picture>
 </p>
 
-A desktop app to search, read, analyze, and resume your coding-agent sessions,
-both the ones on this computer and the ones on the SSH hosts you work on
-(for example through VS Code Remote-SSH).
-
-- **One library** for Claude Code, Codex, OpenCode, Cline, Pi, Command Code,
-  Muse, Hermes Agent, and Antigravity sessions
-- **Remote hosts**: sessions on your SSH machines are copied in on each sync
-  and work like local ones
-- **Full-text search** over transcripts, with filters for agent, host,
-  workspace, model, branch, tool, and date
-- **Resume** a session in its agent CLI, locally or over `ssh`, or **open
-  its folder in VS Code**
-- **Analytics** for tokens, estimated cost, tools, and failures
-- **Local-first and private**: everything is stored in a SQLite database on
-  your machine; no telemetry, and updates are checked only when you ask
+Search, read, analyze, and resume your coding-agent sessions on macOS and Linux.
+Keep local and SSH histories in one offline library, optionally sync between
+devices through your own encrypted relay, or continue a task in another harness.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/sessions-dark.png">
-  <img alt="Session library with a remote session open" src="docs/screenshots/sessions-light.png">
+  <img alt="Hession session library" src="docs/screenshots/sessions-light.png">
 </picture>
 
 ## Install
 
-Hession runs on macOS (Apple silicon and Intel) and Linux (x64 and ARM64).
-Install or update to the latest release with:
+macOS: Apple silicon or Intel. Linux: x64 or ARM64.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/MohamedElashri/hession/main/install.sh | sh
 ```
 
-The script picks the right package for your system, verifies its SHA-256
-checksum, and installs it:
+The installer verifies checksums and selects a macOS app, Debian/RPM package,
+or AppImage. Download packages directly from
+[Releases](https://github.com/MohamedElashri/hession/releases).
 
-| System | Installs |
+Update through **Software update → Check for updates**, or rerun the installer.
+In-app downloads are signature-verified. Linux system packages may request
+administrator authorization. Your library is kept when updating or uninstalling.
+Installer options: `--appimage`, `--version v0.3.0`, `--force`, `--uninstall`,
+`--help`; pass them after `sh -s --`.
+
+## Start here
+
+1. Open Hession to import local agent histories. **Refresh histories** imports
+   changes; its menu controls startup refresh and full rescans.
+2. Add an SSH machine with **+** beside **Hosts**, then refresh. SSH must work
+   without password prompts, and `rsync` must be installed on both machines.
+3. Search or filter sessions, read the conversation or full log, and use
+   **Resume** to reopen an original session or **VS Code** to open its folder.
+
+Supported histories: Claude Code, Codex, OpenCode, Cline, Pi, Command Code,
+Muse, Hermes Agent, and Antigravity. Stars, tags, Markdown/JSON export, token
+and cost analytics, appearance options, and terminal preferences are included.
+
+## New in 0.3.0
+
+Both features are **optional and disabled by default**, independently on each device.
+
+| Feature | Enable and use |
 | --- | --- |
-| macOS | `Hession.app` in `/Applications` (or `~/Applications`) |
-| Debian, Ubuntu | the `.deb` package (asks for `sudo`) |
-| Fedora, openSUSE, RHEL | the `.rpm` package (asks for `sudo`) |
-| Other Linux, or `--appimage` | the AppImage in `~/.local`, with a `hession` command and menu entry |
+| [Private device sync](docs/private-sync.md) | **Settings → Private sync**: connect to your self-hosted relay, select upload workspaces, preview, save the recovery key, and enable. Choose **Sync now** for each transfer. |
+| [Cross-harness continuation](docs/continuation.md) | **Settings → Continuation**: enable, open a session, then choose **Continue in…**. Review context and a matching local checkout before starting a new Claude Code or Codex session. |
 
-To update from inside Hession, open **Software update** at the bottom of the
-sidebar: check for a release, download and install it, then restart when ready.
-Updates are signed and verified before installation. Linux system packages may
-ask for administrator authorization.
+Sync transfers history, stars, and tags, not project files or native agent stores.
+Continuation starts a new session with context; it does not move a running agent.
 
-You can also run the install command again to update. Options go after `sh -s --`, for example
-`... | sh -s -- --appimage`: `--version v0.1.0`, `--force`, `--uninstall`, and
-`--help`. Your session library in `~/.hession` is never touched. Installers are
-also on the [releases page](https://github.com/MohamedElashri/hession/releases).
+## Privacy and your data
 
-To build from source instead, see [development](docs/development.md).
+Hession reads original histories without changing them. Its local library is
+`~/.hession/sessions.sqlite`; it remains usable offline. There is no Hession
+account or telemetry. SSH imports contact your configured hosts. Price downloads
+from models.dev and update checks/downloads from GitHub are user-initiated.
 
-## Quick start
+Private sync encrypts selected history before sending it to your relay.
+Continuation prepares context locally; the destination harness may send that
+context to its normal model provider. Local libraries, handoff files, and ordinary
+backups contain plaintext. See [security and limits](docs/sync-security.md).
 
-1. Open the app. It imports local agent history on first launch.
-2. To add remote machines, click **+** next to *Hosts* in the sidebar and pick
-   hosts from the suggestions (VS Code Remote-SSH history, `~/.ssh/config`) or
-   type one. Then click **Sync now**.
-3. Select a session to read it. Choose **Resume** to continue it in a
-   terminal, or **VS Code** to open its workspace.
+## Guides
 
-## How it works
+- [User guide](docs/user-guide.md): everyday use, supported stores, backups, fixes.
+- [Private sync](docs/private-sync.md) · [Self-hosting](docs/self-hosting.md).
+- [Continuation](docs/continuation.md) · [What's changed](CHANGELOG.md).
+- [Development](docs/development.md) · [Sync protocol](docs/sync-protocol.md).
 
-- **Reads** each agent's own history files (for example `~/.claude/projects`).
-  It never writes to them.
-- **Stores** an indexed copy in `~/.hession/sessions.sqlite`. Sync only
-  re-reads files whose size or modification time changed.
-- **Remote hosts** you add are reached with your `ssh` and `~/.ssh/config`,
-  without password prompts. Their history files are copied with `rsync` into
-  `~/.hession/remotes/<host>/` and then indexed like local files. Nothing on
-  the host is changed.
-- **Nothing is uploaded.** Besides your SSH hosts, the app makes network
-  requests only when you click for them: a model-price download from
-  [models.dev](https://models.dev) in Analytics, and an update check against
-  GitHub releases in Software update, followed by the signed package download
-  when you choose to install.
-
-## Documentation
-
-- [User guide](docs/user-guide.md): sync, remote hosts, resume, supported
-  agents, data, and troubleshooting
-- [Development](docs/development.md): building, testing, project layout,
-  branding, and releases
-
-## License
-
-MIT, see [LICENSE](LICENSE).
+MIT licensed; see [LICENSE](LICENSE).

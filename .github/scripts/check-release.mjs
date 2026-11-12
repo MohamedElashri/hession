@@ -18,16 +18,25 @@ requireCondition(
   'Release version must be a numeric major.minor.patch version.',
 );
 
-const cargoPackage = read('src-tauri/Cargo.toml')
-  .split(/^\[/m)
-  .find((section) => section.startsWith('package]'));
-const cargoVersion = cargoPackage?.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+const cargoPackages = [
+  ['src-tauri/Cargo.toml', 'app'],
+  ['crates/hession-sync/Cargo.toml', 'hession-sync'],
+  ['crates/hession-relay/Cargo.toml', 'hession-relay'],
+];
+const cargoLock = read('Cargo.lock');
+const cargoVersions = {};
+for (const [path, name] of cargoPackages) {
+  const section = read(path).split(/^\[/m).find(value => value.startsWith('package]'));
+  cargoVersions[path] = section?.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+  cargoVersions[`Cargo.lock (${name})`] = cargoLock.match(new RegExp(`^name = "${name}"\\nversion = "([^"]+)"`, 'm'))?.[1];
+}
 const npmLock = json('package-lock.json');
 for (const [name, actual] of Object.entries({
   'package.json': json('package.json').version,
   'package-lock.json': npmLock.version,
   'package-lock.json root package': npmLock.packages?.['']?.version,
-  'src-tauri/Cargo.toml': cargoVersion,
+  ...cargoVersions,
+  'deploy/relay/compose.yaml image': read('deploy/relay/compose.yaml').match(/^\s+image: hession-relay:([^\s]+)/m)?.[1],
 })) {
   requireCondition(actual === version, `${name} version must match Tauri ${version}.`);
 }

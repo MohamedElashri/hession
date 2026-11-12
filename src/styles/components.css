@@ -163,6 +163,24 @@
 .appearance-toggles small { display: block; color: var(--text-2); font-size: var(--text-sm); margin-top: 2px; }
 @media (max-width: 400px) { .appearance-selects { grid-template-columns: 1fr; } }
 .terminal-settings-dialog { width: min(560px, calc(100vw - 32px)); }
+.settings-dialog { width: min(720px, calc(100vw - 32px)); }
+.settings-sections { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 20px; }
+.settings-section { display: flex; flex-direction: column; align-items: stretch; gap: 14px; }
+.settings-section h3, .settings-section p { margin: 0; }
+.settings-section > .btn { align-self: flex-start; }
+.settings-switch { display: flex; align-items: center; gap: 10px; font-size: var(--text-sm); }
+.settings-switch input { width: 16px; height: 16px; flex: 0 0 auto; accent-color: var(--accent); }
+.settings-section input:not([type="checkbox"]), .settings-section select, .settings-section textarea { width: 100%; min-width: 0; }
+.settings-section label:not(.settings-switch) { display: flex; flex-direction: column; gap: 6px; font-size: var(--text-sm); }
+.settings-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.settings-scope { max-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.settings-secret { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; border-radius: 8px; background: var(--surface-2); font-family: var(--font-mono); font-size: var(--text-sm); user-select: all; }
+.settings-device-list { padding-left: 20px; margin: 0; font-size: var(--text-sm); }
+.feature-documentation { font-size: var(--text-sm); overflow-wrap: anywhere; }
+.feature-documentation h1 { font-size: var(--text-lg); }
+.feature-documentation h2, .feature-documentation h3, .feature-documentation h4 { margin: 18px 0 8px; }
+.feature-documentation p, .feature-documentation ul, .feature-documentation ol, .feature-documentation pre, .feature-documentation table { margin: 0 0 12px; }
+.feature-documentation pre { overflow: auto; }
 .terminal-settings-fields { border: 0; padding: 0; margin: 16px 0; display: flex; flex-direction: column; gap: 12px; }
 .terminal-settings-fields label { display: flex; flex-direction: column; gap: 6px; font-size: var(--text-sm); }
 .terminal-path { display: flex; gap: 8px; }

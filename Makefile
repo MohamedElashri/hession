@@ -31,7 +31,7 @@ endif
 
 .DEFAULT_GOAL := help
 .PHONY: help setup deps dev preview preview-fixtures build build-debug bundle deb appimage rpm run run-debug \
-        verify test check lint lint-js lint-sh unused fmt fmt-check icons brand docker-test release-check \
+        verify test check lint lint-js lint-sh unused fmt fmt-check icons brand docker-test test-relay-container release-check \
         clean desktop-entry desktop-entry-remove _frontend _pkg-config
 
 help: ## Show this help
@@ -107,13 +107,13 @@ verify: fmt-check lint unused test release-check ## Run all release checks
 
 test: _frontend ## Run JavaScript and Rust tests against the built frontend
 	$(NPM) test
-	$(CARGO) test $(CARGO_ARGS) --lib
+	$(CARGO) test $(CARGO_ARGS) --workspace
 
 check: _frontend ## Build the frontend and check Rust without running tests
-	$(CARGO) check $(CARGO_ARGS)
+	$(CARGO) check $(CARGO_ARGS) --workspace
 
 lint: _frontend lint-js lint-sh ## ESLint, ShellCheck, and Clippy; warnings fail
-	$(CARGO) clippy $(CARGO_ARGS) --all-targets -- -D warnings
+	$(CARGO) clippy $(CARGO_ARGS) --workspace --all-targets -- -D warnings
 
 lint-js: NPM_SCRIPT = lint
 lint-js: ## Lint the frontend and scripts
@@ -129,10 +129,10 @@ lint-js unused icons: setup
 	$(NPM) run $(or $(NPM_SCRIPT),$@)
 
 fmt: ## Format the Rust code
-	$(CARGO) fmt --manifest-path $(MANIFEST)
+	$(CARGO) fmt --all --manifest-path $(MANIFEST)
 
 fmt-check: ## Fail if the Rust code is not formatted
-	$(CARGO) fmt --manifest-path $(MANIFEST) --check
+	$(CARGO) fmt --all --manifest-path $(MANIFEST) --check
 
 brand: ## Apply brand.json to Tauri/npm/Cargo manifests
 	$(NPM) run brand
@@ -143,7 +143,11 @@ docker-test: _frontend ## Run JavaScript tests locally and Rust tests in Docker
 	mkdir -p "$(HOME)/.cargo/registry" "$(TARGET)/docker"
 	docker run --rm -u $$(id -u):$$(id -g) -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
 	  -v "$(HOME)/.cargo/registry:/cargo/registry" -v "$(abspath $(TARGET))/docker:/target" \
-	  -v "$(CURDIR):/w" -w /w/$(CARGO_DIR) $(SLUG)-check cargo --locked test --lib
+	  -v "$(CURDIR):/w" -w /w/$(CARGO_DIR) $(SLUG)-check cargo --locked test --workspace
+
+test-relay-container: ## Build and test the private relay Docker image with disposable data
+	docker build --file deploy/relay/Dockerfile --tag hession-relay:test .
+	$(CARGO) test --locked -p hession-relay --test container -- --ignored --nocapture
 
 # GNOME/KDE pick the dock icon from the .desktop entry whose StartupWMClass (or
 # file name) matches the window's app_id / WM_CLASS, which GTK sets to the binary

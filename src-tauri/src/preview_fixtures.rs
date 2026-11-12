@@ -277,7 +277,11 @@ fn dump_library_fixtures() {
     let copy = tmp.path().join("sessions.sqlite");
     rusqlite::Connection::open_with_flags(&source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .unwrap()
-        .backup(rusqlite::MAIN_DB, &copy, None)
+        .backup(
+            rusqlite::MAIN_DB,
+            &copy,
+            None::<fn(rusqlite::backup::Progress)>,
+        )
         .unwrap();
     let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/dev/fixtures.local.json");
     write_fixtures(&copy, &out, 40);

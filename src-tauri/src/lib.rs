@@ -6,9 +6,12 @@ use std::sync::Mutex;
 pub mod analytics;
 pub mod brand;
 pub mod commands;
+pub mod continuation;
 pub mod data_management;
 pub mod db;
+pub mod device_sync;
 mod export_format;
+pub mod features;
 pub mod importer;
 mod library_revision;
 mod paths;
@@ -56,6 +59,24 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            features::get_optional_features,
+            features::set_continuation_enabled,
+            continuation::get_continuation_info,
+            continuation::launch_continuation,
+            continuation::list_continuation_packages,
+            continuation::cleanup_continuation_packages,
+            device_sync::get_device_sync_settings,
+            device_sync::preview_device_sync,
+            device_sync::test_device_sync_relay,
+            device_sync::setup_device_sync,
+            device_sync::join_device_sync,
+            device_sync::set_device_sync_enabled,
+            device_sync::run_device_sync,
+            device_sync::stop_device_sync,
+            device_sync::create_device_sync_invitation,
+            device_sync::disconnect_device_sync,
+            device_sync::export_device_sync_recovery_key,
+            device_sync::reset_device_sync_checkpoint,
             commands::ping,
             commands::get_health,
             commands::search_sessions,

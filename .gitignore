@@ -1,5 +1,6 @@
 node_modules
 dist
+coverage/
 target
 # Private updater signing key; only the public key belongs in the app config.
 .updater/
@@ -9,4 +10,9 @@ src-tauri/gen
 *.log
 # Preview of a real library (make preview-fixtures FROM=...): private data
 src/dev/fixtures.local.json
+# Self-hosted relay credentials, deployment settings, and private backups.
+deploy/relay/secrets/
+deploy/relay/backups/
+deploy/relay/.env
+hession-relay-data/
 

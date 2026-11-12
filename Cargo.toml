@@ -1,5 +1,5 @@
 # Cargo workspace: one Cargo.lock and one target/ at the repository root.
 # The Tauri app itself lives in src-tauri/ (Tauri's standard layout).
 [workspace]
-members = ["src-tauri"]
+members = ["src-tauri", "crates/hession-sync", "crates/hession-relay"]
 resolver = "2"

@@ -1,0 +1,58 @@
+name: hession-relay
+
+services:
+  relay:
+    build:
+      context: ../..
+      dockerfile: deploy/relay/Dockerfile
+    image: hession-relay:0.3.0
+    restart: unless-stopped
+    environment:
+      HESSION_RELAY_DATA_DIR: /data
+      HESSION_RELAY_BIND: 0.0.0.0:8744
+      HESSION_RELAY_ADMIN_TOKEN_FILE: /run/secrets/admin_token
+      HESSION_RELAY_QUOTA_BYTES: ${HESSION_RELAY_QUOTA_BYTES:-1073741824}
+    secrets:
+      - admin_token
+    volumes:
+      - relay-data:/data
+    ports:
+      - "127.0.0.1:8744:8744"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    stop_grace_period: 30s
+
+  https:
+    image: caddy:2-alpine
+    profiles: [https]
+    restart: unless-stopped
+    environment:
+      HESSION_RELAY_DOMAIN: ${HESSION_RELAY_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - relay
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  admin_token:
+    file: ./secrets/admin-token
+
+volumes:
+  relay-data:
+  caddy-data:
+  caddy-config:

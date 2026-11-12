@@ -30,6 +30,7 @@ directly, set `PKG_CONFIG=/usr/bin/pkg-config` yourself.
 | `make desktop-entry` | Per-user launcher and dock icon for `make dev` (Linux) |
 | `make test` | Frontend build, Rust tests, and JS tests |
 | `make docker-test` | The same tests in a container, with no system libraries needed |
+| `make test-relay-container` | Build the relay Docker image and check authentication, encryption, limits, persistence, and backup/restore with disposable data |
 | `make check` | Frontend build + `cargo check` |
 | `make lint` | ESLint + ShellCheck + Clippy; any warning fails (`make lint-js`, `make lint-sh` alone) |
 | `make unused` | Unused files, exports, and npm dependencies (knip) |
@@ -62,7 +63,8 @@ To develop against a scratch library, set
 ## Layout
 
 Standard Tauri layout: the frontend in `src/`, the Rust app in `src-tauri/`.
-A Cargo workspace at the root keeps one `Cargo.lock` and one `target/`.
+A Cargo workspace at the root keeps one `Cargo.lock` and one `target/`, shared
+by the app, the encrypted record library, and the optional relay server.
 
 ```
 Cargo.toml, Cargo.lock  Cargo workspace (member: src-tauri)
@@ -84,6 +86,9 @@ src-tauri/src/
   db.rs                 SQLite schema and connections
   analytics.rs, pricing.rs, data_management.rs, sync.rs
 src-tauri/tauri.conf.json, capabilities/, icons/   Tauri app config and icons
+crates/hession-sync/    portable encrypted snapshots and protocol primitives
+crates/hession-relay/   standalone self-hosted opaque-record HTTP relay
+deploy/                relay container and Compose deployment examples
 ```
 
 Build output (all ignored by git):
@@ -136,6 +141,37 @@ focus to their trigger when closed.
 
 ## Tests
 
+`npm test` runs the existing Node unit tests followed by rendered React component
+tests in jsdom. `npm run test:unit` and `npm run test:components` run those suites
+separately. The component tests mock only the native IPC/dialog boundary and
+missing native modal presentation; they exercise actual setup controls, consent
+gates, stale previews, interrupted enrollment, and offline help navigation.
+They never enroll a real device or launch a model provider.
+
+`npm run test:coverage` reports V8 coverage for the optional-feature dialogs and
+consent helpers, with a machine-readable summary in
+`coverage/components/coverage-summary.json`. This is targeted frontend coverage,
+not a coverage claim for the Rust backend or the entire application.
+
+For dependency checks, run `npm audit` and, when installed, `cargo audit` against
+the current RustSec advisory database. Do not treat zero entries in the
+vulnerability category as clearing separate soundness or maintenance warnings;
+the known upstream boundaries are recorded below under [Dependency security](#dependency-security).
+Runtime integration tests use disposable localhost servers and require loopback
+binding permission. They should fail clearly when that permission is missing,
+not silently substitute a mocked server or skip the test.
+
+The workspace checks include the relay and encrypted record library. Optional
+features must remain disabled on a fresh install and when restoring a portable
+library backup. Never enable them in test fixtures using a developer's real
+settings or OS credential store. Use scratch directories and injected test
+credentials for sync integration tests. Browser preview can show settings and
+handoff previews but never connects to a relay or launches a real harness.
+
+Read [the sync protocol](sync-protocol.md) before changing replication, and
+[the security boundary](sync-security.md) before changing encryption or device
+enrollment. Keep protocol-version and harness compatibility failures explicit.
+
 `make test` runs the Rust unit tests and the JS tests (`npm test`;
 `src/transcript.test.js` covers how transcripts become conversation turns and
 `src/appearance.test.js` covers saved settings, migration, and theme resolution).
@@ -145,10 +181,50 @@ and import against a fake remote home. Another test runs the generated
 resume command through `sh` with awkward paths and arguments. For visual checks,
 use `make preview` to inspect both sessions and analytics with sample data.
 
+## Dependency security
+
+The scans on 2026-11-12 found no entries in npm audit or RustSec's vulnerability
+category after updating bundled SQLite, TLS/certificate dependencies, Tokio,
+rustix, and Vite. This is a dated scan result, not an independent protocol audit;
+rerun against current advisories before release.
+
+RustSec's separate warnings include the upstream
+[GTK/glib soundness advisory](https://rustsec.org/advisories/RUSTSEC-2024-0429.html)
+in Tauri's Linux tree, plus maintenance notices for proc-macro-error and optional
+async Secret Service dependencies. Hession uses synchronous Secret Service.
+These warnings are not silently ignored; resolving GTK requires a compatible
+upstream toolkit change. See [Security](sync-security.md) for user-facing limits.
+
+## Large-project regression checks
+
+`cargo test --workspace --locked` includes real Git and localhost relay fixtures
+for these boundaries:
+
+- A 10,003-event history with multi-megabyte Unicode text and embedded NULs,
+  encrypted chunking, byte-bounded feed pages, restart from a saved partial
+  chunk, and a repeated sync without duplicate sessions or events.
+- UTF-8 byte estimates and event counts when an event has multiple text parts.
+- 4,000 long filenames that exceed the Git output limit, followed by a smaller
+  file list that can be inspected normally.
+- Hidden dirty submodules, further edits within an already dirty submodule,
+  and exhausted inspection deadlines or repository-count budgets.
+- Detached linked worktrees, symlinked checkouts, and renamed filenames with
+  Unicode, tabs, and newlines.
+
+For manual native checks, use a scratch `HESSION_DATA_DIR` and synthetic harness
+stores. Check a history spanning more than 20 transcript pages: jump to its last
+page, search for an event on an earlier page, and open the match in the full log.
+Open a continuation against an oversized Git status, reduce its generated file
+list, and refresh. Then edit an already dirty submodule after previewing it and
+verify that launch requires a new review. These native UI checks are manual;
+the automated tests exercise the underlying production code.
+
 ## Releases
 
 1. Add a `## [x.y.z]` section to `CHANGELOG.md`; it becomes the release notes.
-2. Run `python3 bump_version.py` to set the version in every manifest.
+2. Run `python3 bump_version.py x.y.z --yes` to align desktop and relay manifests,
+   lockfiles, and the Compose image tag. It runs metadata/build checks; use
+   `--skip-checks` only when running the checks separately.
 3. Run `make release-check VERSION=x.y.z` (it fails without a changelog entry).
 4. Commit, then push a `vX.Y.Z` tag. The workflow in
    `.github/workflows/release.yml` builds a universal macOS DMG (Apple silicon

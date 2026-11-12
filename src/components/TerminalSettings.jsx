@@ -41,7 +41,7 @@ export default function TerminalSettings({ onClose }) {
   };
   return <dialog ref={dialog} className="data-dialog terminal-settings-dialog" aria-labelledby="settings-title"
     onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
-    <div className="export-heading"><h2 id="settings-title"><Settings size={18}/>Settings</h2>
+    <div className="export-heading"><h2 id="settings-title"><Settings size={18}/>Terminal settings</h2>
       <button type="button" className="icon-button" aria-label="Close settings" disabled={busy} onClick={onClose}><X size={18}/></button>
     </div>
     <p>Choose the terminal used by Resume in CLI. This preference also applies to updates opened in a terminal.</p>

@@ -95,7 +95,7 @@ export default function RemoteHosts({ onClose, onSyncNow, syncRunning }) {
 
     {error && <div className="data-error" role="alert">{error}</div>}
     {changed && <div className="data-actions remote-footer">
-      <button type="button" className="data-button" disabled={syncRunning || saving} onClick={() => { onSyncNow(); onClose(); }}>Sync now</button>
+      <button type="button" className="data-button" disabled={syncRunning || saving} onClick={() => { onSyncNow(); onClose(); }}>Refresh histories</button>
       {syncRunning && <span className="remote-meta">A sync is running; changes apply to the next one.</span>}
     </div>}
   </dialog>;

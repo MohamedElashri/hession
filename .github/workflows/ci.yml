@@ -15,6 +15,38 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  relay-container:
+    name: Relay container
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Validate deployment and build relay
+        run: |
+          mkdir -p deploy/relay/secrets
+          openssl rand -hex 32 > deploy/relay/secrets/admin-token
+          docker compose -f deploy/relay/compose.yaml config --quiet
+          docker build --file deploy/relay/Dockerfile --tag hession-relay:test .
+
+      - name: Install Rust for container integration tests
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test relay container authentication, persistence, and recovery
+        run: |
+          cargo test --locked -p hession-relay --test container -- --ignored --nocapture
+
+      - name: Clean up relay container
+        if: always()
+        run: |
+          docker ps --all --quiet --filter label=io.hession.test=relay-container \
+            | xargs --no-run-if-empty docker rm --force --volumes
+          docker volume ls --quiet --filter label=io.hession.test=relay-container \
+            | xargs --no-run-if-empty docker volume rm --force
+
   check:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}

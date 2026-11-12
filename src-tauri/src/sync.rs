@@ -8,6 +8,7 @@
 //!
 //! Only deps: std + serde (+ chrono for timestamps).
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -49,9 +50,15 @@ fn lock_state() -> MutexGuard<'static, SyncState> {
 static MANAGING_DATA: AtomicBool = AtomicBool::new(false);
 
 /// Shares the sync launch lock so maintenance and sync cannot start together.
-pub struct DataManagementGuard(());
+pub struct DataManagementGuard(PathBuf);
 
 pub fn acquire_data_management() -> Result<DataManagementGuard, String> {
+    acquire_data_management_for(&crate::db::db_path())
+}
+
+/// Use the operation's actual database, including scratch/test libraries, when
+/// scheduling the deferred analytics refresh after releasing maintenance.
+pub fn acquire_data_management_for(path: &Path) -> Result<DataManagementGuard, String> {
     let state = lock_state();
     if state.running {
         return Err("Stop session sync before managing saved data.".into());
@@ -59,13 +66,13 @@ pub fn acquire_data_management() -> Result<DataManagementGuard, String> {
     if MANAGING_DATA.swap(true, Ordering::SeqCst) {
         return Err("Another data operation is in progress. Please wait.".into());
     }
-    Ok(DataManagementGuard(()))
+    Ok(DataManagementGuard(path.to_path_buf()))
 }
 
 impl Drop for DataManagementGuard {
     fn drop(&mut self) {
         MANAGING_DATA.store(false, Ordering::SeqCst);
-        crate::analytics::request_refresh(&crate::db::db_path(), false);
+        crate::analytics::request_refresh(&self.0, false);
     }
 }
 

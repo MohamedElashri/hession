@@ -1,110 +1,92 @@
 #!/usr/bin/env python3
+"""Keep desktop, relay, container, and lockfile release versions together."""
+import argparse
 import json
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-
-JSON_FILES = [
-    Path("package.json"),
-    Path("src-tauri/tauri.conf.json"),
+JSON_FILES = [Path("package.json"), Path("src-tauri/tauri.conf.json")]
+CARGO_PACKAGES = [
+    (Path("src-tauri/Cargo.toml"), "app"),
+    (Path("crates/hession-sync/Cargo.toml"), "hession-sync"),
+    (Path("crates/hession-relay/Cargo.toml"), "hession-relay"),
 ]
-CARGO_TOML = Path("src-tauri/Cargo.toml")
 PACKAGE_LOCK = Path("package-lock.json")
 CARGO_LOCK = Path("Cargo.lock")
+COMPOSE = Path("deploy/relay/compose.yaml")
 
 
-def read(p):
-    return (ROOT / p).read_text(encoding="utf-8")
-
-
-def write(p, text):
-    (ROOT / p).write_text(text, encoding="utf-8")
+def read(path):
+    return (ROOT / path).read_text(encoding="utf-8")
 
 
 def existing_versions():
-    versions = {}
-    for p in JSON_FILES:
-        versions[str(p)] = json.loads(read(p))["version"]
-    toml = read(CARGO_TOML)
-    m = re.search(r'^version\s*=\s*"([^"]+)"', toml, re.M)
-    versions[str(CARGO_TOML)] = m.group(1) if m else None
+    versions = {str(path): json.loads(read(path))["version"] for path in JSON_FILES}
     lock = json.loads(read(PACKAGE_LOCK))
     versions[str(PACKAGE_LOCK)] = lock.get("version")
-    clog = read(CARGO_LOCK)
-    m = re.search(r'name = "app"\nversion = "([^"]+)"', clog)
-    versions[str(CARGO_LOCK)] = m.group(1) if m else None
+    versions["package-lock.json root package"] = lock.get("packages", {}).get("", {}).get("version")
+    for path, name in CARGO_PACKAGES:
+        versions[str(path)] = re.search(r'^version\s*=\s*"([^"]+)"', read(path), re.M).group(1)
+        versions[f"Cargo.lock ({name})"] = re.search(
+            rf'name = "{re.escape(name)}"\nversion = "([^"]+)"', read(CARGO_LOCK)
+        ).group(1)
+    versions[str(COMPOSE)] = re.search(r'^\s+image: hession-relay:([^\s]+)', read(COMPOSE), re.M).group(1)
     return versions
 
 
 def main():
-    versions = existing_versions()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("version", nargs="?", help="numeric major.minor.patch")
+    parser.add_argument("--yes", action="store_true", help="apply without an interactive prompt")
+    parser.add_argument("--skip-checks", action="store_true", help="run release/build checks separately")
+    args = parser.parse_args()
     print("Existing versions:")
-    for f, v in versions.items():
-        print(f"  {f}: {v}")
-    distinct = {v for v in versions.values() if v}
-    if len(distinct) > 1:
-        print(f"WARNING: versions differ across files: {sorted(distinct)}")
-
-    new = input("Enter new version (e.g. 0.3.0): ").strip()
-    if not re.fullmatch(r"\d+\.\d+\.\d+", new):
-        print("Invalid version; expected numeric major.minor.patch.")
-        sys.exit(1)
-    print(f"New version will be: {new}")
-    confirm = input("Proceed? (y/N): ").strip().lower()
-    if confirm != "y":
+    for name, value in existing_versions().items():
+        print(f"  {name}: {value}")
+    version = args.version or input("Enter new version (e.g. 0.3.0): ").strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        parser.error("expected numeric major.minor.patch")
+    if not args.yes and input(f"Set all release versions to {version}? (y/N): ").strip().lower() != "y":
         print("Aborted.")
-        sys.exit(0)
-
-    for p in JSON_FILES:
-        data = json.loads(read(p))
-        data["version"] = new
-        write(p, json.dumps(data, indent=2) + "\n")
-        print(f"updated {p}")
-
-    toml = read(CARGO_TOML)
-    toml = re.sub(r'^version\s*=\s*"[^"]+"', f'version = "{new}"', toml, count=1, flags=re.M)
-    write(CARGO_TOML, toml)
-    print(f"updated {CARGO_TOML}")
-
+        return
+    # Prepare every edit before writing, so a missing package entry cannot leave
+    # only part of a release bumped. Dependency versions are left unchanged.
+    edits = {}
+    for path in JSON_FILES:
+        data = json.loads(read(path))
+        data["version"] = version
+        edits[path] = json.dumps(data, indent=2) + "\n"
     lock = json.loads(read(PACKAGE_LOCK))
-    lock["version"] = new
-    if "packages" in lock and "" in lock["packages"]:
-        lock["packages"][""]["version"] = new
-    write(PACKAGE_LOCK, json.dumps(lock, indent=2) + "\n")
-    print(f"updated {PACKAGE_LOCK}")
-
-    clog = read(CARGO_LOCK)
-    clog = re.sub(
-        r'(name = "app"\nversion = ")[^"]+(")',
-        rf"\g<1>{new}\g<2>",
-        clog,
-        count=1,
-    )
-    write(CARGO_LOCK, clog)
-    print(f"updated {CARGO_LOCK}")
-
-    print("\nRunning npm install --package-lock-only ...")
-    subprocess.run(["npm", "install", "--package-lock-only"], cwd=ROOT, check=False)
-    print("Running cargo check ...")
-    subprocess.run(
-        ["cargo", "check", "--manifest-path", "src-tauri/Cargo.toml"],
-        cwd=ROOT,
-        check=False,
-    )
-    print("Running release check ...")
-    subprocess.run(
-        ["node", ".github/scripts/check-release.mjs", f"v{new}"],
-        cwd=ROOT,
-        check=False,
-    )
+    lock["version"] = version
+    lock["packages"][""]["version"] = version
+    edits[PACKAGE_LOCK] = json.dumps(lock, indent=2) + "\n"
+    cargo_lock = read(CARGO_LOCK)
+    for path, name in CARGO_PACKAGES:
+        edits[path], count = re.subn(r'^version\s*=\s*"[^"]+"', f'version = "{version}"', read(path), count=1, flags=re.M)
+        if count != 1:
+            raise ValueError(f"Missing package version: {path}")
+        cargo_lock, count = re.subn(
+            rf'(name = "{re.escape(name)}"\nversion = ")[^"]+(")',
+            rf"\g<1>{version}\g<2>", cargo_lock,
+        )
+        if count != 1:
+            raise ValueError(f"Expected one lockfile entry for {name}, found {count}")
+    edits[CARGO_LOCK] = cargo_lock
+    edits[COMPOSE], count = re.subn(r'^(\s+image: hession-relay:)[^\s]+', rf"\g<1>{version}", read(COMPOSE), count=1, flags=re.M)
+    if count != 1:
+        raise ValueError("Missing relay Compose image tag")
+    for path, text in edits.items():
+        (ROOT / path).write_text(text, encoding="utf-8")
+        print(f"updated {path}")
+    if not args.skip_checks:
+        subprocess.run(["node", ".github/scripts/check-release.mjs", f"v{version}"], cwd=ROOT, check=True)
+        subprocess.run(["cargo", "check", "--locked", "--workspace"], cwd=ROOT, check=True)
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\nAborted.")
-        sys.exit(130)
+        raise SystemExit(130)
