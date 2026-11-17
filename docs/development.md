@@ -389,3 +389,45 @@ measurements, not a guarantee for every library or machine.
 
 The 250 ms warm p95 target was not met in this run. These measurements
 include the recorded host load and do not establish quiet-host performance.
+
+## Portable project export service
+
+`hession_core::project_export::prepare` reads one existing library snapshot using
+an immutable `SearchScope`, the shared developer-query grammar and an exact
+workspace ID. It returns `PreparedProjectExport`; only `.preview()` is public.
+The prepared selection, options, destination, history revision, sanitized-content
+snapshot identities and cached statistics cannot be supplied or altered through
+JSON. Adapters should keep the plan in trusted process memory and pass it to
+`project_export::write` with the current scope and a per-job `ExportCancellation`.
+A changed history revision rejects the write and requires another preview.
+
+The writer creates a private temporary file beside a new destination, streams
+Deflate members through the extracted `transcript_export::ExportWriter`, checks
+SHA-256 hashes and byte budgets, syncs the complete file, and publishes atomically
+without clobbering an existing path. Cancellation and publication share a final
+commit gate. Progress callbacks run outside that gate. A directory-sync failure
+after publication is reported as a saved-archive durability warning, not a failed
+or cancelled write. External read-only MCP tools must not expose this writer.
+
+Schema-v1 manifests contain the producer version, UTC export time, project key,
+redacted filters/options, included and omitted categories, snapshot/member
+references and uncompressed-member checksums. The manifest excludes itself from
+the checksum list. Logical session identities reuse replication/native identity
+where available; otherwise a recorded-source digest is explicitly identified as
+a weaker cross-device reference. Snapshot identities hash sanitized canonical
+JSON with the volatile export timestamp excluded. Identical sanitized snapshots
+share transcript members. Local database row IDs never become archive identities.
+
+Defaults bound a job to 2,000 selected sessions, one million scanned entries,
+100,000 evidence/context rows, 512 MiB archive/uncompressed output, 64 MiB per
+member, 256 KiB per recorded field, 2 MiB per entry and 120 seconds per phase.
+Hard caps validate caller-supplied limits. Incremental SQLite BLOB reads reject
+oversized TEXT before allocating it, and fixed allowlists exclude raw payloads
+and hidden content. No filesystem tree is traversed or original agent log opened.
+
+Dependency review used the published package metadata and documentation already
+present in the local registry: exact `zip 9.5.0` (Rust 1.88, MIT), with defaults off
+and only `deflate-flate2-zlib-rs`; exact `regex 1.13.1` (Rust 1.65, MIT/Apache-2.0)
+for fixed linear-time redaction patterns; and existing `tempfile 3.27.0` (Rust 1.63,
+MIT/Apache-2.0) promoted to a runtime dependency. These fit the project's Rust 1.90
+minimum and reuse existing locked compression/runtime packages.

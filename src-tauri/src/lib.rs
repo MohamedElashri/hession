@@ -18,6 +18,7 @@ mod library_revision;
 mod paths;
 pub mod pricing;
 pub mod project_activity;
+pub mod project_export;
 pub mod remote;
 pub mod resume;
 pub mod sync;
@@ -37,6 +38,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(commands::ExportState::default())
+        .manage(project_export::ProjectArchiveState::default())
         .manage(AppState {
             db_path: Mutex::new(db_path),
         })
@@ -79,6 +81,10 @@ pub fn run() {
             device_sync::disconnect_device_sync,
             device_sync::export_device_sync_recovery_key,
             device_sync::reset_device_sync_checkpoint,
+            project_export::prepare_project_archive,
+            project_export::write_project_archive,
+            project_export::cancel_project_archive,
+            project_export::release_project_archive,
             project_activity::project_catalog,
             project_activity::project_files,
             project_activity::project_activity,
