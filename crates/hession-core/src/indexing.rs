@@ -269,7 +269,7 @@ impl crate::service::Library {
                 return Err(ServiceError::ResponseTooLarge);
             }
         }
-        let entries=query_all(&tx,"SELECT * FROM entry WHERE session_id=? AND id IN (SELECT value FROM json_each(?)) ORDER BY ordinal",&[SqlValue::Integer(session_id),SqlValue::Text(selected)]).map_err(ServiceError::Query)?;
+        let entries=query_all(&tx,"SELECT e.*,(SELECT COUNT(*) FROM entry prior WHERE prior.session_id=e.session_id AND prior.ordinal<e.ordinal) AS position FROM entry e WHERE e.session_id=? AND e.id IN (SELECT value FROM json_each(?)) ORDER BY e.ordinal",&[SqlValue::Integer(session_id),SqlValue::Text(selected)]).map_err(ServiceError::Query)?;
         let entries =
             crate::sessions::attach_entry_details(&tx, entries).map_err(ServiceError::Query)?;
         let exists: bool = tx

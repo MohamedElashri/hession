@@ -34,7 +34,9 @@ fn durable_delta_follows_gapped_entries_and_updates_earlier_tool_results() {
         .unwrap();
     assert_eq!(delta["reset"], false);
     assert_eq!(delta["entries"][0]["id"], first);
+    assert_eq!(delta["entries"][0]["position"], 0);
     assert_eq!(delta["entries"][1]["id"], second);
+    assert_eq!(delta["entries"][1]["position"], 1);
     conn.execute("UPDATE tool_invocation SET result_text='late result',status='completed' WHERE call_id='late'",[]).unwrap();
     let late = library.session_delta(1, Some(cursor(&delta)), 10).unwrap();
     assert_eq!(late["entries"].as_array().unwrap().len(), 1);

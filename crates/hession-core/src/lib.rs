@@ -6,6 +6,7 @@ pub mod db;
 pub mod indexing;
 pub mod jsonl;
 pub mod library_revision;
+pub mod live;
 pub mod locking;
 pub mod observation;
 pub mod search;
