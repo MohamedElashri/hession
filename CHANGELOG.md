@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.1] - 2026-11-17
+
+### Improved
+
+- Distinguish your messages, agent replies, and tool activity with labeled cards,
+  speaker markers, and clearer spacing across the conversation.
+- Read tool commands, multiline code, arguments, and output in separate panels
+  shared by Conversation, Full log, and Live. Wrap long lines or scroll them,
+  copy complete text, and expand explicitly labeled previews of large content.
+- Keep failed calls visible in folded tool runs, retain recorded exit codes,
+  and distinguish empty output from output that was never recorded.
+
 ## [0.5.0] - 2026-11-17
 
 ### New

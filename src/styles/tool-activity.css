@@ -1,0 +1,45 @@
+/* A shared tool surface for Conversation, Full log, and Live. */
+.tool-activity { min-width: 0; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); }
+.tool-activity + .tool-activity { margin-top: 8px; }
+.tool-activity-head { display: flex; align-items: flex-start; gap: 9px; padding: 12px; cursor: pointer; list-style: none; border-radius: inherit; }
+.tool-activity-head::-webkit-details-marker { display: none; }
+.tool-activity-head:hover { background: var(--hover); }
+.tool-chevron { flex: none; margin-top: 3px; color: var(--text-2); transition: transform .15s var(--ease); }
+.tool-activity[open] > summary .tool-chevron { transform: rotate(90deg); }
+.tool-activity-icon { display: grid; place-items: center; flex: none; width: 26px; height: 26px; color: var(--text-2); background: var(--surface-3); border-radius: 6px; }
+.tool-activity-description { flex: 1; min-width: 0; }
+.tool-activity-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 8px; font-size: var(--text-md); line-height: 1.6; overflow-wrap: anywhere; }
+.tool-activity-label { font-size: var(--text-xs); color: var(--text-2); }
+.tool-activity-title strong { font-family: var(--font-mono); font-weight: 550; }
+.tool-activity-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-top: 3px; font-size: var(--text-sm); line-height: 1.65; color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-outcome { flex: none; max-width: 30%; margin-top: 1px; padding: 2px 7px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-2); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.tool-outcome.is-failed { border-color: color-mix(in srgb, var(--danger) 45%, transparent); color: var(--danger); background: var(--danger-soft); }
+.tool-failed > summary .tool-activity-icon { color: var(--danger); background: var(--danger-soft); }
+.tool-activity[open] > summary { border-bottom: 1px solid var(--border); border-radius: var(--radius) var(--radius) 0 0; }
+.tool-activity-body { display: flex; flex-direction: column; gap: 10px; padding: 12px; min-width: 0; }
+.tool-panel { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; background: var(--code-bg); }
+.tool-panel-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 7px 10px; border-bottom: 1px solid var(--border); background: var(--surface-2); font-size: var(--text-xs); color: var(--text-2); }
+.tool-panel-head > strong { font-size: var(--text-sm); color: var(--text); font-weight: 550; }
+.tool-panel-size { font-variant-numeric: tabular-nums; }
+.tool-panel-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.tool-panel-actions button, .tool-panel-footer button { display: inline-flex; gap: 4px; align-items: center; padding: 3px 6px; border-radius: 4px; color: var(--text-2); font-size: var(--text-xs); }
+.tool-panel-actions button:hover, .tool-panel-footer button:hover { background: var(--hover); color: var(--text); }
+.tool-panel-actions [aria-pressed="true"] { background: var(--surface-3); color: var(--text); }
+.tool-copy-status:empty { display: none; }
+/* Explicit local controls take precedence over the global code-wrap preference. */
+.tool-panel pre.tool-panel-text { margin: 0; padding: 12px; max-height: 380px; overflow: auto; font: var(--text-md)/1.75 var(--font-mono); tab-size: 2; background: var(--code-bg); color: var(--text); border: 0; border-radius: 0; }
+.tool-panel pre.tool-panel-text.is-wrapped, .tool-panel pre.tool-panel-text.is-wrapped code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-panel pre.tool-panel-text.is-unwrapped, .tool-panel pre.tool-panel-text.is-unwrapped code { white-space: pre; overflow-wrap: normal; }
+.tool-panel-text code { font: inherit; background: none; padding: 0; }
+.tool-panel-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; border-top: 1px solid var(--border); padding: 6px 10px; font-size: var(--text-xs); color: var(--text-2); }
+.tool-panel-footer button { color: var(--accent-text); font-weight: 550; }
+.tool-arguments { min-width: 0; }
+.tool-arguments > summary { cursor: pointer; padding: 3px 0; font-size: var(--text-sm); color: var(--text-2); }
+.tool-arguments[open] > summary { margin-bottom: 6px; }
+.tool-empty { margin: 0; padding: 10px 12px; font-size: var(--text-sm); color: var(--text-2); }
+@media (max-width: 1000px) {
+  .tool-activity-head { gap: 6px; padding: 10px; flex-wrap: wrap; }
+  .tool-activity-description { flex-basis: calc(100% - 58px); }
+  .tool-outcome { margin-left: 52px; max-width: calc(100% - 52px); }
+  .tool-activity-body { padding: 8px; }
+}

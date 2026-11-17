@@ -56,7 +56,15 @@ history stays available while a host is offline or removes its original files.
 - **Search this session** searches the complete history, including tool inputs
   and output. Open a result to jump to it in **Full log**; Escape clears results.
 - **Conversation** groups prompts, replies, and tools. Expand tool calls,
-  thinking, pasted context, and long messages as needed.
+  thinking, pasted context, and long messages as needed. Your messages have a
+  tinted **You** card; replies have an **Agent** marker. **Tool activity** uses
+  separate cards with the tool name and recorded outcome. Failed calls remain
+  visible when long tool runs are folded.
+- Tool cards separate **Command** or **Code**, **All arguments**, and **Output**.
+  **Wrap** switches between wrapped lines and horizontal scrolling. **Copy**
+  copies the complete panel text, including text outside a large-content preview.
+  **Show all** reveals the rest inside a scrollable panel; **Show preview** folds
+  it again. Full log and expanded Live events use the same controls.
 - **Prompts** lists prompts on the current page. **Full log** includes events
   and role filters. Long histories use pages of 500 entries.
 - Star sessions or add tags above the transcript. Multiple selected tags require

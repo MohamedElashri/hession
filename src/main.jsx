@@ -26,6 +26,7 @@ import useAppearance from './useAppearance.js';
 import useIndexing from './useIndexing.js';
 import IndexingControl from './components/IndexingControl.jsx';
 import { Conversation, PromptIndex } from './components/Conversation.jsx';
+import ToolActivity, { TextPanel } from './components/ToolActivity.jsx';
 import { readNavigation, writeNavigation } from './navigation.js';
 import DateFilter from './components/DateFilter.jsx';
 import ModelFilter from './components/ModelFilter.jsx';
@@ -763,8 +764,8 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
                     const isCollapsed=collapsedEntries.has(e.id);
                     const firstText=textParts[0]?.text?.replace(/\s+/g,' ').trim();
                     // Agents log tool results under the user role; show them as tool output.
-                    const toolOnly=!textParts.length&&(toolsVisible.length>0||special.length>0);
-                    const kind=toolOnly?'tool':isUser?'user':isAssistant?'assistant':'system';
+                    const toolOnly=!textParts.length&&hasToolActivity(e);
+                    const kind=role==='tool'||toolOnly?'tool':isUser?'user':isAssistant?'assistant':'system';
                     return <article id={`entry-${e.id}`} className={`transcript-entry ${kind}-entry ${e.id===searchEntry?'search-target':''}`} key={e.id}>
                       <div className="message-head" onClick={()=>toggleCollapse(e.id)} role="button" tabIndex={0} aria-expanded={!isCollapsed} title={isCollapsed?'Expand':'Collapse'} onKeyDown={ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();toggleCollapse(e.id);}}}>
                         <span className="message-avatar">{kind==='user'?<User size={13}/>:kind==='assistant'?<Bot size={13}/>:<Terminal size={12}/>}</span>
@@ -776,9 +777,9 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
                         <ChevronDown size={14} className={`message-collapse-chevron ${isCollapsed?'collapsed':''}`}/>
                       </div>
                       {!isCollapsed&&<div className="message-content">
-                        {textParts.map((p,j)=><div className="message-text markdown-body" key={p.id||j}><Markdown text={p.text}/></div>)}
-                        {special.map((p,j)=><details className="tool-block" key={p.id||j} open><summary className="tool-block-head"><Terminal size={13}/><strong>{p.kind==='tool_result'?'Result':p.text||p.kind.replaceAll('_',' ')}</strong></summary><pre>{p.kind==='tool_result'&&p.text?p.text:p.data_json?formatData(p.data_json):p.text||'Tool activity recorded'}</pre></details>)}
-                        {toolsVisible.map(t=><details className="tool-block" key={t.id} open><summary className="tool-block-head"><Terminal size={13}/><strong>{t.tool_name}</strong><span className={`tool-status status-${t.status||'invoked'}`}>{t.status||'invoked'}</span></summary>{t.command_text&&<pre className="command-pre">$ {t.command_text}</pre>}{t.arguments_json&&!t.command_text&&<pre>{formatData(t.arguments_json)}</pre>}{t.result_text&&<pre>{t.result_text.slice(0,6000)}</pre>}</details>)}
+                        {textParts.map((p,j)=>kind==='tool'?<TextPanel key={p.id||j} label="Tool output" text={p.text}/>:<div className="message-text markdown-body" key={p.id||j}><Markdown text={p.text}/></div>)}
+                        {special.map((p,j)=><TextPanel key={p.id||j} label={p.kind==='tool_result'?'Tool output':p.kind.replaceAll('_',' ')} text={p.kind==='tool_result'&&p.text!=null?p.text:p.data_json?formatData(p.data_json):p.text||'Tool activity recorded'}/>)}
+                        {toolsVisible.map(t=><ToolActivity key={t.id} tool={t} initiallyOpen/>)}
                         {!textParts.length&&!special.length&&!toolsVisible.length&&role==='event'&&<div className="event-note"><span>{e.payload_json&&formatData(e.payload_json)}</span></div>}
                       </div>}
                     </article>;

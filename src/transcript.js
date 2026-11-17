@@ -165,7 +165,7 @@ export function buildConversation(entries) {
         const fromPart = own == null ? partData(callParts[index] ?? {}).args : null;
         const args = own ?? (fromPart == null ? null : JSON.stringify(fromPart));
         const call = { ...tool, arguments_json: args };
-        addCall({ key: `call-${tool.id}`, id: tool.call_id, name: tool.tool_name || 'Tool', summary: toolSummary(call), status: tool.status, command: tool.command_text, args, result: tool.result_text || null });
+        addCall({ key: `call-${tool.id}`, id: tool.call_id, name: tool.tool_name || 'Tool', summary: toolSummary(call), status: tool.status, exit_code: tool.exit_code, command: tool.command_text, args, result: tool.result_text ?? null });
       });
     } else if (entry.role === 'tool') {
       for (const part of parts.filter(p => p.kind === 'tool_result')) addResult(resultId(part), part.text);
