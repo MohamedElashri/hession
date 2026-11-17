@@ -22,7 +22,14 @@ export function shortcutLabel(shortcut, mac = isMacPlatform()) {
 
 /** Restore focus after React has rendered a navigation destination. */
 export function focusAfterRender(...selectors) {
-  return requestAnimationFrame(() => selectors.map(selector => document.querySelector(selector)).find(Boolean)?.focus());
+  const previous = document.activeElement;
+  return requestAnimationFrame(() => {
+    const current = document.activeElement;
+    // Removing a navigation origin can return focus to the body. A connected
+    // control focused in the meantime represents a newer user choice.
+    if (current !== previous && current?.isConnected && current !== document.body && current !== document.documentElement) return;
+    selectors.map(selector => document.querySelector(selector)).find(Boolean)?.focus();
+  });
 }
 
 /**
