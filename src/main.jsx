@@ -18,6 +18,8 @@ import SyncMenu from './components/SyncMenu.jsx';
 import BrandMark from './components/BrandMark.jsx';
 import SettingsButton from './components/SettingsButton.jsx';
 import useAppearance from './useAppearance.js';
+import useIndexing from './useIndexing.js';
+import IndexingControl from './components/IndexingControl.jsx';
 import { Conversation, PromptIndex } from './components/Conversation.jsx';
 import { readNavigation, writeNavigation } from './navigation.js';
 import DateFilter from './components/DateFilter.jsx';
@@ -292,6 +294,8 @@ function App(){
   // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching shows a loading state
   useEffect(()=>{loadDetail();},[loadDetail]);
   useEffect(()=>{let cancelled=false;api('get_sync_status').then(data=>{if(!cancelled){if(!syncLaunchPending.current)setSync(data);setSyncStatusReady(true);}}).catch(()=>{});return()=>{cancelled=true;};},[]);
+  const indexedChange=()=>{setReportRevision(value=>value+1);loadMeta({silent:true});loadSessions({silent:true});loadDetail({silent:true});};
+  const indexing=useIndexing({ready:libraryReady&&syncStatusReady,onChanged:indexedChange});
   useEffect(()=>{
     if(!sync.running)return;
     let active=true,busy=false,lastRefresh=0,lastMeta=0;
@@ -508,7 +512,7 @@ function App(){
     <Suspense fallback={<div className="export-backdrop" role="status"><span className="data-status"><LoaderCircle className="spin" size={16}/>Opening settings…</span></div>}>
       {settingsOpen&&<SettingsDialog initialTab={settingsTab} onClose={()=>setSettingsOpen(false)} onSectionChange={setSettingsTab}
         preferences={preferences} onAppearanceChange={updateAppearance} appearanceSaveError={appearanceSaveError}
-        autoSync={autoSync} onAutoSyncChange={toggleAutoSync} onRefreshHistories={()=>startSync()} syncRunning={sync.running||syncStarting}
+        autoSync={autoSync} onAutoSyncChange={toggleAutoSync} onRefreshHistories={()=>startSync()} syncRunning={sync.running||syncStarting} indexing={indexing}
         onFeaturesChanged={setOptionalFeatures} onLibraryChanged={refreshSyncedData} onManagedDataChanged={refreshManagedData}
         onRemotesChanged={()=>loadMeta({silent:true})}/>}
       {continuationOpen&&detail&&<ContinuationDialog sessionId={String(detail.session.id)} onClose={()=>setContinuationOpen(false)}/>}
@@ -547,6 +551,7 @@ function App(){
       </div>
       <div className="sidebar-foot">
         <div className="sync-card">
+          <IndexingControl observer={indexing}/>
           <div className="sync-card-text"><span className={`sync-dot ${sync.running?'running':''}`}/><span>{sync.running?(sync.filesTotal?`Refreshing ${sync.filesDone||0} of ${sync.filesTotal}`:'Checking sources…'):`Refreshed ${lastSyncText}`}</span></div>
           <div className="sync-action">
             <button type="button" className={`sync-button ${sync.running?'sync-stop':''}`} onClick={sync.running?stopSync:()=>startSync()} disabled={syncStarting||syncStopping||(sync.running&&sync.phase==='stopping')} title={sync.running?'Stop history refresh':'Refresh histories from local files and SSH hosts'} aria-label={sync.running?'Stop history refresh':'Refresh histories'}>{sync.running?<Square size={13}/>:<RefreshCw size={14}/>}<span>{sync.running?'Stop refresh':syncLabel==='Sync'?'Refresh histories':syncLabel}</span></button>

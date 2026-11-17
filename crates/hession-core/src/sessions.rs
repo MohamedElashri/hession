@@ -115,7 +115,10 @@ pub fn get_entries_after(
     attach_entry_details(conn, entries)
 }
 
-fn attach_entry_details(conn: &Connection, entries: Vec<Value>) -> Result<Vec<Value>, String> {
+pub(crate) fn attach_entry_details(
+    conn: &Connection,
+    entries: Vec<Value>,
+) -> Result<Vec<Value>, String> {
     let entry_ids: Vec<i64> = entries
         .iter()
         .filter_map(|e| e.get("id").and_then(|v| v.as_i64()))

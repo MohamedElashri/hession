@@ -6,6 +6,41 @@ It supports Linux and macOS.
 
 ## Setup
 
+Local observation uses pinned `notify` 8.2.0 with platform-native notifications,
+nonrecursive registrations over bounded known store directories, a 256-slot
+callback queue, and a 512-source debounce map. Debounce is 400 ms with a one-second
+maximum delay under continuous writes. Missing roots, native errors, or queue
+gaps recover through bounded reconciliation; metadata polling runs every 15
+seconds and complete-prefix JSONL audits every ten minutes. Directory discovery
+does not follow symlinks found below a configured root and caps depth at 24,
+directories at 4,096, and discovered source files at 100,000. A configured root
+can itself be a directory symlink. Unsupported/unreadable areas are reported as
+potentially stale rather than described as continuously live.
+
+Application schema 2 adds local-only `index_*` tables. They are excluded from the
+history/sync allowlists, contain no portable sync protocol changes, and are
+emptied in portable SQLite backups. Maintenance increments a transactionally
+checked epoch. Automatic imports respect hashed source exclusions after deletion;
+explicit imports can clear those exclusions. Close v0.4 before using the same
+library with v0.5; old binaries do not participate in these locks/checkpoints.
+
+Claude/Codex append preparation stages one bounded normalized record at a time
+in a private temporary SQLite file (4 GiB staged-text cap, 8 MiB per native line,
+16 MiB session metadata cap). Native files are never locked or written. Every
+append verifies SHA256 over the entire committed prefix, then verifies the
+snapshot prefix again before committing; normalization work covers new records,
+but validation I/O remains proportional to existing source bytes. Usage and late
+tool-result reconciliation, analytics, FTS, and the checkpoint share one main
+transaction. Other adapters retain source-scoped rebuilds; SQLite discovery
+includes WAL fingerprints and uses the existing read-only source snapshots.
+
+`session_delta` returns at most 100 entries and 1 MiB from a read-only WAL
+snapshot. Its durable change cursor includes library identity, maintenance epoch,
+session ID and sequence. Updates to older tool results are included. Rebuilds,
+deletions, or retention gaps return `reset: true` with a bounded tail. The change
+log retains 10,000 references and no transcript bodies. Desktop invalidation
+events carry only revision and capped session IDs; clients coalesce refreshes.
+
 You need Node.js 20.19+ or 22.12+, Rust stable ≥ 1.90, and Tauri's system
 libraries:
 

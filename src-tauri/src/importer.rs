@@ -20,6 +20,8 @@ use serde_json::Value;
 mod cline;
 #[path = "import_formats.rs"]
 mod formats;
+#[path = "import_incremental.rs"]
+mod incremental;
 use formats::{ContentPart, RecordContext, ToolCall, ToolResult};
 
 pub(crate) fn cline_resume_environment(file: &Path) -> Vec<(String, String)> {
@@ -34,6 +36,20 @@ const MAX_ERRORS: usize = 25;
 const MAX_FILES: usize = 100_000;
 /// Cooperative cancellation checked between import batches.
 static STOP: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    static LOCAL_STOP: std::cell::RefCell<Option<Arc<AtomicBool>>> = const {std::cell::RefCell::new(None)};
+}
+
+pub(crate) fn with_cancellation<T>(token: Arc<AtomicBool>, task: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Arc<AtomicBool>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LOCAL_STOP.with(|cell| *cell.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(LOCAL_STOP.with(|cell| cell.replace(Some(token))));
+    task()
+}
 
 /// Ask a running sync to stop at the next cancellation check.
 pub fn request_stop() {
@@ -46,7 +62,12 @@ pub fn reset_stop() {
 }
 
 fn stop_requested() -> bool {
-    STOP.load(Ordering::SeqCst)
+    LOCAL_STOP.with(|cell| {
+        cell.borrow().as_ref().map_or_else(
+            || STOP.load(Ordering::SeqCst),
+            |token| token.load(Ordering::SeqCst),
+        )
+    })
 }
 
 /// Cancellation check for long-running helpers outside this module.
@@ -293,23 +314,38 @@ pub fn get_available_agents() -> Vec<AvailableAgent> {
 }
 
 fn walk_jsonl(dir: &Path, acc: &mut Vec<PathBuf>) {
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        if acc.len() >= MAX_FILES || stop_requested() {
+    let mut stack = vec![(dir.to_path_buf(), 0)];
+    let mut visited = 0;
+    let mut examined = 0;
+    while let Some((current, depth)) = stack.pop() {
+        visited += 1;
+        if visited > 4096 || acc.len() >= MAX_FILES || stop_requested() {
             return;
+        }
+        if depth > 0 && fs::symlink_metadata(&current).is_ok_and(|m| m.file_type().is_symlink()) {
+            continue;
         }
         let entries = match fs::read_dir(&current) {
             Ok(e) => e,
             Err(_) => continue,
         };
-        for entry in entries.flatten() {
+        for entry in entries.take(100_000).flatten() {
+            examined += 1;
+            if examined > 100_000 {
+                return;
+            }
             if stop_requested() {
                 return;
             }
             let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() && depth < 24 && stack.len() < 4096 {
+                stack.push((path, depth + 1));
+            } else if (kind.is_file() || kind.is_symlink() && path.is_file())
+                && path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+            {
                 acc.push(path);
                 if acc.len() >= MAX_FILES {
                     return;
@@ -331,8 +367,12 @@ fn sort_by_mtime_desc(paths: &mut [PathBuf]) {
 
 /// All candidate files for one family.
 pub fn discover_source_files(family: &str) -> Vec<PathBuf> {
+    discover_from_sources(&all_sources(), family)
+}
+
+fn discover_from_sources(sources: &[Source], family: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    for src in all_sources().iter().filter(|s| s.family == family) {
+    for src in sources.iter().filter(|s| s.family == family) {
         match src.kind {
             SourceKind::Cline => cline::discover(&src.root, &mut out),
             SourceKind::Jsonl => walk_jsonl(&src.root.join(src.sub), &mut out),
@@ -382,6 +422,80 @@ pub fn discover_source_files(family: &str) -> Vec<PathBuf> {
     out.dedup();
     sort_by_mtime_desc(&mut out);
     out
+}
+
+/// Environment overrides and known stores captured once per observer lifetime.
+/// No remote mirror discovery/SSH operation is part of automatic observation.
+pub(crate) struct LocalCatalog(Vec<Source>);
+
+impl LocalCatalog {
+    #[cfg(test)]
+    pub(crate) fn fixture(root: PathBuf) -> Self {
+        Self(vec![Source {
+            family: "codex",
+            product: "Codex",
+            root,
+            sub: "sessions",
+            kind: SourceKind::Jsonl,
+        }])
+    }
+    pub(crate) fn capture(family: Option<&str>) -> Self {
+        Self(local_sources_filtered(family))
+    }
+    pub(crate) fn roots(&self) -> Vec<PathBuf> {
+        let mut roots: Vec<_> = self.0.iter().map(|s| s.root.join(s.sub)).collect();
+        roots.sort();
+        roots.dedup();
+        roots
+    }
+    pub(crate) fn files(&self) -> Vec<(String, PathBuf)> {
+        let mut families: Vec<_> = self.0.iter().map(|s| s.family).collect();
+        families.sort();
+        families.dedup();
+        families
+            .into_iter()
+            .flat_map(|family| {
+                discover_from_sources(&self.0, family)
+                    .into_iter()
+                    .map(move |path| (family.into(), path))
+            })
+            .take(MAX_FILES)
+            .collect()
+    }
+    pub(crate) fn import(
+        &self,
+        conn: &mut Connection,
+        family: &str,
+        path: &Path,
+        epoch: i64,
+    ) -> Result<usize, String> {
+        let mut pricing = ImportPricing::new();
+        pricing.automatic = true;
+        pricing.epoch = Some(epoch);
+        let uri = format!("{family}://{}", path.display());
+        // WAL changes do not reliably alter the primary database's stat.
+        import_file_with_conn(conn, &uri, is_database_file(path), None, &mut pricing)
+    }
+
+    pub(crate) fn fingerprint(&self, family: &str, path: &Path) -> Result<String, String> {
+        if family == "cline" {
+            return cline::fingerprint(path).map(|stamp| format!("{stamp:?}"));
+        }
+        let mut stamp = Vec::new();
+        for candidate in [
+            path.to_path_buf(),
+            PathBuf::from(format!("{}-wal", path.display())),
+        ] {
+            match fs::metadata(&candidate) {
+                Ok(metadata) => stamp.push(Some(hession_core::jsonl::Fingerprint::of(&metadata))),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && candidate != path => {
+                    stamp.push(None)
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        serde_json::to_string(&stamp).map_err(|e| e.to_string())
+    }
 }
 
 // JSONL parsing + minimal normalization
@@ -849,9 +963,8 @@ pub fn normalize_record(
 
 // sync_state / sync_checkpoint helpers
 
-/// Incremental sync is driven by file size + modification time only: a source
-/// whose current size and mtime still match the last successful import is
-/// skipped without being read. No content hashes, no parser versions.
+/// Compatibility fingerprint for full-reimport adapters. Verified Claude and
+/// Codex JSONL use the separate durable, prefix-validated append checkpoint.
 struct FileState {
     size: i64,
     mtime: f64,
@@ -964,6 +1077,8 @@ fn split_source_uri(source_uri: &str) -> Result<(&str, PathBuf), String> {
 struct ImportPricing {
     state: Arc<Mutex<crate::pricing::PricingState>>,
     revision: Option<u64>,
+    automatic: bool,
+    epoch: Option<i64>,
 }
 
 impl ImportPricing {
@@ -971,6 +1086,8 @@ impl ImportPricing {
         Self {
             state: Arc::new(Mutex::new(crate::pricing::PricingState::new())),
             revision: None,
+            automatic: false,
+            epoch: None,
         }
     }
 
@@ -999,6 +1116,9 @@ fn commit_batch(
     sessions: Vec<formats::SessionData>,
 ) -> Result<Vec<usize>, String> {
     let _writer = crate::db::background_write(conn).map_err(|e| e.to_string())?;
+    if let Some(epoch) = pricing.epoch {
+        hession_core::indexing::check_epoch(conn, epoch)?;
+    }
     if stop_requested() {
         return Err("Import stopped".into());
     }
@@ -1008,6 +1128,15 @@ fn commit_batch(
         .map_err(|e| e.to_string())?;
     let mut counts = Vec::with_capacity(sessions.len());
     for data in sessions {
+        if pricing.automatic
+            && hession_core::indexing::excluded(&tx, &data.uri).map_err(|e| e.to_string())?
+        {
+            counts.push(0);
+            continue;
+        }
+        if !pricing.automatic {
+            hession_core::indexing::include(&tx, &data.uri).map_err(|e| e.to_string())?;
+        }
         counts.push(commit_session(
             &tx,
             family,
@@ -1034,6 +1163,11 @@ fn import_file_with_conn(
     pricing: &mut ImportPricing,
 ) -> Result<usize, String> {
     let (family, file) = split_source_uri(source_uri)?;
+    if pricing.automatic
+        && hession_core::indexing::excluded(conn, source_uri).map_err(|e| e.to_string())?
+    {
+        return Ok(0);
+    }
     // Decisions made before parsing must not race another import of the same
     // source. This lock never touches the original harness store.
     let _source_lock = conn
@@ -1083,6 +1217,18 @@ fn import_file_with_conn(
                 .sum(),
         );
     }
+    if matches!(family, "claude" | "codex") {
+        return incremental::import(
+            conn,
+            family,
+            source_uri,
+            &file,
+            &product,
+            &agent_root,
+            force,
+            pricing,
+        );
+    }
     let stat = fs::metadata(&file).map_err(|e| format!("stat {}: {e}", file.display()))?;
     if !stat.is_file() {
         return Err("Source is not a file".to_string());
@@ -1130,24 +1276,35 @@ fn source_mtime(stat: &fs::Metadata) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// All derived rows and the checkpoint commit together, preserving session IDs
-/// (and therefore bookmarks/tags) during a reimport. A source whose size and
-/// mtime changed is always rebuilt in full: no content hashing, no
-/// prefix-append shortcut.
-fn commit_session(
+fn insert_record(
+    conn: &Connection,
+    session_id: i64,
+    ordinal: i64,
+    record: &NormalizedRecord,
+) -> Result<(), String> {
+    conn.prepare_cached(
+            "INSERT INTO entry(session_id,ordinal,external_entry_id,parent_entry_id,turn_id,occurred_at,kind,role,search_text,payload_json)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        ).map_err(|e| e.to_string())?.execute(params![session_id,ordinal,record.external_id,record.parent,record.turn_id,record.occurred_at,
+                record.kind,record.role,record.body,record.payload.to_string()],
+        ).map_err(|e| format!("insert entry: {e}"))?;
+    let entry_id = conn.last_insert_rowid();
+    formats::insert_details(conn, session_id, entry_id, record)?;
+    Ok(())
+}
+
+fn upsert_session(
     conn: &Connection,
     family: &str,
     product: &str,
     agent_root: &str,
-    data: formats::SessionData,
-    pricing: &Arc<Mutex<crate::pricing::PricingState>>,
-) -> Result<usize, String> {
-    if stop_requested() {
-        return Err("Import stopped".to_string());
-    }
+    data: &formats::SessionData,
+    resolved_metadata: Option<&Value>,
+) -> Result<i64, String> {
+    let metadata = resolved_metadata.unwrap_or(&data.metadata);
     let agent_id = crate::db::get_or_create_agent(conn, family, product, Some(agent_root))
         .map_err(|e| e.to_string())?;
-    let cwd = first_str(&data.metadata, &["cwd", "directory", "git_repo_root"])
+    let cwd = first_str(metadata, &["cwd", "directory", "git_repo_root"])
         .or_else(|| data.records.iter().find_map(|r| r.context.cwd.clone()));
     // Remote sessions record host paths; qualify their workspace as
     // `host:/path` so identical paths on different machines stay distinct.
@@ -1163,7 +1320,7 @@ fn commit_session(
         }
         (None, _) => None,
     };
-    let title = first_str(&data.metadata, &["title"]).or_else(|| {
+    let title = first_str(metadata, &["title"]).or_else(|| {
         data.records
             .iter()
             .filter(|r| r.role.as_deref() == Some("user"))
@@ -1186,26 +1343,22 @@ fn commit_session(
             })
             .map(|s| s.chars().take(130).collect::<String>())
     });
-    let start =
-        first_iso(&data.metadata, &["started_at", "time_created", "timestamp"]).or_else(|| {
-            data.records
-                .iter()
-                .filter_map(|r| r.occurred_at.clone())
-                .min()
-        });
-    let end = first_iso(
-        &data.metadata,
-        &["last_activity_at", "ended_at", "time_updated"],
-    )
-    .or_else(|| {
+    let start = first_iso(metadata, &["started_at", "time_created", "timestamp"]).or_else(|| {
         data.records
             .iter()
             .filter_map(|r| r.occurred_at.clone())
-            .max()
-    })
-    .or_else(|| start.clone());
-    let external =
-        first_str(&data.metadata, &["id", "session_id", "sessionId"]).unwrap_or(data.fallback_id);
+            .min()
+    });
+    let end = first_iso(metadata, &["last_activity_at", "ended_at", "time_updated"])
+        .or_else(|| {
+            data.records
+                .iter()
+                .filter_map(|r| r.occurred_at.clone())
+                .max()
+        })
+        .or_else(|| start.clone());
+    let external = first_str(metadata, &["id", "session_id", "sessionId"])
+        .unwrap_or_else(|| data.fallback_id.clone());
     conn.execute(
         "INSERT INTO session(agent_id,workspace_id,external_id,source_uri,source_format,cwd,title,started_at,last_event_at,
           source_size,source_mtime,raw_metadata_json,token_usage_json,metrics_json,host)
@@ -1225,6 +1378,25 @@ fn commit_session(
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
+    Ok(session_id)
+}
+
+/// All derived rows and the checkpoint commit together, preserving session IDs
+/// (and therefore bookmarks/tags) during a reimport. A source whose size and
+/// mtime changed is always rebuilt in full: no content hashing, no
+/// prefix-append shortcut.
+fn commit_session(
+    conn: &Connection,
+    family: &str,
+    product: &str,
+    agent_root: &str,
+    data: formats::SessionData,
+    pricing: &Arc<Mutex<crate::pricing::PricingState>>,
+) -> Result<usize, String> {
+    if stop_requested() {
+        return Err("Import stopped".to_string());
+    }
+    let session_id = upsert_session(conn, family, product, agent_root, &data, None)?;
     for table in [
         "file_activity",
         "tool_invocation",
@@ -1240,14 +1412,7 @@ fn commit_session(
         if stop_requested() {
             return Err("Import stopped".to_string());
         }
-        conn.prepare_cached(
-            "INSERT INTO entry(session_id,ordinal,external_entry_id,parent_entry_id,turn_id,occurred_at,kind,role,search_text,payload_json)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-        ).map_err(|e| e.to_string())?.execute(params![session_id,ordinal as i64,record.external_id,record.parent,record.turn_id,record.occurred_at,
-                record.kind,record.role,record.body,record.payload.to_string()],
-        ).map_err(|e| format!("insert entry: {e}"))?;
-        let entry_id = conn.last_insert_rowid();
-        formats::insert_details(conn, session_id, entry_id, record)?;
+        insert_record(conn, session_id, ordinal as i64, record)?;
     }
     // Results can precede calls in a log; correlate after all calls are inserted.
     for record in &data.records {
@@ -1299,6 +1464,21 @@ pub fn sync_all_with_progress(
     let mut summary = SyncSummary::default();
     let db_path = crate::db::db_path();
     let force = mode == "full";
+    let mut conn = match crate::db::open_db(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            push_error(&mut summary, "sync", e.to_string());
+            return summary;
+        }
+    };
+    let mut pricing = ImportPricing::new();
+    pricing.epoch = match hession_core::indexing::epoch(&conn) {
+        Ok(epoch) => Some(epoch),
+        Err(e) => {
+            push_error(&mut summary, "sync", e.to_string());
+            return summary;
+        }
+    };
 
     let mut families: Vec<String> = match agent_filter {
         Some(f) if !f.is_empty() => vec![f.to_string()],
@@ -1355,18 +1535,10 @@ pub fn sync_all_with_progress(
     summary.files_total = units.iter().sum();
     progress(0, summary.files_total, 0);
 
-    let mut conn = match crate::db::open_db(&db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            push_error(&mut summary, "sync", e.to_string());
-            return summary;
-        }
-    };
     if let Err(error) = crate::db::configure_bulk_writer(&conn) {
         push_error(&mut summary, "sync", error.to_string());
         return summary;
     }
-    let mut pricing = ImportPricing::new();
     let mut failed: HashSet<String> = HashSet::new();
     for (index, (fam, path)) in files.iter().enumerate() {
         if stop_requested() {
