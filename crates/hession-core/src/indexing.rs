@@ -10,7 +10,120 @@ pub const LOCAL_TABLES: &[&str] = &[
     "index_change",
     "index_exclusion",
     "index_maintenance",
+    "index_full_source",
+    "index_source_session",
+    "index_source_generation",
 ];
+
+pub(crate) fn migrate_full_sources(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("CREATE INDEX index_checkpoint_session ON index_checkpoint(session_id);
+      CREATE TABLE index_full_source(source_uri TEXT PRIMARY KEY,capability TEXT NOT NULL,fingerprint_json TEXT NOT NULL CHECK(length(fingerprint_json)<=16384),invalidated INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE index_source_generation(source_hash TEXT PRIMARY KEY,generation INTEGER NOT NULL DEFAULT 0 CHECK(generation>=0));
+      CREATE TABLE index_source_session(session_id INTEGER PRIMARY KEY REFERENCES session(id) ON DELETE CASCADE,source_uri TEXT NOT NULL,source_hash TEXT NOT NULL);
+      CREATE INDEX index_source_session_source ON index_source_session(source_uri);
+      CREATE TRIGGER full_source_mapping_delete AFTER DELETE ON index_source_session BEGIN UPDATE index_source_generation SET generation=generation+1 WHERE source_hash=OLD.source_hash;DELETE FROM index_full_source WHERE source_uri=OLD.source_uri AND NOT EXISTS(SELECT 1 FROM index_source_session WHERE source_uri=OLD.source_uri); END;
+      CREATE TRIGGER full_source_mapping_update AFTER UPDATE OF source_uri ON index_source_session WHEN OLD.source_uri<>NEW.source_uri BEGIN UPDATE index_source_generation SET generation=generation+1 WHERE source_hash=OLD.source_hash;DELETE FROM index_full_source WHERE source_uri=OLD.source_uri AND NOT EXISTS(SELECT 1 FROM index_source_session WHERE source_uri=OLD.source_uri); END;")?;
+    for (table, session) in [
+        ("entry", "session_id"),
+        ("tool_invocation", "session_id"),
+        ("session_context", "session_id"),
+        ("file_activity", "session_id"),
+        ("session", "id"),
+    ] {
+        for action in ["INSERT", "UPDATE", "DELETE"] {
+            let rows = if action == "UPDATE" {
+                vec!["OLD", "NEW"]
+            } else if action == "DELETE" {
+                vec!["OLD"]
+            } else {
+                vec!["NEW"]
+            };
+            let statements = rows.iter().map(|row| format!("UPDATE index_source_generation SET generation=generation+1 WHERE source_hash IN(SELECT source_hash FROM index_source_session WHERE session_id={row}.{session});UPDATE index_full_source SET invalidated=1 WHERE source_uri IN(SELECT source_uri FROM index_source_session WHERE session_id={row}.{session}) AND invalidated=0;")).collect::<String>();
+            // Before DELETE is essential: session's cascading mapping removal
+            // would otherwise hide the owning source from invalidation.
+            conn.execute_batch(&format!("CREATE TRIGGER full_source_{table}_{} BEFORE {action} ON {table} BEGIN {statements} END;",action.to_lowercase()))?;
+        }
+    }
+    for action in ["INSERT", "UPDATE", "DELETE"] {
+        let rows = if action == "UPDATE" {
+            vec!["OLD", "NEW"]
+        } else if action == "DELETE" {
+            vec!["OLD"]
+        } else {
+            vec!["NEW"]
+        };
+        let statements = rows.iter().map(|row| format!("UPDATE index_source_generation SET generation=generation+1 WHERE source_hash IN(SELECT m.source_hash FROM index_source_session m JOIN entry e ON e.session_id=m.session_id WHERE e.id={row}.entry_id);UPDATE index_full_source SET invalidated=1 WHERE source_uri IN(SELECT m.source_uri FROM index_source_session m JOIN entry e ON e.session_id=m.session_id WHERE e.id={row}.entry_id) AND invalidated=0;")).collect::<String>();
+        conn.execute_batch(&format!("CREATE TRIGGER full_source_content_part_{} BEFORE {action} ON content_part BEGIN {statements} END;", action.to_lowercase()))?;
+    }
+    Ok(())
+}
+
+pub fn full_source(
+    conn: &Connection,
+    uri: &str,
+    capability: &str,
+) -> rusqlite::Result<Option<crate::source::SourceSnapshot>> {
+    let json: Option<String> = conn.query_row("SELECT fingerprint_json FROM index_full_source WHERE source_uri=? AND capability=? AND invalidated=0", params![uri,capability], |r| r.get(0)).optional()?;
+    Ok(json
+        .and_then(|value| serde_json::from_str::<crate::source::SourceSnapshot>(&value).ok())
+        .filter(crate::source::SourceSnapshot::valid))
+}
+pub fn save_full_source(
+    conn: &Connection,
+    uri: &str,
+    capability: &str,
+    snapshot: &crate::source::SourceSnapshot,
+) -> rusqlite::Result<()> {
+    let json = serde_json::to_string(snapshot)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    conn.execute("INSERT INTO index_full_source(source_uri,capability,fingerprint_json) VALUES(?,?,?) ON CONFLICT(source_uri) DO UPDATE SET capability=excluded.capability,fingerprint_json=excluded.fingerprint_json,invalidated=0",params![uri,capability,json])?;
+    Ok(())
+}
+pub fn map_source_session(conn: &Connection, uri: &str, session: i64) -> rusqlite::Result<()> {
+    let hash = source_hash(uri);
+    let previous: Option<String> = conn
+        .query_row(
+            "SELECT source_hash FROM index_source_session WHERE session_id=?",
+            [session],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if previous.as_deref() == Some(&hash) {
+        return Ok(());
+    }
+    ensure_source_generation(conn, uri)?;
+    conn.execute(
+        "UPDATE index_source_generation SET generation=generation+1 WHERE source_hash=?",
+        [&hash],
+    )?;
+    conn.execute("INSERT INTO index_source_session(session_id,source_uri,source_hash) VALUES(?,?,?) ON CONFLICT(session_id) DO UPDATE SET source_uri=excluded.source_uri,source_hash=excluded.source_hash", params![session,uri,hash])?;
+    Ok(())
+}
+
+pub fn ensure_source_generation(conn: &Connection, uri: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO index_source_generation(source_hash) VALUES(?)",
+        [source_hash(uri)],
+    )?;
+    Ok(())
+}
+pub fn source_generation(conn: &Connection, uri: &str) -> rusqlite::Result<i64> {
+    Ok(conn
+        .query_row(
+            "SELECT generation FROM index_source_generation WHERE source_hash=?",
+            [source_hash(uri)],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0))
+}
+pub fn check_source_generation(conn: &Connection, uri: &str, expected: i64) -> Result<(), String> {
+    if source_generation(conn, uri).map_err(|e| e.to_string())? != expected {
+        Err("Source-derived history changed during preparation; retry indexing".into())
+    } else {
+        Ok(())
+    }
+}
 
 pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -66,6 +179,7 @@ pub fn epoch(conn: &Connection) -> rusqlite::Result<i64> {
 pub fn maintenance(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute("UPDATE index_maintenance SET epoch=epoch+1 WHERE id=1", [])?;
     conn.execute("UPDATE index_checkpoint SET invalidated=1", [])?;
+    conn.execute("UPDATE index_full_source SET invalidated=1", [])?;
     Ok(())
 }
 

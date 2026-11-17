@@ -424,3 +424,65 @@ measurements, not a guarantee for every library or machine.
 
 The 250 ms warm p95 target was not met in this run. These measurements
 include the recorded host load and do not establish quiet-host performance.
+## Background indexing storage and bounds
+
+Application schema 3 adds local-only `index_full_source`, `index_source_session`,
+and hashed `index_source_generation` state, plus an index on
+`index_checkpoint(session_id)`. The ordered migration is transactional and keeps
+portable-backup `user_version` unchanged. These derived tables are outside the
+history/settings revision lists and the encrypted-sync content model. Backup
+preparation and reset clear them through `indexing::clear_local_state`; deleting
+the last mapped session removes its plain source URI. Only a hashed generation
+remains to reject already prepared imports.
+
+Claude/Codex use their verified append reader. Other adapters use full-source
+fingerprints with parser capability version, device/inode, size, nanosecond
+mtime/ctime, and SHA-256 of the primary file and relevant companions. SQLite WAL
+and rollback journals participate, as do Cline manifests/shared metadata and
+Antigravity's optional summaries database.
+Routine quiet polling can skip identical metadata. Startup, native dirty/gap
+events, and ten-minute reconciliation audits compare content even if metadata
+is identical. An unchanged hash avoids normalization/FTS rebuilding; changed
+metadata with identical content updates derived state only. When native events
+are unavailable, a rewrite hidden by coarse metadata is detected by the next
+content audit, not guaranteed by the fifteen-second metadata poll.
+
+Source preparation holds only the library's per-source lock, never an advisory
+lock on a native history. Before each commit, the library writer guard checks
+both the pass's maintenance epoch and the source generation captured before
+preparation. Generation invalidation runs on normalized source-row mutations,
+even when a cache was already invalid. A job advances its expected generation
+only after its own batch commits. A late source-cache save cannot clear another
+writer's invalidation. Legacy JSONL/Cline history and its source cache commit in
+one transaction; SQLite imports preserve completed batches, but publish the
+source cache only after the complete read snapshot succeeds and its source
+identity/generation are revalidated. Parse errors, cancellation and maintenance
+leave unsuccessful checkpoints unadvanced.
+
+Full-source hashing reads at most sixteen regular files and 512 MiB in 256 KiB
+blocks. Legacy JSONL accepts valid final records without a newline, limits each
+line to 8 MiB, the file to 128 MiB and records to 100,000, and applies a
+conservative 128 MiB decoded-value budget. Cline JSON reads use the same file and
+decoded-value caps. Source SQLite queries cap rows at 100,000, cells at 8 MiB,
+and decoded values at 128 MiB, reject oversized blobs before expanding them,
+and use a thirty-second cooperative SQL deadline. Limit errors are explicit;
+original stores and previously committed library histories are kept. Unsupported
+non-UTF-8 native source paths are rejected rather than converted into colliding
+lossy keys; ordinary Unicode names remain supported.
+
+Regular-file JSON readers pin a nonblocking file descriptor and verify its
+identity against the path. SQLite still opens its existing read-only source by
+path after metadata checks; identity checks reject ordinary replacement during
+preparation, but a malicious local filesystem actor can race that check and open
+(for example, by replacing the path with a FIFO). This is not a filesystem
+security boundary. Eliminating that race requires a verified private DB/WAL
+snapshot or a dedicated SQLite VFS.
+
+Watcher callback failures discard the failed native backend, retain degraded
+health, reconcile by polling, and retry native registration every thirty seconds.
+Health becomes active again only after watches are restored and reconciliation
+succeeds. `pendingSources` reports remaining discovered checks, rather than the
+number of imports already attempted. The local-only `LocalCatalog::manual_pass`
+captures a maintenance epoch before discovery and uses manual inclusion policy;
+continuous observation retains deletion exclusions. Neither path refreshes SSH
+mirrors or starts device sync.

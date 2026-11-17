@@ -172,7 +172,7 @@ fn database(file: &Path) -> PathBuf {
     env_path("CLINE_DB_DATA_DIR", default).join("sessions.db")
 }
 
-fn companions(file: &Path) -> Vec<PathBuf> {
+pub(super) fn companions(file: &Path) -> Vec<PathBuf> {
     let dir = file.parent().unwrap_or(Path::new("."));
     if modern(file) {
         let manifest = file
@@ -222,13 +222,15 @@ fn read_json(file: &Path) -> Result<Option<Value>, String> {
     if stop_requested() {
         return Err("Import stopped".into());
     }
-    match fs::read(file) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|e| format!("Invalid Cline JSON {}: {e}", file.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("read {}: {e}", file.display())),
+    if !file.exists() {
+        return Ok(None);
     }
+    let bytes = hession_core::source::read_bounded(file, super::MAX_LEGACY_BYTES, &stop_requested)?;
+    let value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("Invalid Cline JSON {}: {e}", file.display()))?;
+    let mut budget = super::MAX_DECODED_BYTES;
+    super::charge_value(&value, &mut budget)?;
+    Ok(Some(value))
 }
 
 fn array(value: &Value) -> Result<&Vec<Value>, String> {
@@ -283,10 +285,9 @@ pub(super) fn session_data(
         }
         let db = database(file);
         if db.is_file() {
-            let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            let mut conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .map_err(|e| e.to_string())?;
-            conn.busy_timeout(std::time::Duration::from_secs(5))
-                .map_err(|e| e.to_string())?;
+            formats::configure_source(&mut conn)?;
             if let Some(row) = formats::rows(
                 &conn,
                 "SELECT * FROM sessions WHERE session_id=?",
