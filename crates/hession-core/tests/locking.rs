@@ -116,7 +116,11 @@ fn source_locks_serialize_parsers_without_blocking_other_sources_or_wal_writes()
     let database = dir.path().join("sessions.sqlite");
     let source = "claude:///private/native/path/../history.jsonl";
     let guard = LibraryLock::acquire_source(&database, source, Duration::ZERO).unwrap();
-    assert!(!guard.path().to_string_lossy().contains("private"));
+    // macOS temporary directories themselves live below /private. Only the
+    // generated filename must omit the native source's path components.
+    let filename = guard.path().file_name().unwrap().to_string_lossy();
+    assert!(!filename.contains("private"));
+    assert!(!filename.contains("history"));
     assert_eq!(
         LibraryLock::acquire_source(&database, source, Duration::ZERO)
             .unwrap_err()
