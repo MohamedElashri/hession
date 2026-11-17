@@ -240,6 +240,12 @@ fn run_bounded(
     if status.success() {
         Ok(stdout)
     } else {
+        #[cfg(test)]
+        eprintln!(
+            "{what} failed ({status}): stdout={:?}, stderr={:?}",
+            stdout.chars().take(8192).collect::<String>(),
+            stderr.chars().take(8192).collect::<String>()
+        );
         let detail = stderr
             .lines()
             .rev()
@@ -432,6 +438,10 @@ fn mirror_host(host: &str) -> Result<Probe, String> {
         // One source (`host:/`) keeps absolute paths in the mirror. Compression
         // is SSH's, since macOS's openrsync has no -z.
         let mut cmd = Command::new("rsync");
+        #[cfg(test)]
+        if std::env::var_os("HESSION_TEST_REMOTE_FIXTURE_ROOT").is_some() {
+            cmd.arg("-vv");
+        }
         cmd.args(["-a", "--timeout=120", "-e"])
             .arg(format!("ssh -C {}", SSH_OPTS.join(" ")))
             .args(filter_rules(&wanted))
@@ -955,10 +965,9 @@ mod tests {
         );
     }
 
-    /// End to end: probe, rsync mirror, and import through a stand-in `ssh`
-    /// that runs commands locally against a fake remote home. Mutates
-    /// process-wide environment (HOME, PATH, data dir), so it is the only test
-    /// that does.
+    /// End to end with a real rsync and a stand-in ssh. The fixture runs in a
+    /// child process so its environment cannot race other tests or inherit
+    /// agent-store overrides that point outside the synthetic homes.
     #[cfg(unix)]
     #[test]
     fn mirrors_and_imports_remote_sessions() {
@@ -967,9 +976,41 @@ mod tests {
             eprintln!("skipping: rsync not installed");
             return;
         }
-        let tmp = tempfile::tempdir().unwrap();
-        // Physical path: on macOS the temp dir is under the /var symlink.
-        let root = fs::canonicalize(tmp.path()).unwrap();
+        let root = match std::env::var_os("HESSION_TEST_REMOTE_FIXTURE_ROOT") {
+            Some(root) => PathBuf::from(root),
+            None => {
+                let tmp = tempfile::tempdir().unwrap();
+                // Physical path: macOS's temporary directory uses /var.
+                let root = fs::canonicalize(tmp.path()).unwrap();
+                let mut child = Command::new(std::env::current_exe().unwrap());
+                child
+                    .args([
+                        "--exact",
+                        "remote::tests::mirrors_and_imports_remote_sessions",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env_clear()
+                    .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                    .env("HOME", root.join("local"))
+                    .env(crate::brand::env_var("DATA_DIR"), root.join("data"))
+                    .env("HESSION_TEST_REMOTE_FIXTURE_ROOT", &root);
+                for key in ["LANG", "LC_ALL", "LC_CTYPE"] {
+                    if let Some(value) = std::env::var_os(key) {
+                        child.env(key, value);
+                    }
+                }
+                let output = child.output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "isolated remote fixture failed: {}\nstdout: {}\nstderr: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return;
+            }
+        };
         let (bin, local_home, remote_home, data) = (
             root.join("bin"),
             root.join("local"),
@@ -986,6 +1027,18 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+        let rsync = which("rsync").unwrap();
+        eprintln!(
+            "fixture rsync: {}\n{}",
+            rsync.display(),
+            String::from_utf8_lossy(
+                &Command::new(&rsync)
+                    .arg("--version")
+                    .output()
+                    .unwrap()
+                    .stdout
+            )
+        );
         let project = remote_home.join(".claude/projects/-work-proj");
         fs::create_dir_all(&project).unwrap();
         let id = "0b7e8a52-1c1d-4c55-9a1e-3f8d2f6f0a11";
@@ -1017,6 +1070,15 @@ mod tests {
             enabled: true,
         }])
         .unwrap();
+        let (fixture_probe, has_rsync) = probe("box").unwrap();
+        assert!(has_rsync);
+        assert_eq!(fixture_probe.roots.len(), 1, "{fixture_probe:?}");
+        assert_eq!(fixture_probe.roots[0].family, "claude");
+        assert_eq!(
+            Path::new(&fixture_probe.roots[0].root),
+            remote_home.join(".claude")
+        );
+        eprintln!("fixture probe: {fixture_probe:?}");
         let sync = || crate::importer::sync_all_with_progress(None, "incremental", &|_, _, _| {});
         let summary = sync();
         assert!(summary.errors.is_empty(), "{:?}", summary.errors);
