@@ -9,6 +9,7 @@ pub mod commands;
 pub mod continuation;
 pub mod data_management;
 pub mod db;
+pub mod developer_search;
 pub mod device_sync;
 mod export_format;
 pub mod features;
@@ -80,6 +81,7 @@ pub fn run() {
             commands::ping,
             commands::get_health,
             commands::search_sessions,
+            developer_search::developer_search,
             commands::search_session_entries,
             commands::get_session,
             commands::update_session_annotations,

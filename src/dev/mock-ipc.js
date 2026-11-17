@@ -109,6 +109,7 @@ const handlers = {
   start_sync: () => ({ running: false, phase: 'complete', filesDone: 12, filesTotal: 12, errors: [] }),
   stop_sync: () => true,
   search_sessions: search,
+  developer_search: () => Promise.reject({ kind: 'preview', message: 'Developer search uses the desktop SQLite service. Switch to Legacy search in this browser preview.' }),
   get_session: ({ id, limit = '500', page = '1' }) => {
     const detail = fixtures.details[id];
     if (!detail) throw 'Session not found';
