@@ -43,6 +43,7 @@ import { agentColors, familyLabel, shortPath } from './labels.js';
 
 const PAGE_SIZE=20;
 const AnalyticsView=lazy(()=>import('./Analytics.jsx'));
+const ProjectsView=lazy(()=>import('./ProjectsView.jsx'));
 const SettingsDialog=lazy(()=>import('./components/SettingsDialog.jsx'));
 const ContinuationDialog=lazy(()=>import('./components/ContinuationDialog.jsx'));
 const LiveView=lazy(()=>import('./components/LiveView.jsx'));
@@ -554,7 +555,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
       {id:'view.sessions',title:'Show sessions',open:showSessions},
       {id:'view.analytics',title:'Show analytics',open:()=>setView('analytics')},
     ]),
-    ...createLiveCommands({openLive:()=>{setView('live');focusAfterRender('.live-title-row h1','.main-panel');},openFiles:onOpenFiles,observer:indexingObserver??indexing}),
+    ...createLiveCommands({openLive:()=>{setView('live');focusAfterRender('.live-title-row h1','.main-panel');},openFiles:onOpenFiles||(()=>{setView('projects');focusAfterRender('.main-panel');}),observer:indexingObserver??indexing}),
     {id:'settings.open',title:'Open settings',shortcuts:['Mod+,'],run:()=>setSettingsOpen(true)},
     {id:'focus.sidebar',title:'Focus sidebar',run:()=>{setSidebarHidden(false);setMobileNav(true);focusAfterRender('.nav-primary button');}},
     {id:'focus.sessions',title:'Focus session list',shortcuts:['Mod+Shift+l'],allowInInput:true,run:()=>{setView('sessions');focusAfterRender('[data-session-list] [aria-current="true"]','[data-session-list] [data-session-navigation]','.session-list .session-card','.session-list');}},
@@ -615,6 +616,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
         <button className={`nav-item ${view==='sessions'?'nav-active':''}`} aria-current={view==='sessions'?'page':undefined} onClick={showSessions}><MessageSquareText size={16}/><span>Sessions</span>{metadataState.stats==='ready'&&navCount(stats.sessions)}</button>
         <button className={`nav-item ${view==='live'?'nav-active':''}`} aria-current={view==='live'?'page':undefined} onClick={()=>setView('live')}><RefreshCw size={16}/><span>Live</span></button>
         <button className={`nav-item ${view==='analytics'?'nav-active':''}`} aria-current={view==='analytics'?'page':undefined} onClick={()=>setView('analytics')}><TrendingUp size={16}/><span>Analytics</span></button>
+        <button className={`nav-item ${view==='projects'?'nav-active':''}`} aria-current={view==='projects'?'page':undefined} onClick={()=>{setView('projects');setMobileNav(false);}}><FileCode2 size={16}/><span>Files and Git</span></button>
       </nav>
       <div className="sidebar-scroll">
         <section className="nav-section">
@@ -663,7 +665,9 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
     <main className="main-panel" tabIndex={-1}>
       {sidebarHidden&&<button type="button" className="sidebar-reopen text-button" onClick={()=>{setSidebarHidden(false);setMobileNav(true);}} aria-label="Show navigation"><Menu size={16}/>Show navigation</button>}
       {view === 'live' ? <Suspense fallback={<div className="detail-loading" role="status">Opening live activity…</div>}><LiveView focusOnMount agents={agents} projects={projects} observer={indexingObserver??indexing}
-        onSelectSession={openSessionSource} onOpenNav={()=>{setSidebarHidden(false);setMobileNav(true);}}/></Suspense> : view === 'analytics' ? (
+        onSelectSession={openSessionSource} onOpenNav={()=>{setSidebarHidden(false);setMobileNav(true);}}/></Suspense> : view === 'projects' ? (
+        <Suspense fallback={<div className="detail-loading" role="status">Opening file evidence…</div>}><ProjectsView onSelectSession={openSessionSource} onOpenNav={()=>{setSidebarHidden(false);setMobileNav(true);}} refreshKey={reportRevision}/></Suspense>
+      ) : view === 'analytics' ? (
         <Suspense fallback={<div className="detail-loading" role="status"><LoaderCircle className="spin" size={18}/>Opening analytics…</div>}><AnalyticsView
           agents={agents}
           projects={projects}

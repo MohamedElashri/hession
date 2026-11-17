@@ -10,7 +10,7 @@ const analyticsParams = {
 export function readNavigation() {
   const params = new URL(window.location.href).searchParams;
   const saved = window.history.state?.appNavigation;
-  const view = ['analytics', 'live'].includes(params.get('view')) ? params.get('view') : 'sessions';
+  const view = ['analytics', 'live', 'projects'].includes(params.get('view')) ? params.get('view') : 'sessions';
   const session = params.get('session');
   const selected = session && /^\d+$/.test(session) && Number(session) > 0 ? session : null;
   const analytics = { ...analyticsDefaults, ...saved?.analytics };
@@ -31,7 +31,7 @@ export function writeNavigation(navigation, { replace = false } = {}) {
     const reportState = navigation.analytics;
     if (navigation.view === 'analytics') {
     for (const [key, param] of Object.entries(analyticsParams)) {
-      const value = reportState[key] ?? analyticsDefaults[key];
+      const value = navigation.view === 'analytics' ? reportState[key] ?? analyticsDefaults[key] : analyticsDefaults[key];
       if (value !== analyticsDefaults[key]) url.searchParams.set(param, value);
     }
     }

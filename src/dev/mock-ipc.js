@@ -40,6 +40,50 @@ function sessionDelta({ sessionId, cursor, limit = 100 }) {
     entries: reset ? rows.slice(-Math.min(100, limit)) : [], hasMore: false };
 }
 
+// Project preview uses only recorded fixture metadata and structured path arguments.
+// It never inspects the browser host's filesystem or invents verified Git changes.
+function previewProjects() {
+  return fixtures.projects.map((project, index) => {
+    const sessions = fixtures.sessions.filter(session => session.project === project.path);
+    return { workspace_id: index + 1, project_key: `preview:${project.path}`, recorded_path: project.path,
+      display_name: project.display_name, host: sessions.find(session => session.host)?.host || null,
+      ambiguous_host: new Set(sessions.map(session => session.host || '')).size > 1,
+      session_count: sessions.length, local_session_count: sessions.filter(session => !session.host).length,
+      remote_session_count: sessions.filter(session => session.host).length, synced_session_count: 0 };
+  });
+}
+function previewReferences(workspaceId) {
+  const project = previewProjects().find(project => project.workspace_id === workspaceId);
+  if (!project) throw 'Recorded workspace unavailable';
+  const evidence = [], entry_positions = {};
+  for (const session of fixtures.sessions.filter(session => session.project === project.recorded_path)) {
+    for (const [position, entry] of (fixtures.details[session.id]?.entries || []).entries()) {
+      entry_positions[entry.id] = position;
+      for (const tool of entry.tools || []) {
+        let args; try { args = JSON.parse(tool.arguments_json || '{}'); } catch { continue; }
+        for (const key of ['file_path', 'filepath', 'path', 'target_file', 'filename']) {
+          if (typeof args[key] !== 'string') continue;
+          const category = /write|edit|patch|delete/i.test(tool.tool_name) ? 'reported_write_intent' : /read|view|open_file/i.test(tool.tool_name) ? 'reported_read' : 'reported_reference';
+          evidence.push({ id: `${tool.id}:${key}`, reported_path: args[key], category,
+            source: { session_id: session.id, entry_id: entry.id, entry_ordinal: entry.ordinal, tool_invocation_id: tool.id },
+            candidate_workspace_relative_path: null, occurred_at: entry.occurred_at, agent_family: session.agent, tool_name: tool.tool_name });
+        }
+      }
+    }
+  }
+  return { project, evidence, entry_positions, revision: { identity: 'browser-preview', revision: 0 } };
+}
+function previewPage(rows, page = { limit: 20, offset: 0 }) {
+  return { rows: rows.slice(page.offset, page.offset + page.limit), has_more: rows.length > page.offset + page.limit,
+    next_offset: rows.length > page.offset + page.limit ? page.offset + page.limit : null };
+}
+function previewActivity({ workspaceId, reportedPath, page }) {
+  const result = previewReferences(workspaceId);
+  const selected = result.evidence.filter(item => reportedPath == null || item.reported_path === reportedPath);
+  const paged = previewPage(selected, page);
+  return { ...result, evidence: paged.rows, has_more: paged.has_more, next_offset: paged.next_offset };
+}
+
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const state = {
   sessions: fixtures.sessions.map((s) => ({ ...s })),
@@ -130,6 +174,30 @@ const handlers = {
   cleanup_continuation_packages: () => ({ removed: 0 }),
   get_agents: () => fixtures.agents,
   get_projects: () => fixtures.projects,
+  project_catalog: ({ page, projectFilter }) => {
+    const all = previewProjects().filter(project => !projectFilter || `${project.recorded_path} ${project.display_name}`.toLowerCase().includes(projectFilter.toLowerCase()));
+    const paged = previewPage(all, page); return { projects: paged.rows, has_more: paged.has_more, next_offset: paged.next_offset };
+  },
+  project_activity: previewActivity,
+  file_history: previewActivity,
+  project_files: ({ workspaceId, filenameFilter, page }) => {
+    const data = previewReferences(workspaceId), files = new Map(), seen = new Set();
+    for (const item of data.evidence) {
+      const key = `${item.source.session_id}:${item.source.entry_id}:${item.source.tool_invocation_id}:${item.reported_path}:${item.category}`;
+      if (seen.has(key) || filenameFilter && !item.reported_path.toLowerCase().includes(filenameFilter.toLowerCase())) continue;
+      seen.add(key);
+      const file = files.get(item.reported_path) || { reported_path: item.reported_path, reported_read_count: 0, reported_write_intent_count: 0, reported_reference_count: 0, sessions: new Set() };
+      file[`${item.category}_count`]++; file.sessions.add(item.source.session_id); files.set(item.reported_path, file);
+    }
+    const paged = previewPage([...files.values()].map(file => ({ ...file, session_count: file.sessions.size })), page);
+    return { project: data.project, files: paged.rows, has_more: paged.has_more, next_offset: paged.next_offset };
+  },
+  recorded_git: ({ workspaceId, page }) => {
+    const data = previewReferences(workspaceId);
+    const contexts = fixtures.sessions.filter(session => session.project === data.project.recorded_path && session.branch).map(session => ({ context_id: session.id, branch: session.branch, commit_sha: null, observed_at: null, source: { session_id: session.id, entry_id: null } }));
+    const paged = previewPage(contexts, page); return { contexts: paged.rows, entry_positions: {}, has_more: paged.has_more, next_offset: paged.next_offset };
+  },
+  inspect_git: () => Promise.reject('Local Git inspection is available only in the desktop app.'),
   get_stats: () => fixtures.stats,
   get_facets: () => ({ ...fixtures.facets, tags: [...new Set(state.sessions.flatMap((s) => s.tags || []))].sort() }),
   get_sync_checkpoints: () => fixtures.checkpoints,
