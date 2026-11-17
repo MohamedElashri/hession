@@ -757,8 +757,8 @@ pub async fn get_pricing_status(state: State<'_, AppState>) -> Result<Value, Str
 // sync_pricing
 
 fn sync_pricing_inner(db_path: &Path, raw: &Value, updated_at: &str) -> Result<Value, String> {
-    let _writer = db::user_write();
     let mut conn = open_db(db_path)?;
+    let _writer = crate::db::user_write(&conn).map_err(|e| e.to_string())?;
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -831,8 +831,8 @@ fn save_pricing_override_inner(
         "outPer1M": outPer1M,
         "cachePer1M": cachePer1M,
     });
-    let _writer = db::user_write();
     let mut conn = open_db(db_path)?;
+    let _writer = crate::db::user_write(&conn).map_err(|e| e.to_string())?;
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -900,8 +900,8 @@ fn delete_pricing_override_inner(
     modelId: &str,
 ) -> Result<Value, String> {
     let scope = json!({ "provider": provider, "modelId": modelId });
-    let _writer = db::user_write();
     let mut conn = open_db(db_path)?;
+    let _writer = crate::db::user_write(&conn).map_err(|e| e.to_string())?;
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -1122,8 +1122,8 @@ pub async fn update_session_annotations(
 ) -> Result<Value, String> {
     let path = db_path_of(&state)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let _writer = db::user_write();
         let mut conn = open_db(&path)?;
+        let _writer = crate::db::user_write(&conn).map_err(|e| e.to_string())?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
         let mut session = query_one(&tx, "SELECT id FROM session WHERE id=?", &[SqlValue::Integer(id)])?.ok_or("Session not found")?;
         if let Some(starred) = starred {

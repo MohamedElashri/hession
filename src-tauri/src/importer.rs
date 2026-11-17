@@ -173,6 +173,10 @@ fn all_sources() -> Vec<Source> {
 /// `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `XDG_DATA_HOME`, `PI_CODING_AGENT_DIR`,
 /// `COMMANDCODE_HOME`, `HERMES_HOME`, `ANTIGRAVITY_HOME`.
 fn local_sources() -> Vec<Source> {
+    local_sources_filtered(None)
+}
+
+fn local_sources_filtered(family: Option<&str>) -> Vec<Source> {
     let home = home_dir();
     let xdg = env_path("XDG_DATA_HOME", home.join(".local/share"));
     let mut out = vec![
@@ -226,14 +230,16 @@ fn local_sources() -> Vec<Source> {
             kind: SourceKind::Hermes,
         },
     ];
-    for root in cline::source_roots(&home) {
-        out.push(Source {
-            family: "cline",
-            product: "Cline",
-            root,
-            sub: "",
-            kind: SourceKind::Cline,
-        });
+    if family.is_none_or(|family| family == "cline") {
+        for root in cline::source_roots(&home) {
+            out.push(Source {
+                family: "cline",
+                product: "Cline",
+                root,
+                sub: "",
+                kind: SourceKind::Cline,
+            });
+        }
     }
     match std::env::var("ANTIGRAVITY_HOME") {
         Ok(v) if !v.trim().is_empty() => out.push(Source {
@@ -255,6 +261,7 @@ fn local_sources() -> Vec<Source> {
             }
         }
     }
+    out.retain(|source| family.is_none_or(|family| source.family == family));
     out
 }
 
@@ -991,7 +998,7 @@ fn commit_batch(
     pricing: &mut ImportPricing,
     sessions: Vec<formats::SessionData>,
 ) -> Result<Vec<usize>, String> {
-    let _writer = crate::db::background_write();
+    let _writer = crate::db::background_write(conn).map_err(|e| e.to_string())?;
     if stop_requested() {
         return Err("Import stopped".into());
     }
@@ -1027,7 +1034,21 @@ fn import_file_with_conn(
     pricing: &mut ImportPricing,
 ) -> Result<usize, String> {
     let (family, file) = split_source_uri(source_uri)?;
-    let (product, agent_root) = local_sources()
+    // Decisions made before parsing must not race another import of the same
+    // source. This lock never touches the original harness store.
+    let _source_lock = conn
+        .path()
+        .filter(|path| !path.is_empty())
+        .map(|database| {
+            hession_core::locking::LibraryLock::acquire_source(
+                Path::new(database),
+                source_uri,
+                std::time::Duration::from_millis(crate::db::BUSY_TIMEOUT_MS),
+            )
+        })
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let (product, agent_root) = local_sources_filtered(Some(family))
         .iter()
         .find(|s| s.family == family)
         .map(|s| (s.product.to_string(), s.root.to_string_lossy().to_string()))
@@ -1428,7 +1449,13 @@ pub fn sync_all_with_progress(
 
     summary.cancelled |= stop_requested();
     if !summary.cancelled {
-        let _writer = crate::db::background_write();
+        let _writer = match crate::db::background_write(&conn) {
+            Ok(guard) => guard,
+            Err(error) => {
+                push_error(&mut summary, "checkpoint", error.to_string());
+                return summary;
+            }
+        };
         let done_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
         for fam in &families {
             if !failed.contains(fam) {
@@ -1489,4 +1516,161 @@ fn sort_by_mtime_desc_vec(files: &mut [(String, PathBuf)]) {
                 .unwrap_or(UNIX_EPOCH),
         )
     });
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    #[test]
+    #[ignore = "subprocess helper invoked by native_source_imports_are_serialized_and_preserve_annotations"]
+    fn import_native_source_child() {
+        let file = PathBuf::from(std::env::var_os("HESSION_TEST_NATIVE_SOURCE").unwrap());
+        let mut conn = crate::db::open_db(&crate::db::db_path()).unwrap();
+        crate::db::configure_bulk_writer(&conn).unwrap();
+        let mut pricing = ImportPricing::new();
+        import_file_with_conn(
+            &mut conn,
+            &format!("codex://{}", file.display()),
+            false,
+            None,
+            &mut pricing,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn native_source_imports_are_serialized_and_preserve_annotations() {
+        let root = tempfile::tempdir().unwrap();
+        let codex_root = root.path().join("codex");
+        let data = root.path().join("library");
+        fs::create_dir_all(codex_root.join("sessions")).unwrap();
+        let source = codex_root.join("sessions/fixture.jsonl");
+        let initial = include_str!("../tests/fixtures/codex-concurrency.jsonl");
+        fs::write(&source, initial).unwrap();
+        let database = data.join("sessions.sqlite");
+        let conn = crate::db::open_db(&database).unwrap();
+        let import_twice = || {
+            let children = [0, 1].map(|_| {
+                Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "importer::concurrency_tests::import_native_source_child",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("HESSION_TEST_NATIVE_SOURCE", &source)
+                    .env("HESSION_DATA_DIR", &data)
+                    .env("CODEX_HOME", &codex_root)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap()
+            });
+            for child in children {
+                let output = child.wait_with_output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        };
+        import_twice();
+        let id: i64 = conn
+            .query_row("SELECT id FROM session", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM entry", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            4
+        );
+        {
+            let _writer = crate::db::user_write(&conn).unwrap();
+            conn.execute(
+                "INSERT INTO session_annotation(session_id,starred) VALUES(?,1)",
+                [id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO session_tag(session_id,label) VALUES(?,'kept')",
+                [id],
+            )
+            .unwrap();
+        }
+        let appended = serde_json::json!({"timestamp":"2026-11-17T10:00:04Z","type":"response_item",
+            "payload":{"type":"function_call_output","call_id":"fixture-call","output":"distinctiveneedle"}}).to_string() + "\n";
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&source)
+            .unwrap()
+            .write_all(appended.as_bytes())
+            .unwrap();
+        import_twice();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM session", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT id FROM session", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            id
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM entry", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            5
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT starred FROM session_annotation WHERE session_id=?",
+                [id],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT label FROM session_tag WHERE session_id=?",
+                [id],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "kept"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT result_text FROM tool_invocation WHERE call_id='fixture-call'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "distinctiveneedle"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM entry_fts WHERE entry_fts MATCH 'distinctiveneedle'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            format!("{initial}{appended}").as_bytes()
+        );
+    }
 }

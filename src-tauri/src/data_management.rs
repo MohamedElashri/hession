@@ -474,8 +474,8 @@ pub async fn export_saved_data(
     let database = path_of(&state)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = sync::acquire_data_management_for(&database)?;
-        let _writer = crate::db::user_write();
         let conn = open(&database)?;
+        let _writer = crate::db::user_write(&conn).map_err(|e| e.to_string())?;
         let destination = PathBuf::from(path);
         different_file(&destination, &database)?;
         let parent = destination.parent().ok_or("Invalid backup path")?;
@@ -662,9 +662,9 @@ pub async fn import_saved_data(
     let database = path_of(&state)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = sync::acquire_data_management_for(&database)?;
-        let _writer = crate::db::user_write();
         if mode != "keep" && mode != "replace" { return Err("Invalid import mode".into()); }
         let mut destination = open(&database)?;
+        let _writer = crate::db::user_write(&destination).map_err(|e| e.to_string())?;
         different_file(Path::new(&path), &database)?;
         let tx = sql(destination.transaction_with_behavior(TransactionBehavior::Immediate))?;
         let source = open_backup(Path::new(&path), &tx)?;
@@ -759,9 +759,9 @@ pub async fn delete_saved_data(
     let path = path_of(&state)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = sync::acquire_data_management_for(&path)?;
-        let _writer = crate::db::user_write();
         if confirmation != if reset_database { "RESET" } else { "DELETE" } { return Err("Type the confirmation word before deleting data.".into()); }
         let mut conn = open(&path)?;
+        let _writer = crate::db::user_write(&conn).map_err(|e| e.to_string())?;
         let tx = sql(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         let ids = selection(&tx, &filters)?;
         verify_token(&token(&tx, &ids)?, &expected_token)?;

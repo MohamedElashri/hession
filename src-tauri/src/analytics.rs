@@ -649,7 +649,7 @@ pub fn sync_analytics_cancellable(
         load_pricing_cache(db, &mut st)?;
     }
     if force {
-        let _writer = crate::db::background_write();
+        let _writer = crate::db::background_write(db).map_err(|e| e.to_string())?;
         crate::sync::ensure_analytics_writer_available()?;
         queue_recalculation(db)?;
     }
@@ -679,7 +679,7 @@ pub fn sync_analytics_cancellable(
     for chunk in ids.chunks(20) {
         crate::sync::ensure_analytics_writer_available()?;
         check_cancelled(cancelled)?;
-        let _writer = crate::db::background_write();
+        let _writer = crate::db::background_write(db).map_err(|e| e.to_string())?;
         crate::sync::ensure_analytics_writer_available()?;
         {
             let mut state = pricing.lock().map_err(|_| "Could not lock pricing")?;

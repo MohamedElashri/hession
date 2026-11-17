@@ -1503,12 +1503,15 @@ mod tests {
     fn consent_revocation_during_preview_and_launch_is_rechecked() {
         use std::os::unix::fs::PermissionsExt;
         const CHILD: &str = "HESSION_TEST_REVOCATION_ROOT";
-        fn await_file(path: &Path) {
-            let deadline = std::time::Instant::now() + Duration::from_secs(3);
-            while !path.exists() && std::time::Instant::now() < deadline {
+        fn await_file<T>(path: &Path, worker: &std::thread::JoinHandle<T>) {
+            // Workspace inspection alone permits five seconds before the probe.
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            while !path.exists() && !worker.is_finished() && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
             }
-            assert!(path.exists(), "probe did not reach its deterministic pause");
+            assert!(path.exists(), "probe did not reach its deterministic pause; worker_finished={}, count={:?}, pause_at={:?}",
+                worker.is_finished(), fs::read_to_string(path.with_file_name("probe-count")),
+                fs::read_to_string(path.with_file_name("pause-at")));
         }
         if let Some(root) = std::env::var_os(CHILD) {
             let root = PathBuf::from(root);
@@ -1529,7 +1532,7 @@ mod tests {
                 let cwd = cwd.clone();
                 std::thread::spawn(move || preview(&db_path, 1, "codex", Some(&cwd), "", false))
             };
-            await_file(&root.join("probe-paused"));
+            await_file(&root.join("probe-paused"), &thread);
             features::set_continuation_enabled(false).unwrap();
             fs::write(root.join("release-probe"), "release").unwrap();
             assert!(thread.join().unwrap().unwrap_err().contains("disabled"));
@@ -1562,7 +1565,7 @@ mod tests {
                     )
                 })
             };
-            await_file(&root.join("probe-paused"));
+            await_file(&root.join("probe-paused"), &thread);
             assert_eq!(
                 fs::read_dir(root.join("handoffs")).unwrap().count(),
                 1,
@@ -1620,7 +1623,7 @@ mod tests {
                         )
                     })
                 };
-                await_file(&root.join("probe-paused"));
+                await_file(&root.join("probe-paused"), &thread);
                 if change == "source" {
                     conn.execute("UPDATE entry SET search_text='Source changed during the final probe' WHERE session_id=1",[]).unwrap();
                 } else {

@@ -664,7 +664,7 @@ fn reset_checkpoint(path: &Path) -> Result<Value, String> {
     }
     let _maintenance = crate::sync::acquire_data_management_for(path)?;
     let conn = db::open_db(path).map_err(|e| e.to_string())?;
-    let _write = db::user_write();
+    let _write = db::user_write(&conn).map_err(|e| e.to_string())?;
     init_schema(&conn)?;
     let tx = sql(conn.unchecked_transaction())?;
     for table in [
@@ -842,7 +842,7 @@ fn capture(path: &Path, config: &Config, key: &LibraryKey) -> Result<(), String>
     let ids = workspace_sessions(&conn, &config.scope)?;
     for id in ids {
         check_cancel(path)?;
-        let _guard = db::background_write();
+        let _guard = db::background_write(&conn).map_err(|e| e.to_string())?;
         let tx = sql(conn.unchecked_transaction())?;
         let value = content(&tx, id)?;
         let digest = content_digest(&value)?;
@@ -1191,7 +1191,7 @@ fn pull(
         {
             return Err("Relay returned an invalid change feed".into());
         }
-        let _guard = db::background_write();
+        let _guard = db::background_write(&conn).map_err(|e| e.to_string())?;
         let tx = sql(conn.unchecked_transaction())?;
         let mut previous = cursor;
         for record in &feed.records {
@@ -1264,7 +1264,7 @@ fn push(
     set_phase("Uploading");
     let conn = db::open_db(path).map_err(|e| e.to_string())?;
     {
-        let _guard = db::background_write();
+        let _guard = db::background_write(&conn).map_err(|e| e.to_string())?;
         let tx = sql(conn.unchecked_transaction())?;
         prune_outbox(&tx, config)?;
         sql(tx.commit())?;
@@ -1290,7 +1290,7 @@ fn push(
                 &config.device_id,
                 &plaintext,
             )?;
-            let _guard = db::background_write();
+            let _guard = db::background_write(&conn).map_err(|e| e.to_string())?;
             let tx = sql(conn.unchecked_transaction())?;
             sql(tx.execute("UPDATE replication_outbox SET record_id=?,record_json=? WHERE record_id=? AND vault_id=?",params![replacement.id,serde_json::to_string(&replacement).map_err(|_|"Could not rewrap queued record")?,id,config.vault_id]))?;
             sql(tx.commit())?;
@@ -1305,7 +1305,7 @@ fn push(
         if reply["accepted"].as_u64() != Some(1) {
             return Err("Relay did not acknowledge the upload; it remains queued".into());
         }
-        let _guard = db::background_write();
+        let _guard = db::background_write(&conn).map_err(|e| e.to_string())?;
         sql(conn.execute(
             "DELETE FROM replication_outbox WHERE record_id=? AND vault_id=?",
             params![record.id, config.vault_id],
@@ -1326,7 +1326,7 @@ fn transfer(path: &Path, config: &Config, secrets: &Secrets) -> Result<(), Strin
     let http = client()?;
     let conn = db::open_db(path).map_err(|e| e.to_string())?;
     {
-        let _guard = db::background_write();
+        let _guard = db::background_write(&conn).map_err(|e| e.to_string())?;
         init_schema(&conn)?;
     }
     // Authenticate the key before preparing uploads, but do not apply remote

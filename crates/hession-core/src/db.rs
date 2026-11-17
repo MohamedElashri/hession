@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // Errors
 
@@ -62,7 +62,10 @@ fn writers() -> &'static (Mutex<Writers>, Condvar) {
 
 /// Serialize writes without holding a database read snapshot while waiting.
 /// Interactive actions take the next slot ahead of import/analytics batches.
-pub struct WriteGuard;
+#[derive(Debug)]
+pub struct WriteGuard {
+    _process: Option<crate::locking::LibraryLock>,
+}
 
 impl Drop for WriteGuard {
     fn drop(&mut self) {
@@ -72,28 +75,92 @@ impl Drop for WriteGuard {
     }
 }
 
-fn acquire_write(interactive: bool) -> WriteGuard {
-    let (state, ready) = writers();
-    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-    if interactive {
-        state.users_waiting += 1;
+struct WaitingUser(bool);
+
+impl WaitingUser {
+    fn new(interactive: bool) -> Self {
+        if interactive {
+            let (state, ready) = writers();
+            state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .users_waiting += 1;
+            ready.notify_all();
+        }
+        Self(interactive)
     }
-    while state.active || (!interactive && state.users_waiting > 0) {
-        state = ready.wait(state).unwrap_or_else(|e| e.into_inner());
+
+    fn acquired(&mut self, state: &mut Writers) {
+        if self.0 {
+            state.users_waiting -= 1;
+            self.0 = false;
+        }
     }
-    if interactive {
-        state.users_waiting -= 1;
-    }
-    state.active = true;
-    WriteGuard
 }
 
-pub fn user_write() -> WriteGuard {
-    acquire_write(true)
+impl Drop for WaitingUser {
+    fn drop(&mut self) {
+        if self.0 {
+            let (state, ready) = writers();
+            state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .users_waiting -= 1;
+            ready.notify_all();
+        }
+    }
 }
 
-pub fn background_write() -> WriteGuard {
-    acquire_write(false)
+fn acquire_write(conn: &Connection, interactive: bool) -> Result<WriteGuard> {
+    if !conn.is_autocommit() {
+        return Err(DbError::Message(
+            "Acquire the library write guard before starting a database transaction".into(),
+        ));
+    }
+    // Register intent without holding a mutex during OS lock acquisition.
+    let mut waiting = WaitingUser::new(interactive);
+    let deadline = Instant::now() + Duration::from_millis(BUSY_TIMEOUT_MS);
+    loop {
+        let process =
+            process_write_lock_for(conn, deadline.saturating_duration_since(Instant::now()))?;
+        let version = schema_version(conn)?;
+        if version != SCHEMA_VERSION {
+            return Err(DbError::Message(format!("Library schema changed to {version}; reopen the current Hession version before writing")));
+        }
+        let (state, ready) = writers();
+        let mut active = state.lock().unwrap_or_else(|e| e.into_inner());
+        if !active.active && (interactive || active.users_waiting == 0) {
+            waiting.acquired(&mut active);
+            active.active = true;
+            return Ok(WriteGuard { _process: process });
+        }
+        // Never wait for an interactive writer while holding the file lock it
+        // needs. Release both gates before waiting, then recheck on acquisition.
+        drop(active);
+        drop(process);
+        let mut active = state.lock().unwrap_or_else(|e| e.into_inner());
+        while active.active || (!interactive && active.users_waiting > 0) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(DbError::Io(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "Library write queue is busy; finish the other operation and retry",
+                )));
+            }
+            active = ready
+                .wait_timeout(active, remaining)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+}
+
+pub fn user_write(conn: &Connection) -> Result<WriteGuard> {
+    acquire_write(conn, true)
+}
+
+pub fn background_write(conn: &Connection) -> Result<WriteGuard> {
+    acquire_write(conn, false)
 }
 
 pub fn user_write_pending() -> bool {
@@ -171,25 +238,52 @@ fn database_identity(path: &Path) -> Result<DatabaseIdentity> {
     })
 }
 
-/// Open (creating parents as needed), configure pragmas, init schema.
-///
-/// Schema initialization is serialized and runs once per database per process.
-/// An idle connection keeps WAL alive between commands, avoiding repeated
-/// last-connection checkpoints. Journal mode is set only during initialization.
+/// A guard must be acquired before any transaction/read snapshot. In-memory
+/// fixture libraries need only the in-process gate.
+fn process_write_lock(conn: &Connection) -> Result<Option<crate::locking::LibraryLock>> {
+    process_write_lock_for(conn, Duration::from_millis(BUSY_TIMEOUT_MS))
+}
+
+fn process_write_lock_for(
+    conn: &Connection,
+    timeout: Duration,
+) -> Result<Option<crate::locking::LibraryLock>> {
+    conn.path()
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            crate::locking::LibraryLock::acquire(
+                Path::new(path),
+                crate::locking::LockKind::Write,
+                timeout,
+            )
+        })
+        .transpose()
+        .map_err(DbError::Io)
+}
+
+fn configured_connection(path: &Path) -> Result<Connection> {
+    let conn = Connection::open(path).map_err(|e| sqlite_err("open database", e))?;
+    ensure_file_permissions(path)?;
+    conn.busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS))
+        .map_err(|e| sqlite_err("set busy_timeout", e))?;
+    conn.pragma_update(None, "foreign_keys", true)
+        .map_err(|e| sqlite_err("set foreign_keys", e))?;
+    conn.set_prepared_statement_cache_capacity(128);
+    conn.pragma_update(None, "wal_autocheckpoint", 4096)
+        .map_err(|e| sqlite_err("configure WAL checkpoint interval", e))?;
+    Ok(conn)
+}
+
+/// Open and explicitly migrate an application library. Established WAL readers
+/// do not acquire the process write lock; initialization takes it before the
+/// process-local cache mutex so independent writers cannot race migrations.
 pub fn open_db(path: &Path) -> Result<Connection> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            ensure_dir_permissions(parent)?;
-        }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        ensure_dir_permissions(parent)?;
     }
-    static INITIALIZED: OnceLock<Mutex<HashMap<PathBuf, (DatabaseIdentity, Connection)>>> =
-        OnceLock::new();
-    let mut initialized = INITIALIZED
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .map_err(|_| DbError::Message("Could not access database initialization state".into()))?;
-    // Check before opening: a retained connection may still refer to the old
-    // inode and WAL. Reinitializing a replacement beside it risks saved data.
+    type Initialized = HashMap<PathBuf, (DatabaseIdentity, Connection)>;
+    static INITIALIZED: OnceLock<Mutex<Initialized>> = OnceLock::new();
+    let cache = INITIALIZED.get_or_init(|| Mutex::new(HashMap::new()));
     let key = if path.exists() {
         fs::canonicalize(path)?
     } else {
@@ -203,22 +297,66 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                 .ok_or_else(|| DbError::Message("Invalid database path".into()))?,
         )
     };
-    if let Some((identity, _)) = initialized.get(&key) {
-        if !path.exists() || *identity != database_identity(path)? {
-            return Err(DbError::Message(format!("The database file was replaced while {} was running. Close the app and restore the database with its matching journal files before reopening.", crate::brand::NAME)));
+    let validate = |initialized: &Initialized| -> Result<bool> {
+        if let Some((identity, _)) = initialized.get(&key) {
+            if !path.exists() || *identity != database_identity(path)? {
+                return Err(DbError::Message(format!("The database file was replaced while {} was running. Close the app and restore the database with its matching journal files before reopening.", crate::brand::NAME)));
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    };
+    let ready = {
+        let initialized = cache.lock().map_err(|_| {
+            DbError::Message("Could not access database initialization state".into())
+        })?;
+        validate(&initialized)?
+    };
+    if ready {
+        let conn = configured_connection(path)?;
+        let version = schema_version(&conn)?;
+        if version != SCHEMA_VERSION {
+            return Err(DbError::Message(format!(
+                "Library schema changed to {version}; close and reopen the current Hession version"
+            )));
+        }
+        return Ok(conn);
+    }
+    // A second desktop process may be starting while a CLI writer is active.
+    // A current WAL library needs no migration or journal-mode write: attach
+    // independent readers without waiting for the process write gate.
+    if path.is_file() {
+        let conn = configured_connection(path)?;
+        let version = schema_version(&conn)?;
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .map_err(|e| sqlite_err("inspect journal mode", e))?;
+        if version == SCHEMA_VERSION && mode == "wal" {
+            let mut initialized = cache.lock().map_err(|_| {
+                DbError::Message("Could not access database initialization state".into())
+            })?;
+            if !validate(&initialized)? {
+                let keepalive =
+                    Connection::open(path).map_err(|e| sqlite_err("keep WAL open", e))?;
+                keepalive
+                    .query_row("PRAGMA schema_version", [], |r| r.get::<_, i64>(0))
+                    .map_err(|e| sqlite_err("attach idle WAL connection", e))?;
+                initialized.insert(key, (database_identity(path)?, keepalive));
+            }
+            return Ok(conn);
         }
     }
-    let conn = Connection::open(path).map_err(|e| sqlite_err("open database", e))?;
-    ensure_file_permissions(path)?;
-    conn.busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS))
-        .map_err(|e| sqlite_err("set busy_timeout", e))?;
-    conn.pragma_update(None, "foreign_keys", true)
-        .map_err(|e| sqlite_err("set foreign_keys", e))?;
-    conn.set_prepared_statement_cache_capacity(128);
-    conn.pragma_update(None, "wal_autocheckpoint", 4096)
-        .map_err(|e| sqlite_err("configure WAL checkpoint interval", e))?;
-    let key = fs::canonicalize(path)?;
-    if let std::collections::hash_map::Entry::Vacant(slot) = initialized.entry(key) {
+    let _process = crate::locking::LibraryLock::acquire(
+        &key,
+        crate::locking::LockKind::Write,
+        Duration::from_millis(BUSY_TIMEOUT_MS),
+    )?;
+    let mut initialized = cache
+        .lock()
+        .map_err(|_| DbError::Message("Could not access database initialization state".into()))?;
+    let ready = validate(&initialized)?;
+    let conn = configured_connection(path)?;
+    if !ready {
         let mode: String = conn
             .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
             .map_err(|e| sqlite_err("enable WAL", e))?;
@@ -227,20 +365,12 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                 "The database must be on a local filesystem that supports SQLite WAL.".into(),
             ));
         }
-        init_schema(&conn)?;
+        init_schema_unlocked(&conn)?;
         let keepalive = Connection::open(path).map_err(|e| sqlite_err("keep WAL open", e))?;
-        // Opening is lazy: read the schema so this connection actually attaches
-        // to WAL before the initialization connection goes away.
         keepalive
-            .query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0))
+            .query_row("PRAGMA schema_version", [], |r| r.get::<_, i64>(0))
             .map_err(|e| sqlite_err("attach idle WAL connection", e))?;
-        slot.insert((database_identity(path)?, keepalive));
-    }
-    drop(initialized);
-
-    // Harden the file itself (0600) right after open.
-    if path.exists() {
-        ensure_file_permissions(path)?;
+        initialized.insert(key, (database_identity(path)?, keepalive));
     }
     Ok(conn)
 }
@@ -485,6 +615,11 @@ END;
 /// Safe to call on every boot (all DDL uses `IF NOT EXISTS`; columns are only
 /// ever added). No destructive replacement of saved data is performed here.
 pub fn init_schema(conn: &Connection) -> Result<()> {
+    let _process = process_write_lock(conn)?;
+    init_schema_unlocked(conn)
+}
+
+fn init_schema_unlocked(conn: &Connection) -> Result<()> {
     // user_version belongs to the portable-backup format, not app migrations.
     // Keep schema metadata separate so v0.4 backups remain compatible.
     conn.execute_batch("SAVEPOINT migrate_application_schema")
@@ -539,7 +674,7 @@ pub fn schema_version(conn: &Connection) -> Result<i64> {
         return Ok(0);
     }
     let rows: Vec<(i64, i64)> = conn
-        .prepare("SELECT id,version FROM application_schema")
+        .prepare("SELECT id,version FROM application_schema LIMIT 2")
         .map_err(|e| sqlite_err("read application schema", e))?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(|e| sqlite_err("read application schema", e))?

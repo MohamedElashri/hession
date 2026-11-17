@@ -9,8 +9,8 @@ fn child_lock_holder() {
     use std::io::Read;
     let path = std::env::var_os("HESSION_TEST_LOCK_DATABASE").expect("isolated child database");
     let database = std::path::PathBuf::from(path);
-    let _lock = LibraryLock::acquire(&database, LockKind::Write, Duration::ZERO).unwrap();
     let mut conn = hession_core::db::open_db(&database).unwrap();
+    let _lock = hession_core::db::user_write(&conn).unwrap();
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .unwrap();
@@ -108,6 +108,31 @@ fn watch_leadership_is_exclusive_and_libraries_are_isolated() {
     .unwrap();
     drop(first);
     LibraryLock::acquire(&database, LockKind::WatchLeader, Duration::ZERO).unwrap();
+}
+
+#[test]
+fn source_locks_serialize_parsers_without_blocking_other_sources_or_wal_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("sessions.sqlite");
+    let source = "claude:///private/native/path/../history.jsonl";
+    let guard = LibraryLock::acquire_source(&database, source, Duration::ZERO).unwrap();
+    // macOS temporary directories themselves live below /private. Only the
+    // generated filename must omit the native source's path components.
+    let filename = guard.path().file_name().unwrap().to_string_lossy();
+    assert!(!filename.contains("private"));
+    assert!(!filename.contains("history"));
+    assert_eq!(
+        LibraryLock::acquire_source(&database, source, Duration::ZERO)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::WouldBlock
+    );
+    let _other =
+        LibraryLock::acquire_source(&database, "codex:///another/source.jsonl", Duration::ZERO)
+            .unwrap();
+    let _write = LibraryLock::acquire(&database, LockKind::Write, Duration::ZERO).unwrap();
+    drop(guard);
+    LibraryLock::acquire_source(&database, source, Duration::ZERO).unwrap();
 }
 
 #[test]

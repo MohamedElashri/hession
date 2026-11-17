@@ -113,6 +113,17 @@ library identity/revision from the same WAL snapshot as its transcript. These
 are internal adapter APIs; transcript payloads require a separate allowlist and
 project-scope check before exposing them through external tools.
 
+Writers receive their actual SQLite connection and acquire the kernel library
+lock before the in-process priority gate and transaction. Acquiring a write
+guard after starting a read transaction returns an error. Initialization uses
+the same kernel gate; established desktop connections and read-only services
+can read WAL snapshots while another process writes. A separate source lock
+serializes parsing and checkpoint decisions for each source, with hashed lock
+names that do not disclose native store paths. These gates protect Hession's
+library and do not write or lock the original harness files. Kernel ownership
+ends when the guard closes or its process exits; the empty private lock files
+remain in the library directory and are outside portable SQLite backups.
+
 Build output (all ignored by git):
 
 ```

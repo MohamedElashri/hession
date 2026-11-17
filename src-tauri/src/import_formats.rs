@@ -1075,7 +1075,7 @@ pub(super) fn import_database(
             }
         }
     }
-    let _writer = crate::db::background_write();
+    let _writer = crate::db::background_write(dest).map_err(|e| e.to_string())?;
     if stop_requested() {
         return Err("Import stopped".into());
     }
