@@ -129,3 +129,32 @@ test('new feature inputs and review dialogs retain typing and suppress app short
   await user.keyboard('{Escape}');
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Commands' }));
 });
+
+test('deferred navigation focus yields to a newly focused input before typing starts', async () => {
+  const user = userEvent.setup();
+  let frame;
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { frame = callback; return 1; });
+  render(<FeatureNavigation/>);
+  screen.getByRole('heading', { name: 'Sessions' }).focus();
+  focusAfterRender('#feature-heading');
+  const filter = screen.getByRole('textbox', { name: 'Feature filter' });
+  await user.click(filter);
+  frame(performance.now());
+  expect(document.activeElement).toBe(filter);
+  await user.keyboard('j/k?');
+  expect(filter.value).toBe('j/k?');
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+test.each(['connected', 'removed'])('deferred navigation still focuses its destination when the origin is %s', origin => {
+  let frame;
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { frame = callback; return 1; });
+  const destination = <h1 tabIndex={-1} id="focus-destination">Destination</h1>;
+  const { rerender } = render(<><button type="button">Origin</button>{destination}</>);
+  const previous = screen.getByRole('button', { name: 'Origin' });
+  previous.focus();
+  focusAfterRender('#missing-destination', '#focus-destination');
+  if (origin === 'removed') rerender(<>{destination}</>);
+  frame(performance.now());
+  expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Destination' }));
+});
