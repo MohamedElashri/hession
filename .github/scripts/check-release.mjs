@@ -20,6 +20,7 @@ requireCondition(
 
 const cargoPackages = [
   ['src-tauri/Cargo.toml', 'app'],
+  ['crates/hession-core/Cargo.toml', 'hession-core'],
   ['crates/hession-sync/Cargo.toml', 'hession-sync'],
   ['crates/hession-relay/Cargo.toml', 'hession-relay'],
 ];

@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parent
 JSON_FILES = [Path("package.json"), Path("src-tauri/tauri.conf.json")]
 CARGO_PACKAGES = [
     (Path("src-tauri/Cargo.toml"), "app"),
+    (Path("crates/hession-core/Cargo.toml"), "hession-core"),
     (Path("crates/hession-sync/Cargo.toml"), "hession-sync"),
     (Path("crates/hession-relay/Cargo.toml"), "hession-relay"),
 ]

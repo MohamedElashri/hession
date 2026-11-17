@@ -7,6 +7,8 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: 'jsdom',
+    // Bound transform/DOM workers on hosts reporting many logical CPUs.
+    maxWorkers: 2,
     include: ['src/**/*.component.test.jsx'],
     setupFiles: ['src/test/setup.js'],
     restoreMocks: true,
