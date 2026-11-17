@@ -601,6 +601,19 @@ pub async fn recent_local_sessions(
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+pub async fn observed_library_revision(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<LibraryRevision, String> {
+    let path = state.db_path.lock().map_err(|e| e.to_string())?.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db::open_read_only(&path).map_err(|e| e.to_string())?;
+        library_revision::current(&conn).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

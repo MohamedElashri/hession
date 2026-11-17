@@ -6,6 +6,7 @@
 // git-ignored), which is preferred when present. Loaded only in development builds.
 import sample from './fixtures.json';
 import appPackage from '../../package.json' with { type: 'json' };
+import { liveEntrySummary } from '../live-state.js';
 
 // Fetched rather than imported: a real library can be tens of megabytes, more
 // than Vite will transform into a module.
@@ -13,6 +14,31 @@ const local = await fetch(new URL('./fixtures.local.json', import.meta.url))
   .then((response) => (response.ok ? response.json() : null))
   .catch(() => null);
 const fixtures = local ?? sample;
+
+function recentLocal({ agent = '', project = '', since = '', limit = 50, offset = 0 }) {
+  const rows = fixtures.sessions.filter(session => !session.host && !String(session.source_uri || '').startsWith('hession-sync://')
+    && (!agent || session.agent === agent) && (!project || (session.project || session.cwd) === project)
+    && (!since || new Date(session.last_event_at || session.started_at) >= new Date(since)))
+    .sort((a, b) => new Date(b.last_event_at || b.started_at) - new Date(a.last_event_at || a.started_at) || b.id - a.id);
+  const selected = rows.slice(offset, offset + limit).map(session => {
+    const entries = fixtures.details[session.id]?.entries || [], latest = entries.at(-1);
+    return { id: session.id, title: session.title, agent: session.agent, product: session.product,
+      project: session.project || session.cwd, workspaceId: null, lastEventAt: session.last_event_at || session.started_at,
+      status: 'stale', latestEvent: latest ? { id: latest.id, ordinal: latest.ordinal, position: entries.length - 1,
+        kind: latest.kind, role: latest.role, summary: liveEntrySummary(latest).slice(0, 240), occurredAt: latest.occurred_at } : null };
+  });
+  const hasMore = offset + selected.length < rows.length;
+  return { sessions: selected, hasMore, nextOffset: hasMore ? offset + limit : null, revision: { identity: 'browser-preview', revision: 0 } };
+}
+
+function sessionDelta({ sessionId, cursor, limit = 100 }) {
+  const detail = fixtures.details[sessionId];
+  const rows = (detail?.entries || []).map((entry, position) => ({ ...entry, position }));
+  const current = { identity: 'browser-preview', epoch: 0, seq: rows.length, sessionId };
+  const reset = !cursor || JSON.stringify(cursor) !== JSON.stringify(current);
+  return { revision: { identity: 'browser-preview', revision: 0 }, cursor: current, reset, deleted: !detail,
+    entries: reset ? rows.slice(-Math.min(100, limit)) : [], hasMore: false };
+}
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const state = {
@@ -71,6 +97,8 @@ function resumeInfo({ id, terminal }) {
 }
 
 const handlers = {
+  recent_local_sessions: recentLocal,
+  session_delta: sessionDelta,
   get_optional_features: () => ({ ...state.optionalFeatures }),
   set_continuation_enabled: ({ enabled }) => { state.optionalFeatures.continuationEnabled = !!enabled; return { ...state.optionalFeatures }; },
   get_device_sync_settings: () => ({ enabled: false, configured: false, relayUrl: '', deviceName: '', scope: [], workspaces: fixtures.projects.map(project => ({ path: project.path, count: project.sessions || 0 })), status: { running: false, phase: 'disabled', uploaded: 0, downloaded: 0 } }),
@@ -171,6 +199,7 @@ const handlers = {
 window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
 
 window.__TAURI_INTERNALS__ = {
+  isPreview: true,
   metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } },
   transformCallback: () => ++callbacks,
   async invoke(command, args = {}) {

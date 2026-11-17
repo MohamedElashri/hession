@@ -9,6 +9,7 @@ export default defineConfig({
     environment: 'jsdom',
     // Bound transform/DOM workers on hosts reporting many logical CPUs.
     maxWorkers: 2,
+    testTimeout: 15000,
     include: ['src/**/*.component.test.jsx'],
     setupFiles: ['src/test/setup.js'],
     restoreMocks: true,

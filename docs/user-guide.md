@@ -65,6 +65,35 @@ history stays available while a host is offline or removes its original files.
   use Legacy search; developer queries support selected-session or whole-library
   exports until shared project export selection is available.
 
+## Live local activity
+
+**Live** passively shows locally recorded sessions and their latest events. Filter
+by agent, project, or the last 15 minutes; choose **All recorded activity** for
+older histories. **Recently updated**, **Quiet**, **May be stale**, and
+**Unavailable** describe recorded evidence. They do not prove an agent process
+is running, blocked, awaiting approval, or finished. SSH histories stay in the
+normal library and update through manual history refresh.
+
+Select a session to read its live event window. Earlier tool calls update in
+place when their recorded results arrive. Source rewrites replace the window
+with a bounded tail, close expanded cards, and display a notice. Ordinary late
+updates preserve expanded cards. Collapsed previews show conversation text or
+event metadata; expand a card to inspect other recorded content. Open **Full history** to read the
+complete indexed transcript or jump to an event's actual row position.
+
+Following starts off. Choose **Follow latest events** to scroll with new events;
+scrolling away turns following off. A new-event button offers a one-time jump
+without enabling following. **Pause live updates** pauses this reader only;
+automatic indexing is unchanged. **Pause automatic indexing** separately changes
+the existing indexing preference. Indexing errors and recovery polling appear
+in the Live header.
+
+Each delta contains at most 100 events. The reader retains at most 300 events
+and approximately 4 MiB of serialized content; older events remain available in
+full history. Polling and local change notifications are coalesced, so rapid
+updates do not queue unlimited requests. Live requires the desktop SQLite
+service; browser preview shows an availability message.
+
 ## Keyboard navigation
 
 Open **Commands** in the sidebar or press **Cmd+K** on macOS / **Ctrl+K** on Linux.

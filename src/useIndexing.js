@@ -4,7 +4,7 @@ import { api, hasTauriRuntime } from './api.js';
 import { storageKey } from './brand.js';
 
 export default function useIndexing({ ready, onChanged }) {
-  const available = hasTauriRuntime();
+  const available = hasTauriRuntime() && !globalThis.window?.__TAURI_INTERNALS__?.isPreview;
   const [enabled, setEnabled] = useState(() => {
     try { return (localStorage.getItem(storageKey('background-indexing')) ?? localStorage.getItem(storageKey('auto-sync'))) !== 'false'; }
     catch { return true; }
@@ -14,6 +14,7 @@ export default function useIndexing({ ready, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const started = useRef(false), starting = useRef(null), currentEnabled = useRef(enabled), change = useRef(onChanged);
+  const revision = useRef(null);
   useEffect(() => { change.current = onChanged; }, [onChanged]);
   useEffect(() => { currentEnabled.current = enabled; }, [enabled]);
   useEffect(() => {
@@ -48,7 +49,14 @@ export default function useIndexing({ ready, onChanged }) {
     const poll = async () => {
       if (polling) return;
       polling = true;
-      try { const next = await api('indexing_status'); if (active) setStatus(next); }
+      try {
+        const [next, current] = await Promise.all([api('indexing_status'), api('observed_library_revision')]);
+        if (active) {
+          setStatus(next);
+          const token = JSON.stringify(current);
+          if (revision.current !== token) { revision.current = token; change.current?.(); }
+        }
+      }
       catch { /* Keep the last status; a later poll recovers. */ }
       finally { polling = false; }
     };

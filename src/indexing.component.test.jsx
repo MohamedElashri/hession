@@ -17,6 +17,7 @@ beforeEach(() => {
   api.mockImplementation(async (command, args) => {
     if (command === 'start_indexing' || command === 'indexing_status') return { phase: 'active', roots: ['/synthetic'], errors: [] };
     if (command === 'pause_indexing') return { phase: args.paused ? 'paused' : 'active' };
+    if (command === 'observed_library_revision') return { identity: 'fixture', revision: 1 };
     throw new Error(`Unexpected IPC ${command}`);
   });
 });
@@ -76,4 +77,36 @@ test('browser preview never starts native observation', async () => {
   const hook = renderHook(() => useIndexing({ ready: true }));
   await act(async () => vi.advanceTimersByTimeAsync(6000));
   expect(api).not.toHaveBeenCalled(); expect(hook.result.current.available).toBe(false);
+});
+
+test('the development IPC preview does not enable native observation', async () => {
+  const previous = window.__TAURI_INTERNALS__;
+  window.__TAURI_INTERNALS__ = { isPreview: true };
+  try {
+    const hook = renderHook(() => useIndexing({ ready: true }));
+    await act(async () => vi.advanceTimersByTimeAsync(6000));
+    expect(api).not.toHaveBeenCalled();
+    expect(hook.result.current.available).toBe(false);
+    hook.unmount();
+  } finally { window.__TAURI_INTERNALS__ = previous; }
+});
+
+test('revision polling observes another process even when this watcher cannot start', async () => {
+  let revision = 1;
+  const normal = api.getMockImplementation();
+  api.mockImplementation(async (command, args) => {
+    if (command === 'start_indexing') throw new Error('Another watcher owns this library');
+    if (command === 'observed_library_revision') return { identity: 'fixture', revision };
+    return normal(command, args);
+  });
+  const changed = vi.fn();
+  const hook = renderHook(() => useIndexing({ ready: true, onChanged: changed }));
+  await act(async () => vi.advanceTimersByTimeAsync(3000));
+  expect(hook.result.current.error).toContain('Another watcher');
+  expect(changed).toHaveBeenCalledTimes(1);
+  await act(async () => vi.advanceTimersByTimeAsync(3000));
+  expect(changed).toHaveBeenCalledTimes(1);
+  revision = 2;
+  await act(async () => vi.advanceTimersByTimeAsync(3000));
+  expect(changed).toHaveBeenCalledTimes(2);
 });

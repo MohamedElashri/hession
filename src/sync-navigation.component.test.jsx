@@ -198,9 +198,9 @@ test('palette opens real export and Settings actions, Escape restores focus, sid
   const sessionsButton = screen.getByRole('button', { name: /^Sessions/ });
   sessionsButton.focus();
   await user.keyboard('{ArrowDown}');
-  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Analytics' }));
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Live', exact: true }));
   await user.keyboard('j');
-  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Analytics' }));
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Live', exact: true }));
   await user.keyboard('?');
   expect(await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })).toBeTruthy();
 });
@@ -235,4 +235,29 @@ test('palette session and workspace results use existing navigation and Resume k
   await waitFor(() => expect(api.mock.calls.some(([command, args]) => command === 'search_sessions' && args.project === '/work/demo')).toBe(true));
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(screen.getByRole('button', { name: 'Remove filter demo' })).toBeTruthy();
+});
+
+test('Live navigation uses the registry and browser history while preserving the selected session', async () => {
+  const user = userEvent.setup();
+  render(boot.tree);
+  await user.click(await screen.findByRole('button', { name: /^Claude Code.*Selected session/ }));
+  await screen.findByRole('heading', { name: 'Selected session' });
+  await user.keyboard('{Control>}k{/Control}');
+  await user.type(await screen.findByRole('combobox'), 'Show live local activity');
+  await user.keyboard('{Enter}');
+  const heading = await screen.findByRole('heading', { name: 'Live local activity' });
+  await waitFor(() => expect(document.activeElement).toBe(heading));
+  expect(new URL(window.location.href).searchParams.get('view')).toBe('live');
+  expect(screen.getByText('Live local activity is available in the desktop app.')).toBeTruthy();
+  await user.keyboard('{Control>}k{/Control}');
+  await user.type(await screen.findByRole('combobox', { name: 'Search commands, sessions, and workspaces' }), 'Show Files and Git');
+  expect(screen.getByRole('option', { name: /Show Files and Git/ }).getAttribute('aria-disabled')).toBe('true');
+  await user.keyboard('{Enter}');
+  expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeTruthy();
+  await user.keyboard('{Escape}');
+  expect(document.activeElement).toBe(heading);
+  await user.click(screen.getByRole('button', { name: /^Sessions/ }));
+  await screen.findByRole('heading', { name: 'Selected session' });
+  expect(new URL(window.location.href).searchParams.get('session')).toBe('2');
+  expect(api.mock.calls.some(([command]) => ['session_delta', 'recent_local_sessions', 'pause_indexing', 'start_indexing'].includes(command))).toBe(false);
 });

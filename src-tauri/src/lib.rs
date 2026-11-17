@@ -85,6 +85,7 @@ pub fn run() {
             indexer::pause_indexing,
             indexer::session_delta,
             indexer::recent_local_sessions,
+            indexer::observed_library_revision,
             commands::get_health,
             commands::search_sessions,
             developer_search::developer_search,
