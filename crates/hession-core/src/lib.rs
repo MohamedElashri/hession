@@ -10,4 +10,5 @@ pub mod locking;
 pub mod observation;
 pub mod service;
 pub mod sessions;
+pub mod source;
 pub mod sql;

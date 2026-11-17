@@ -655,6 +655,12 @@ fn init_schema_unlocked(conn: &Connection) -> Result<()> {
             conn.execute("UPDATE application_schema SET version=2 WHERE id=1", [])
                 .map_err(|e| sqlite_err("record indexing schema", e))?;
         }
+        if version < 3 {
+            crate::indexing::migrate_full_sources(conn)
+                .map_err(|e| sqlite_err("migrate full-source state", e))?;
+            conn.execute("UPDATE application_schema SET version=3 WHERE id=1", [])
+                .map_err(|e| sqlite_err("record full-source schema", e))?;
+        }
         Ok(())
     })();
     if result.is_err() {
@@ -668,7 +674,7 @@ fn init_schema_unlocked(conn: &Connection) -> Result<()> {
 }
 
 /// Application schema version; deliberately independent of backup user_version.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
     let present: bool = conn.query_row(
