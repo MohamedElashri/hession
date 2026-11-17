@@ -1,7 +1,8 @@
 import { memo, useState } from 'react';
 import Markdown from './Markdown.jsx';
-import { Bot, Brain, Check, ChevronRight, ClipboardList, Copy, Info, User } from 'lucide-react';
+import { Bot, Brain, Check, ClipboardList, Copy, Info, Terminal, User } from 'lucide-react';
 import { parseDate } from '../dates.js';
+import ToolActivity from './ToolActivity.jsx';
 
 function DeferredDetails({ summary, children, ...props }) {
   const [open, setOpen] = useState(false);
@@ -13,11 +14,6 @@ function DeferredDetails({ summary, children, ...props }) {
 
 const timeOf = entry => parseDate(entry?.occurred_at)?.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) ?? '';
 const lineCount = text => String(text ?? '').split('\n').length;
-const failed = status => ['error', 'failed', 'failure'].includes(String(status ?? '').toLowerCase());
-
-function formatArgs(value) {
-  try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return String(value ?? ''); }
-}
 
 function CopyButton({ text, label }) {
   const [copied, setCopied] = useState(false);
@@ -37,7 +33,7 @@ function ContextChips({ context }) {
 
 function Prompt({ prompt }) {
   const copyText = [prompt.command, prompt.text, ...prompt.pasted].filter(Boolean).join('\n\n');
-  return <article className="prompt-card">
+  return <article className="prompt-card" aria-label="Your message">
     <header className="turn-head">
       <span className="turn-avatar"><User size={13}/></span>
       <strong>You</strong>
@@ -61,23 +57,15 @@ const TOOL_RUN_COLLAPSE = 6;
 function ToolCalls({ calls }) {
   const [expanded, setExpanded] = useState(false);
   const collapsible = calls.length > TOOL_RUN_COLLAPSE;
-  const shown = collapsible && !expanded ? calls.slice(0, TOOL_RUN_VISIBLE) : calls;
-  return <div className="tool-list">{shown.map(call => <DeferredDetails className={`tool-row ${failed(call.status) ? 'tool-failed' : ''}`} key={call.key}
-    summary={<>
-      <ChevronRight size={13} className="tool-chevron"/>
-      <span className="tool-name">{call.name}</span>
-      <span className="tool-summary">{call.summary}</span>
-      {failed(call.status) && <span className="tool-status status-error">failed</span>}
-    </>}>
-    {() => <div className="tool-detail">
-      {call.command ? <pre className="command-pre">$ {call.command}</pre> : call.args && call.args !== '{}' && <pre>{formatArgs(call.args)}</pre>}
-      {call.result ? <pre>{call.result.slice(0, 8000)}{call.result.length > 8000 ? '\n…' : ''}</pre> : <p className="tool-empty">No output recorded.</p>}
-    </div>}
-  </DeferredDetails>)}
+  const shown = collapsible && !expanded ? calls.filter((call, index) => index < TOOL_RUN_VISIBLE ||
+    ['error', 'failed', 'failure'].includes(String(call.status ?? '').toLowerCase()) || (call.exit_code != null && call.exit_code !== 0)) : calls;
+  const hidden = calls.length - shown.length;
+  return <section className="tool-list" aria-label="Tool activity"><header className="tool-list-head"><Terminal size={13}/><strong>Tool activity</strong><span>{calls.length} call{calls.length === 1 ? '' : 's'}</span></header>
+  {shown.map(call => <ToolActivity tool={call} key={call.key}/>)}
   {collapsible && <button type="button" className="text-button tool-more" onClick={() => setExpanded(!expanded)}>
-    {expanded ? 'Show fewer' : `Show ${calls.length - TOOL_RUN_VISIBLE} more tool calls`}
+    {expanded ? 'Show fewer' : hidden ? `Show ${hidden} more tool calls` : 'Show all tool calls'}
   </button>}
-  </div>;
+  </section>;
 }
 
 function ReplyItem({ item }) {
@@ -97,13 +85,14 @@ function ReplyItem({ item }) {
 export const Conversation = memo(function Conversation({ turns, agentName, agentColor }) {
   return turns.map(turn => <section className="turn" id={`turn-${turn.id}`} key={turn.id}>
     {turn.prompt ? <Prompt prompt={turn.prompt}/> : <p className="turn-continued">Continued from earlier in the session</p>}
-    {turn.items.length > 0 && <div className="reply">
+    {turn.items.length > 0 && <article className="reply" aria-label={`${agentName} response`}>
       <header className="turn-head reply-head">
         <span className={`turn-avatar agent-avatar ${agentColor}`}><Bot size={13}/></span>
         <strong>{agentName}</strong>
+        <span className="speaker-label">Agent</span>
       </header>
       {turn.items.map(item => <ReplyItem item={item} key={item.key}/>)}
-    </div>}
+    </article>}
   </section>);
 });
 

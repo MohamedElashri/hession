@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   package:
-    if: (github.head_ref == 'v0.5/release' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch'
+    if: ((github.head_ref == 'v0.5/release' || startsWith(github.head_ref, 'release/')) && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
@@ -43,9 +43,11 @@ jobs:
         if: matrix.os == 'linux'
         run: |
           make deps
-          sudo apt-get install -y --no-install-recommends patchelf xvfb xauth xdg-utils rpm cpio
+          sudo apt-get install -y --no-install-recommends patchelf xvfb xauth xdg-utils rpm cpio openbox
       - run: npm ci
-      - run: make release-check VERSION=0.5.0
+      - name: Read candidate version
+        run: node -p '"CANDIDATE_VERSION=" + require("./package.json").version' >> "$GITHUB_ENV"
+      - run: make release-check VERSION="$CANDIDATE_VERSION"
       - name: Generate disposable updater key
         shell: bash
         run: |
@@ -63,7 +65,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ matrix.os == 'macos' && '-' || '' }}
         run: npm run tauri -- build --ci --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/candidate.json" --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
       - name: Verify updater cryptography and signed version
-        run: node .github/scripts/verify-updater-artifacts.mjs 'target/${{ matrix.target }}/release/bundle' "$RUNNER_TEMP/candidate.key.pub" 0.5.0
+        run: node .github/scripts/verify-updater-artifacts.mjs 'target/${{ matrix.target }}/release/bundle' "$RUNNER_TEMP/candidate.key.pub" "$CANDIDATE_VERSION"
       - name: Exercise actual app commands and official MCP client
         run: cargo test --release --locked --target ${{ matrix.native }} -p app --test headless
       - name: Install, reinstall and remove Linux packages
@@ -73,23 +75,18 @@ jobs:
           set -euo pipefail
           bundle="$PWD/target/${{ matrix.target }}/release/bundle"
           sudo dpkg -i "$bundle"/deb/*.deb
-          test "$(env -u DISPLAY -u WAYLAND_DISPLAY hession --version)" = 'hession 0.5.0'
-          scratch=$(mktemp -d)
-          status=0
-          HESSION_DATA_DIR="$scratch/library" CODEX_HOME="$scratch/codex" WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 \
-            dbus-run-session -- xvfb-run -a timeout --signal=TERM 10s /usr/bin/hession > "$RUNNER_TEMP/gui-smoke.log" 2>&1 || status=$?
-          cat "$RUNNER_TEMP/gui-smoke.log"
-          test "$status" -eq 124
-          test -s "$scratch/library/sessions.sqlite"
+          test "$(env -u DISPLAY -u WAYLAND_DISPLAY hession --version)" = "hession $CANDIDATE_VERSION"
+          HESSION_NATIVE_SMOKE_ISOLATED=1 dbus-run-session --config-file=.github/scripts/native-session-bus.conf -- xvfb-run -a \
+            python3 .github/scripts/native-instance-smoke.py /usr/bin/hession "$RUNNER_TEMP/instance"
           sudo dpkg -i "$bundle"/deb/*.deb
           sudo dpkg -r hession
           test ! -e /usr/bin/hession
           image=$(find "$bundle/appimage" -maxdepth 1 -name '*.AppImage' -type f)
-          test "$(APPIMAGE_EXTRACT_AND_RUN=1 "$image" --version)" = 'hession 0.5.0'
+          test "$(APPIMAGE_EXTRACT_AND_RUN=1 "$image" --version)" = "hession $CANDIDATE_VERSION"
           APPIMAGE_EXTRACT_AND_RUN=1 "$image" --help > "$RUNNER_TEMP/appimage-help.txt"
-          docker run --rm -v "$bundle/rpm:/packages:ro" fedora:42 sh -eu -c '
+          docker run --rm -e CANDIDATE_VERSION -v "$bundle/rpm:/packages:ro" fedora:42 sh -eu -c '
             dnf install -y /packages/*.rpm
-            test "$(env -u DISPLAY -u WAYLAND_DISPLAY hession --version)" = "hession 0.5.0"
+            test "$(env -u DISPLAY -u WAYLAND_DISPLAY hession --version)" = "hession $CANDIDATE_VERSION"
             rpm -Uvh --replacepkgs /packages/*.rpm
             dnf remove -y hession
             test ! -e /usr/bin/hession
@@ -110,9 +107,9 @@ jobs:
           lipo -archs "$cli" | grep -q arm64
           lipo -archs "$cli" | grep -q x86_64
           codesign --verify --deep /Applications/Hession.app
-          test "$("$cli" --version)" = 'hession 0.5.0'
+          test "$("$cli" --version)" = "hession $CANDIDATE_VERSION"
           sh /Applications/Hession.app/Contents/Resources/install-cli.sh "$cli" "$RUNNER_TEMP/bin/hession"
-          test "$("$RUNNER_TEMP/bin/hession" --version)" = 'hession 0.5.0'
+          test "$("$RUNNER_TEMP/bin/hession" --version)" = "hession $CANDIDATE_VERSION"
           scratch=$(mktemp -d)
           TASK_GUI_SCRATCH="$scratch" node --input-type=module <<'JS'
           import { mkdirSync, writeFileSync } from 'node:fs';
@@ -123,7 +120,7 @@ jobs:
           const timestamp = new Date().toISOString();
           const rows = [
             { timestamp, type: 'session_meta', payload: { id: 'candidate-native-gui', cwd: join(root, 'workspace') } },
-            { timestamp, type: 'event_msg', payload: { type: 'user_message', message: 'Native candidate smoke test: synthetic history only.' } },
+            { timestamp, type: 'event_msg', payload: { type: 'user_message', message: 'Native candidate smoke test: synthetic history only.\n\n```javascript\nconst greeting = "Syntax worker is ready";\nconsole.log(greeting);\n```' } },
           ];
           writeFileSync(join(root, 'codex/sessions/native.jsonl'), rows.map(row => JSON.stringify(row)).join('\n') + '\n');
           JS
@@ -138,6 +135,7 @@ jobs:
           kill "$gui"
           wait "$gui" || true
           cat "$RUNNER_TEMP/gui-smoke.log"
+          HESSION_NATIVE_SMOKE_ISOLATED=1 python3 .github/scripts/native-instance-smoke.py "$cli" "$RUNNER_TEMP/instance"
           sudo ditto "$mount/Hession.app" /Applications/Hession.app
           sh /Applications/Hession.app/Contents/Resources/install-cli.sh "$cli" "$RUNNER_TEMP/bin/hession"
           "$RUNNER_TEMP/bin/hession" --help
@@ -166,6 +164,7 @@ jobs:
             ${{ runner.temp }}/gui-smoke.log
             ${{ runner.temp }}/native-gui.png
             ${{ runner.temp }}/native-import.json
+            ${{ runner.temp }}/instance/
           if-no-files-found: warn
           retention-days: 7
       - name: Remove disposable private updater key

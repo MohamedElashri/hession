@@ -2,7 +2,7 @@
 
 The relay stores encrypted histories until your devices connect. It needs no
 library decryption key, model-provider account, or project files. Running it
-never enables sync in Hession; follow [Private sync](private-sync.md) afterward.
+never enables sync in Hession; follow [Private sync](user-guide.md#private-device-sync) afterward.
 
 ## Start with Docker Compose
 
@@ -57,7 +57,7 @@ Keep the HTTP port on loopback; use HTTPS or your private network for device acc
 
 ## Connect devices and manage access
 
-Follow [Private sync](private-sync.md): create the library with the administrator
+Follow [Private sync](user-guide.md#private-device-sync): create the library with the administrator
 token, save its separate recovery key, preview scope, and explicitly enable.
 Other devices join using a ten-minute, single-use invitation and the recovery key.
 Compare fingerprints. Never put the recovery key in server or proxy configuration.
@@ -159,7 +159,7 @@ and update the HTTPS address on clients. Keep the same library recovery key.
 
 Set `HESSION_RELAY_QUOTA_BYTES` in `deploy/relay/.env` and recreate the relay to
 change its quota. Leave room for database overhead and backups. There is no
-automatic pruning, remote deletion, or encryption-key rotation. See [Security](sync-security.md).
+automatic pruning, remote deletion, or encryption-key rotation. See [Security](user-guide.md#security-and-privacy).
 
 ## Standalone server and testing
 

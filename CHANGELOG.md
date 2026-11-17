@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.1] - 2026-11-17
+
+### Improved
+
+- Distinguish your messages, agent replies, and tool activity with labeled cards,
+  speaker markers, and clearer spacing across the conversation.
+- Read tool commands, multiline code, arguments, and output in separate panels
+  shared by Conversation, Full log, and Live. Wrap long lines or scroll them,
+  copy complete text, and expand explicitly labeled previews of large content.
+- Keep failed calls visible in folded tool runs, retain recorded exit codes,
+  and distinguish empty output from output that was never recorded.
+- Reduce nested tool borders, show readable action names and explicit outcomes,
+  and distinguish command and output panels with labels, icons, and accents.
+- Add local syntax highlighting for commands, code, JSON arguments, diffs and
+  fenced Markdown. Choose a language or plain text per tool panel. Highlighting
+  runs in a bounded background worker; large blocks remain readable as plain text.
+- Restore and focus the existing desktop window when Hession is launched again;
+  keep explicit CLI, indexing, and MCP commands independent and headless.
+- Consolidate setup and privacy help into the user guide, shorten development
+  documentation, and describe current README features without release labels.
+
 ## [0.5.0] - 2026-11-17
 
 ### New

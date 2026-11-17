@@ -5,6 +5,8 @@ import { familyLabel, shortPath } from '../labels.js';
 import { parseDate } from '../dates.js';
 import { LIVE_PAGE_SIZE, liveEntrySummary, liveStatusLabel, MAX_LIVE_ENTRIES, mergeLiveEntries } from '../live-state.js';
 import useLivePolling from '../useLivePolling.js';
+import ToolActivity, { TextPanel } from './ToolActivity.jsx';
+import Markdown from './Markdown.jsx';
 import '../styles/live.css';
 
 const SESSION_PAGE_SIZE = 50;
@@ -13,17 +15,19 @@ const timeLabel = value => parseDate(value)?.toLocaleString() || 'Time not recor
 const location = entry => ({ entryId: entry.id, position: Number.isSafeInteger(entry.position) && entry.position >= 0 ? entry.position : null });
 
 function LiveEntry({ entry, expanded, onToggle, onOpen }) {
-  return <article className="live-entry" data-live-entry={entry.id}>
+  const toolOnly = entry.role === 'tool' || ((entry.tools?.length || entry.parts?.some(part => part.kind === 'tool_result')) && !entry.parts?.some(part => part.kind === 'text' && part.text));
+  const role = toolOnly ? 'tool' : ['user', 'assistant'].includes(entry.role) ? entry.role : 'event';
+  const speaker = { user: 'You', assistant: 'Agent', tool: 'Tool activity', event: 'Event' }[role];
+  return <article className={`live-entry live-role-${role}`} data-live-entry={entry.id}>
     <div className="live-entry-heading"><button type="button" className="live-entry-toggle" aria-expanded={expanded} disabled={entry.oversized} onClick={onToggle}>
-      <strong>{entry.oversized ? 'Large recorded event' : `${text(entry.role) || 'event'} · ${text(entry.kind) || 'Recorded event'}`}</strong><span>{timeLabel(entry.occurred_at)}</span>
+      <strong>{entry.oversized ? 'Large recorded event' : `${speaker} · ${text(entry.kind) || 'Recorded event'}`}</strong><span>{timeLabel(entry.occurred_at)}</span>
     </button><button type="button" className="text-button" onClick={onOpen}>Open full history<ArrowRight size={12}/></button></div>
     {expanded ? <div className="live-entry-content">
-      {(entry.parts || []).map((part, index) => <div key={part.id || index}><span className="live-part-kind">{text(part.kind)}</span><pre>{text(part.text).slice(0, 12000)}{text(part.text).length > 12000 ? '\n… Open full history for the complete content.' : ''}</pre></div>)}
-      {!(entry.parts || []).length && <pre>{text(entry.search_text).slice(0, 12000)}</pre>}
-      {(entry.tools || []).map((tool, index) => <div key={tool.id || tool.call_id || index} className="live-tool"><strong>{text(tool.tool_name) || 'Recorded tool call'}</strong>
-        {tool.exit_code != null && <span> · Recorded exit code {tool.exit_code}</span>}
-        {tool.arguments_json && <pre>{text(tool.arguments_json).slice(0, 8000)}</pre>}{tool.result_text && <pre>{text(tool.result_text).slice(0, 12000)}</pre>}
-      </div>)}
+      {(entry.parts || []).filter(part => part.kind !== 'tool_call' || !entry.tools?.length).map((part, index) => part.kind === 'text' && role !== 'tool'
+        ? <div className="markdown-body" key={part.id || index}><Markdown text={text(part.text)} preserveLines/></div>
+        : <TextPanel key={part.id || index} label={part.kind === 'tool_result' || role === 'tool' && part.kind === 'text' ? 'Tool output' : text(part.kind).replaceAll('_', ' ')} text={part.text ?? part.data_json}/>)}
+      {!(entry.parts || []).length && entry.search_text && <TextPanel label="Recorded text" text={text(entry.search_text)}/>}
+      {(entry.tools || []).map((tool, index) => <ToolActivity key={tool.id || tool.call_id || index} tool={tool} initiallyOpen/>)}
     </div> : <p className="live-entry-preview">{liveEntrySummary(entry)}</p>}
   </article>;
 }

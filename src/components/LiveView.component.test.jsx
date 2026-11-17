@@ -28,6 +28,21 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); });
 
+test('live speakers distinguish user prompts, agent prose and tool output recorded under either role', async () => {
+  api.mockResolvedValueOnce(delta([
+    { ...entry(1), role: 'user', parts: [{ kind: 'text', text: 'My prompt' }] },
+    { ...entry(2), role: 'tool', parts: [{ kind: 'text', text: '**literal tool output**' }] },
+    { ...entry(3), role: 'user', parts: [{ kind: 'tool_result', text: 'Returned output' }] },
+  ], 1, { reset: true }));
+  render(<LiveTail session={session()} available onSelectSession={vi.fn()}/>); await tick();
+  expect(screen.getByRole('button', { name: /You · message/ })).toBeTruthy();
+  const tools = screen.getAllByRole('button', { name: /Tool activity · message/ });
+  fireEvent.click(tools[0]);
+  expect(screen.getByLabelText('Tool output text').textContent).toBe('**literal tool output**');
+  fireEvent.click(tools[1]);
+  expect(screen.getAllByLabelText('Tool output text')).toHaveLength(2);
+});
+
 test('local activity uses passive labels, bounded filters, exact latest-event jumps, and supplied indexing controls', async () => {
   const onOpen = vi.fn(), control = observer();
   render(<LiveView agents={[{ family: 'codex', product: 'Codex' }]} projects={[{ path: '/work/demo', display_name: 'Demo' }]} observer={control} onSelectSession={onOpen}/>);
@@ -53,13 +68,13 @@ test('late tool updates preserve expansion and manual scroll; stable IDs prevent
   api.mockResolvedValueOnce(delta([first, entry(2, 900, 500)], 1, { reset: true }));
   render(<LiveTail session={session()} available onSelectSession={onOpen}/>); await tick();
   const article = screen.getByText('Event 1').closest('article');
-  const toggle = within(article).getByRole('button', { name: /assistant · message/ });
+  const toggle = within(article).getByRole('button', { name: /Agent · message/ });
   fireEvent.click(toggle); toggle.focus();
   expect(screen.getByText('Original output')).toBeTruthy();
   const area = screen.getByRole('region', { name: 'Live transcript' }); area.scrollTop = 73;
   api.mockResolvedValueOnce(delta([{ ...first, tools: [{ id: 1, tool_name: 'shell', result_text: 'Late completed output' }] }, entry(3, 1000, 501)], 2));
   act(emit); await tick(250);
-  expect(within(article).getByRole('button', { name: /assistant · message/ }).getAttribute('aria-expanded')).toBe('true');
+  expect(within(article).getByRole('button', { name: /Agent · message/ }).getAttribute('aria-expanded')).toBe('true');
   expect(screen.getByText('Late completed output')).toBeTruthy();
   expect(document.activeElement).toBe(toggle);
   expect(area.scrollTop).toBe(73);
@@ -117,7 +132,7 @@ test('updates above the viewport preserve the visible entry anchor', async () =>
   render(<LiveTail session={session()} available onSelectSession={vi.fn()}/>); await tick();
   const area = screen.getByRole('region', { name: 'Live transcript' });
   const first = document.querySelector('[data-live-entry="1"]'), second = document.querySelector('[data-live-entry="2"]');
-  fireEvent.click(within(first).getByRole('button', { name: /assistant · message/ }));
+  fireEvent.click(within(first).getByRole('button', { name: /Agent · message/ }));
   area.scrollTop = 70;
   area.getBoundingClientRect = () => ({ top: 0 });
   first.getBoundingClientRect = () => ({ top: -200, bottom: area.textContent.includes('Late result') ? 80 : -20 });
@@ -200,12 +215,14 @@ test('private event payloads stay collapsed, actual tool arguments expand explic
   expect(screen.queryByText(/The source history changed/)).toBeNull();
   expect(screen.queryByText('Private reasoning')).toBeNull(); expect(screen.queryByText('Private tool output')).toBeNull();
   expect(screen.getByText('Recorded tool activity: shell')).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: /assistant · reasoning/ }));
-  expect(screen.getByText('{"command":"private argument"}')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: /Agent · reasoning/ }));
+  expect(screen.getByRole('region', { name: 'Command' }).textContent).toContain('private argument');
+  fireEvent.click(screen.getByText('All arguments')); await tick();
+  expect(JSON.parse(screen.getByLabelText('Arguments text').textContent)).toEqual({ command: 'private argument' });
   expect(screen.getByText('Private tool output')).toBeTruthy();
   api.mockResolvedValueOnce(delta([{ ...privateEntry, tools: [{ tool_name: 'shell', result_text: 'Different source output' }] }], 2, { reset: true }));
   act(emit); await tick(250);
-  expect(screen.getByRole('button', { name: /assistant · reasoning/ }).getAttribute('aria-expanded')).toBe('false');
+  expect(screen.getByRole('button', { name: /Agent · reasoning/ }).getAttribute('aria-expanded')).toBe('false');
   expect(screen.queryByText('Different source output')).toBeNull();
   expect(screen.queryByText('Private reasoning')).toBeNull();
 });
