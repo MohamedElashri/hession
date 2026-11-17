@@ -224,3 +224,12 @@ test('oversized events retain precise navigation while polling continues beyond 
   expect(api.mock.calls[1][1].cursor.seq).toBe(1);
   expect(screen.queryByRole('alert')).toBeNull();
 });
+
+
+test('bounded recent-session summaries disclose truncation', async () => {
+  api.mockImplementation(async (command, args) => command === 'recent_local_sessions'
+    ? { sessions: [{ ...session(), latestEvent: { ...session().latestEvent, summaryTruncated: true } }], hasMore: false }
+    : delta([entry(args.sessionId * 10)], 1, { reset: true }));
+  render(<LiveView observer={observer()} onSelectSession={vi.fn()}/>); await tick();
+  expect(screen.getByLabelText('Preview truncated')).toBeTruthy();
+});
