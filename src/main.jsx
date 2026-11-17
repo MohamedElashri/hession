@@ -42,6 +42,7 @@ import { agentColors, familyLabel, shortPath } from './labels.js';
 
 const PAGE_SIZE=20;
 const AnalyticsView=lazy(()=>import('./Analytics.jsx'));
+const ProjectsView=lazy(()=>import('./ProjectsView.jsx'));
 const SettingsDialog=lazy(()=>import('./components/SettingsDialog.jsx'));
 const ContinuationDialog=lazy(()=>import('./components/ContinuationDialog.jsx'));
 const DETAIL_PAGE_SIZE=500; // transcript entries per page (the backend maximum)
@@ -609,8 +610,9 @@ function App(){
         <button className="icon-button sidebar-mobile-close" onClick={()=>setMobileNav(false)} aria-label="Close navigation"><X size={16}/></button>
       </div>
       <nav className="nav-primary" aria-label="Views">
-        <button className={`nav-item ${view!=='analytics'?'nav-active':''}`} aria-current={view!=='analytics'?'page':undefined} onClick={showSessions}><MessageSquareText size={16}/><span>Sessions</span>{metadataState.stats==='ready'&&navCount(stats.sessions)}</button>
+        <button className={`nav-item ${view==='sessions'?'nav-active':''}`} aria-current={view==='sessions'?'page':undefined} onClick={showSessions}><MessageSquareText size={16}/><span>Sessions</span>{metadataState.stats==='ready'&&navCount(stats.sessions)}</button>
         <button className={`nav-item ${view==='analytics'?'nav-active':''}`} aria-current={view==='analytics'?'page':undefined} onClick={()=>setView('analytics')}><TrendingUp size={16}/><span>Analytics</span></button>
+        <button className={`nav-item ${view==='projects'?'nav-active':''}`} aria-current={view==='projects'?'page':undefined} onClick={()=>{setView('projects');setMobileNav(false);}}><FileCode2 size={16}/><span>Files and Git</span></button>
       </nav>
       <div className="sidebar-scroll">
         <section className="nav-section">
@@ -658,7 +660,9 @@ function App(){
 
     <main className="main-panel" tabIndex={-1}>
       {sidebarHidden&&<button type="button" className="sidebar-reopen text-button" onClick={()=>{setSidebarHidden(false);setMobileNav(true);}} aria-label="Show navigation"><Menu size={16}/>Show navigation</button>}
-      {view === 'analytics' ? (
+      {view === 'projects' ? (
+        <Suspense fallback={<div className="detail-loading" role="status">Opening file evidence…</div>}><ProjectsView onSelectSession={openSessionSource} onOpenNav={()=>setMobileNav(true)} refreshKey={reportRevision}/></Suspense>
+      ) : view === 'analytics' ? (
         <Suspense fallback={<div className="detail-loading" role="status"><LoaderCircle className="spin" size={18}/>Opening analytics…</div>}><AnalyticsView
           agents={agents}
           projects={projects}

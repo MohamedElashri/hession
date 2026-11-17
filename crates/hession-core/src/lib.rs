@@ -3,11 +3,13 @@
 
 pub mod brand;
 pub mod db;
+pub mod git;
 pub mod indexing;
 pub mod jsonl;
 pub mod library_revision;
 pub mod locking;
 pub mod observation;
+pub mod projects;
 pub mod search;
 pub mod service;
 pub mod sessions;
