@@ -25,7 +25,14 @@ fn fingerprints_detect_same_stat_rewrites_and_skip_metadata_only_changes() {
     let changed = SourceSnapshot::capture(&paths, &|| false).unwrap();
     assert_ne!(first, changed);
     assert!(!first.same_contents(&changed));
-    assert!(first.validate(&paths).is_err());
+    // Some filesystems have coarse ctime. Hash verification must detect the
+    // rewrite even when restoring mtime leaves every metadata field equal.
+    let metadata_equal = first
+        .files
+        .iter()
+        .map(|file| &file.metadata)
+        .eq(changed.files.iter().map(|file| &file.metadata));
+    assert_eq!(first.validate(&paths).is_ok(), metadata_equal);
     File::open(&path)
         .unwrap()
         .set_times(FileTimes::new().set_modified(modified + std::time::Duration::from_secs(2)))
@@ -33,6 +40,7 @@ fn fingerprints_detect_same_stat_rewrites_and_skip_metadata_only_changes() {
     let touched = SourceSnapshot::capture(&paths, &|| false).unwrap();
     assert_ne!(touched, changed);
     assert!(touched.same_contents(&changed));
+    assert!(changed.validate(&paths).is_err());
     fs::write(&paths[1], b"wal update").unwrap();
     assert!(touched.validate(&paths).is_err());
     assert_eq!(fs::read(&path).unwrap(), b"rewritte");
