@@ -41,7 +41,10 @@
     ],
     "category": "Productivity",
     "shortDescription": "A local-first home for your coding agent sessions, local and remote.",
-    "longDescription": "Hession is a local-first desktop app for browsing, searching, and analyzing your coding agent sessions on this machine and on your SSH hosts."
+    "longDescription": "Hession is a local-first desktop app for browsing, searching, and analyzing your coding agent sessions on this machine and on your SSH hosts.",
+    "resources": {
+      "../scripts/install-cli.sh": "install-cli.sh"
+    }
   },
   "mainBinaryName": "hession",
   "plugins": {

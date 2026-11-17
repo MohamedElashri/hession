@@ -12,6 +12,7 @@ pub mod locking;
 pub mod observation;
 pub mod project_export;
 pub mod projects;
+pub mod reader;
 pub mod search;
 pub mod service;
 pub mod sessions;

@@ -13,6 +13,7 @@ pub mod developer_search;
 pub mod device_sync;
 mod export_format;
 pub mod features;
+pub mod headless_index;
 pub mod importer;
 pub mod indexer;
 mod library_revision;

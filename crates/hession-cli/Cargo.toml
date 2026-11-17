@@ -1,0 +1,25 @@
+[package]
+name = "hession-cli"
+version = "0.4.0"
+edition = "2021"
+rust-version = "1.90"
+publish = false
+license = "MIT"
+description = "Headless local-history CLI and scoped read-only MCP adapter for Hession"
+
+[dependencies]
+hession-core = { path = "../hession-core" }
+clap = { version = "=4.6.7", default-features = false, features = ["std", "help", "usage", "error-context"] }
+rmcp = { version = "=3.10.0", default-features = false, features = ["server", "transport-io"] }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "io-std", "io-util", "signal", "time", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+libc = "0.2"
+tempfile = "3"
+
+[[bin]]
+name = "hession-headless"
+path = "src/main.rs"

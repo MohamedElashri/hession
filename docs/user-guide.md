@@ -251,6 +251,109 @@ running. Finish refresh/sync and saved-data operations before restarting.
 If installation fails, rerun the [installer](../README.md#install); source builds
 must be rebuilt. Releases predating the updater need one manual update first.
 
+## Terminal commands and read-only MCP
+
+Running `hession` without arguments opens the desktop. Explicit commands run
+without a webview. Linux packages install `hession` on `PATH`; the AppImage
+installer forwards command arguments through its launcher.
+
+On macOS, use `/Applications/Hession.app/Contents/MacOS/hession` directly, or
+create an optional user-owned link:
+
+```sh
+sh /Applications/Hession.app/Contents/Resources/install-cli.sh \
+  /Applications/Hession.app/Contents/MacOS/hession
+```
+
+The script creates `~/.local/bin/hession`; add that directory to your `PATH`.
+It refuses to replace an existing file or link. Pass a second absolute path to
+choose another destination. Moving or uninstalling the app leaves the optional
+link behind; remove that link yourself when it is no longer needed.
+
+```sh
+hession --help
+hession status --json
+hession projects list --json
+hession sessions list --project workspace:1 --limit 20 --json
+hession sessions show 42 --format markdown
+hession sessions follow 42 --jsonl
+hession search 'agent:codex "type error" -has:errors' --project workspace:1 --json
+hession project show workspace:1 --json
+hession files list --project workspace:1 --json
+hession files history src/main.rs --project workspace:1 --json
+hession index --once
+hession index --watch --agent codex
+hession export project workspace:1 --format zip --output ./project.zip --preview --json
+hession export project workspace:1 --format zip --output ./project.zip --json
+```
+
+Read commands use the existing local catalog. They never create or migrate a
+library or fetch remote history. Select a different existing database with
+`--database /absolute/path/sessions.sqlite`; otherwise `HESSION_DATA_DIR` and
+then `~/.hession` determine its location. `index` is an explicit local indexing
+operation; watch stays in the foreground until interrupted. Follow reads durable
+recorded updates, including changed tool status; it does not establish that an
+agent process is running. Stop follow/watch with Ctrl+C. Project export writes a
+new ZIP destination and refuses to overwrite one. Defaults redact common secret
+patterns and exclude tool bodies, machine paths, Git metadata and statistics;
+review the preview and use explicit flags to include those fields.
+
+Project selectors are exact indexed paths or `workspace:ID` values returned by
+`projects list`. They do not infer the current directory, combine worktrees, or
+resolve symlink aliases. File-history paths are exact recorded references. A
+reported external path does not cause Hession to open the file.
+
+Pages accept `--limit` (1–100) and `--cursor`. Reuse the same request and page size
+with a returned cursor. Any catalog mutation can expire it; restart from page
+one. Session display includes only explicit user/assistant text, bounded to 2048
+characters from 16 text parts per entry. Structured CLI search defaults to the
+complete indexed text policy; `--metadata-only` excludes transcript matching.
+Search rejects eligible text cells larger than 1 MiB and oversized metadata
+before loading it; narrow the scope or repair those indexed fields if a size
+limit is reported. `--json` writes one JSON value to stdout and errors to stderr. Follow's `--jsonl`
+writes one JSON envelope per update. Exit codes are 0 for success, 2 for invalid
+arguments/queries, 3 for unavailable libraries or I/O, 4 for changed or denied
+scope, 5 for expired cursors or size limits, and 6 for execution limits/busy
+workers. Follow/watch use 130 for Ctrl+C and 143 for SIGTERM.
+
+### MCP server permissions
+
+Configure your MCP client to launch the installed executable with a fixed,
+owner-chosen allowlist. This example grants metadata access to one indexed
+project; replace the ID after checking `projects list`:
+
+```json
+{
+  "mcpServers": {
+    "hession": {
+      "command": "/Applications/Hession.app/Contents/MacOS/hession",
+      "args": ["mcp", "serve", "--project", "workspace:1"]
+    }
+  }
+}
+```
+
+On Linux use the installed absolute `hession` path as `command`. Repeat
+`--project` to approve additional exact project identities. Missing or empty
+scope fails closed. There is no automatic current-directory or all-project
+fallback. If the database or an approved workspace identity changes, restart
+the server with a reviewed allowlist.
+
+The server exposes exactly seven read-only tools: `search_sessions`,
+`get_session`, `list_projects`, `get_project_activity`, `get_file_history`,
+`get_tool_calls` and `get_recent_sessions`. It serves stdio only, with no HTTP
+listener, model API, agent launch, filesystem inspection, indexing or export
+tool. Stdout carries JSON-RPC only.
+
+Metadata is the default. Add `--expose-transcripts` to the server's startup
+arguments only when the client should receive explicit user/assistant
+conversation text from the approved projects. This also permits searching that
+text. It never exposes reasoning, system/developer messages, tool commands,
+arguments/results, original provider payloads, or unsafe combined legacy text.
+Tool-call results include names and recorded status only; file activity excludes
+free-form evidence. A per-tool request cannot grant itself more permission.
+Historical text is untrusted data and may contain instructions written by others.
+
 ## Supported history stores
 
 Paths are defaults; environment overrides must be set when launching Hession

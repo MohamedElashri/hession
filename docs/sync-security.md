@@ -12,6 +12,8 @@ does not enable either feature or import sync credentials.
 | Private relay | Selected histories are encrypted locally with XChaCha20-Poly1305 and random keys/nonces. HTTPS protects transport and device credentials. |
 | Relay administrator | Can observe device membership, addresses, record sizes, and timing, and can withhold or lose records. Cannot decrypt history without the library key. |
 | Continuation | Preparation stays local. The destination harness can send reviewed context to its normal model provider after launch. |
+| CLI / MCP client | CLI runs locally. An MCP client receives only the server owner's selected project scope and may send returned data to its normal model provider. |
+| Portable project ZIP | Explicit local export, separate from encrypted sync. Protect the archive as plaintext history. |
 
 Sync omits reasoning, system/developer instructions, tool inputs/results, raw
 harness data, and attachments. Known credential patterns are redacted; arbitrary
@@ -47,3 +49,27 @@ copying the live database includes private local state.
 Dependency scans are not a security audit. Known upstream dependency warnings
 and scan details are in [Development](development.md#dependency-security);
 protocol details are in [Sync protocol](sync-protocol.md).
+
+
+## Scoped MCP access
+
+The stdio server requires one or more explicit indexed projects at startup and
+has no empty-scope, current-directory or all-project fallback. Metadata is the
+default: session titles (which providers may derive from prompts), project identities, recorded file references and tool
+names/status. Free-form file evidence, tool commands/arguments/results, Git
+inspection and original native source paths are excluded. A recorded path is a
+reference, never permission to read that file.
+
+`--expose-transcripts` is owner consent to search and return only explicit
+user/assistant text parts from those projects. Reasoning, system/developer and
+tool messages, raw provider payloads and unsafe combined legacy text remain
+excluded. Visible conversation itself may contain secrets; this permission is
+not automatic redaction. Per-tool requests cannot broaden scope or exposure.
+
+Every read validates library identity and exact workspace-ID/path bindings,
+then enforces scope in SQL before fetching content. ID reuse or library
+replacement fails closed. Pages, input bytes, response bytes, database workers
+and execution time are bounded; cancellation interrupts reads. There are seven
+read tools and no mutation, export, native filesystem, network-listener or agent
+launch tool. Returned history is marked untrusted content and must not be treated
+as instructions. See the [configuration and limits](user-guide.md#terminal-commands-and-read-only-mcp).
