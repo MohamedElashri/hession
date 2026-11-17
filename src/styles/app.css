@@ -6,6 +6,32 @@
   font: 400 var(--text-base)/1.5 var(--font-sans);
 }
 
+.sidebar-hidden > .sidebar { display: none; }
+.sidebar-reopen { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
+.nav-item kbd { flex: none; color: var(--text-3); font-size: var(--text-xs); }
+.command-palette { width: min(640px, calc(100vw - 32px)); padding: 0; max-height: min(720px, calc(100dvh - 48px)); }
+.command-palette-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px; }
+.command-palette-heading h2 { margin: 0; font-size: var(--text-lg); }
+.command-search { display: flex; align-items: center; gap: 10px; padding: 0 16px 14px; border-bottom: 1px solid var(--border); }
+.command-search input { flex: 1; min-width: 0; }
+.command-results { overflow-y: auto; max-height: min(440px, 52dvh); padding: 6px; }
+.command-option { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 10px; border-radius: var(--radius); cursor: pointer; }
+.command-option[aria-selected="true"] { background: var(--accent-soft); outline: 1px solid var(--accent); outline-offset: -1px; }
+.command-option[aria-disabled="true"] { color: var(--text-3); cursor: default; }
+.command-option > div { display: flex; flex-direction: column; min-width: 0; }
+.command-option strong { font-size: var(--text-base); font-weight: 550; overflow-wrap: anywhere; }
+.command-option small { color: var(--text-3); overflow-wrap: anywhere; }
+.command-kind { color: var(--text-3); font-size: var(--text-xs); }
+.command-option kbd, .shortcut-help kbd { white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-sm); }
+.command-palette .command-status { margin: 0; padding: 12px 16px; border-top: 1px solid var(--border); color: var(--text-3); font-size: var(--text-sm); }
+.shortcut-help { width: min(760px, calc(100vw - 32px)); }
+.shortcut-help .command-palette-heading { padding: 0; }
+.shortcut-help table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+.shortcut-help th, .shortcut-help td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
+.shortcut-help td small { display: block; color: var(--text-3); }
+.shortcut-help td kbd + kbd { margin-left: 8px; }
+@media (max-width: 760px) { .shortcut-help { padding: 14px; } .shortcut-help th, .shortcut-help td { padding: 6px 3px; } }
+
 /* Sidebar */
 .sidebar {
   display: flex; flex-direction: column; flex: 0 0 var(--sidebar-w); width: var(--sidebar-w);
