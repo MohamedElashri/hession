@@ -222,23 +222,15 @@ impl crate::service::Library {
         }
         ids.sort_unstable();
         ids.dedup();
-        let selected =
-            serde_json::to_string(&ids).map_err(|e| ServiceError::Query(e.to_string()))?;
-        // Budget untrusted bytes and row overhead before decoding any payload.
-        let mut bytes = 0_i64;
+        // Size each event before decoding any payload. SQLite octet_length on
+        // a column reads its stored byte count without loading the text cell.
+        // Reserve room for worst-case JSON escaping plus metadata/markers.
+        let payload_budget = MAX_RESPONSE_BYTES / 8;
+        let mut size_queries = Vec::new();
         for (table, predicate) in [
-            (
-                "entry",
-                "id IN (SELECT value FROM json_each(?1)) AND session_id=?2",
-            ),
-            (
-                "content_part",
-                "entry_id IN (SELECT value FROM json_each(?1))",
-            ),
-            (
-                "tool_invocation",
-                "entry_id IN (SELECT value FROM json_each(?1)) AND session_id=?2",
-            ),
+            ("entry", "id=?1 AND session_id=?2"),
+            ("content_part", "entry_id=?1"),
+            ("tool_invocation", "entry_id=?1 AND session_id=?2"),
         ] {
             let columns = tx
                 .prepare(&format!("PRAGMA table_info({table})"))
@@ -249,26 +241,39 @@ impl crate::service::Library {
                 .map_err(query)?;
             let sizes = columns
                 .iter()
-                .map(|c| {
-                    format!(
-                        "COALESCE(length(CAST(\"{}\" AS BLOB)),0)",
-                        c.replace('"', "\"\"")
-                    )
-                })
+                .map(|c| format!("COALESCE(octet_length(\"{}\"),0)", c.replace('"', "\"\"")))
                 .collect::<Vec<_>>()
                 .join("+");
-            // Always bind both parameters even for the attachment-only table.
-            let sql = format!(
-                "SELECT COALESCE(SUM(256+{sizes}),0) FROM {table} WHERE ({predicate}) AND ?2=?2"
-            );
-            bytes = bytes.saturating_add(
-                tx.query_row(&sql, params![selected, session_id], |r| r.get::<_, i64>(0))
-                    .map_err(query)?,
-            );
-            if bytes > MAX_RESPONSE_BYTES as i64 {
-                return Err(ServiceError::ResponseTooLarge);
+            size_queries.push(format!(
+                "SELECT COALESCE(SUM(1024+{sizes}),0) FROM {table} WHERE ({predicate}) AND ?2=?2"
+            ));
+        }
+        let mut bytes = 0_usize;
+        let mut selected_ids = Vec::new();
+        let mut oversized = Vec::new();
+        for id in ids {
+            let mut size = 0_i64;
+            for sql in &size_queries {
+                size = size.saturating_add(
+                    tx.query_row(sql, params![id, session_id], |r| r.get::<_, i64>(0))
+                        .map_err(query)?,
+                );
+            }
+            let size = usize::try_from(size).unwrap_or(usize::MAX);
+            if size > payload_budget || size > payload_budget.saturating_sub(bytes) {
+                // Numeric metadata only: even an oversized kind/role cannot
+                // become an accidental large allocation in this fallback.
+                let marker = tx.query_row("SELECT id,ordinal,(SELECT COUNT(*) FROM entry prior WHERE prior.session_id=e.session_id AND prior.ordinal<e.ordinal) FROM entry e WHERE id=?1 AND session_id=?2",params![id,session_id],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"ordinal":r.get::<_,i64>(1)?,"position":r.get::<_,i64>(2)?,"reason":if size>payload_budget {"payload_too_large"} else {"page_budget"}}))).optional().map_err(query)?;
+                if let Some(marker) = marker {
+                    oversized.push(marker);
+                }
+            } else {
+                bytes += size;
+                selected_ids.push(id);
             }
         }
+        let selected =
+            serde_json::to_string(&selected_ids).map_err(|e| ServiceError::Query(e.to_string()))?;
         let entries=query_all(&tx,"SELECT e.*,(SELECT COUNT(*) FROM entry prior WHERE prior.session_id=e.session_id AND prior.ordinal<e.ordinal) AS position FROM entry e WHERE e.session_id=? AND e.id IN (SELECT value FROM json_each(?)) ORDER BY e.ordinal",&[SqlValue::Integer(session_id),SqlValue::Text(selected)]).map_err(ServiceError::Query)?;
         let entries =
             crate::sessions::attach_entry_details(&tx, entries).map_err(ServiceError::Query)?;
@@ -279,7 +284,7 @@ impl crate::service::Library {
                 |r| r.get(0),
             )
             .map_err(query)?;
-        let result = json!({"revision":revision,"cursor":DeltaCursor{identity:revision.identity.clone(),epoch,seq:next,session_id},"reset":reset,"deleted":!exists,"entries":entries,"hasMore":more});
+        let result = json!({"revision":revision,"cursor":DeltaCursor{identity:revision.identity.clone(),epoch,seq:next,session_id},"reset":reset,"deleted":!exists,"entries":entries,"oversizedEntries":oversized,"hasMore":more});
         if serde_json::to_vec(&result)
             .map_err(|e| ServiceError::Query(e.to_string()))?
             .len()

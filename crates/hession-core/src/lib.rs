@@ -15,3 +15,4 @@ pub mod search;
 pub mod service;
 pub mod sessions;
 pub mod sql;
+pub mod text_read;

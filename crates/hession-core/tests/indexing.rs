@@ -92,10 +92,18 @@ fn delta_retention_scope_and_payload_budgets_are_explicit() {
         ["x".repeat(1024 * 1024 + 1)],
     )
     .unwrap();
-    assert!(matches!(
-        library.session_delta(1, None, 1),
-        Err(hession_core::service::ServiceError::ResponseTooLarge)
-    ));
+    let oversized = library.session_delta(1, None, 1).unwrap();
+    assert!(oversized["entries"].as_array().unwrap().is_empty());
+    assert_eq!(
+        oversized["oversizedEntries"][0]["reason"],
+        "payload_too_large"
+    );
+    assert!(library
+        .session_delta(1, Some(cursor(&oversized)), 1)
+        .unwrap()["oversizedEntries"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     assert!(library.session_delta(1, None, 101).is_err());
 }
 

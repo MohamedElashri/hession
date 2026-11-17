@@ -1,6 +1,7 @@
 //! Read-only, scoped developer search shared by desktop, CLI and MCP.
 //! Each call reads one SQLite snapshot. Cursors reject any changed library,
 //! query, scope, filters or page size instead of quietly skipping/duplicating rows.
+mod bounds;
 mod compiler;
 pub mod query;
 use crate::{
@@ -49,6 +50,8 @@ pub enum SearchError {
     StaleCursor,
     #[error("Search cursor does not match this request or scope")]
     InvalidCursor,
+    #[error("Search input exceeds the bounded cell or scope byte budget; narrow the project scope or repair oversized indexed fields")]
+    InputTooLarge,
     #[error("Search response exceeds 1 MiB; reduce the page size")]
     ResponseTooLarge,
     #[error(
@@ -246,6 +249,7 @@ pub fn search_snapshot(
     validate_request(conn, request)?;
     compiler::register_visible_match(conn)?;
     let parsed = query::parse(&request.query)?;
+    bounds::check(conn, request, scope, &parsed)?;
     let revision = library_revision::current(conn)?;
     let fingerprint = fingerprint(request, scope)?;
     let offset = if let Some(cursor) = &request.cursor {

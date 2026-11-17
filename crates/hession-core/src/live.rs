@@ -112,6 +112,30 @@ impl Library {
                 ));
             }
         }
+        // All string functions below operate only after this byte-count
+        // preflight. Direct octet_length(column) does not load a TEXT value.
+        let columns = [
+            "s.title",
+            "s.cwd",
+            "s.last_event_at",
+            "s.started_at",
+            "s.source_uri",
+            "a.family",
+            "a.product",
+            "w.path",
+            "e.kind",
+            "e.role",
+            "e.occurred_at",
+        ];
+        let sizes = columns
+            .iter()
+            .map(|c| format!("coalesce(octet_length({c}),0)"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let max: i64 = tx.query_row(&format!("SELECT coalesce(max(max({sizes})),0) FROM session s JOIN agent a ON a.id=s.agent_id LEFT JOIN workspace w ON w.id=s.workspace_id LEFT JOIN entry e ON e.id=(SELECT id FROM entry WHERE session_id=s.id ORDER BY ordinal DESC LIMIT 1) WHERE s.host IS NULL"),[],|r|r.get(0)).map_err(query_error)?;
+        if max > 64 * 1024 {
+            return Err(ServiceError::ResponseTooLarge);
+        }
         let kinds = crate::search::VISIBLE_CONVERSATION_KINDS
             .iter()
             .map(|kind| format!("'{kind}'"))
@@ -124,7 +148,7 @@ impl Library {
             substr(e.occurred_at,1,64) AS occurredAt,
             (SELECT COUNT(*) FROM entry prior WHERE prior.session_id=s.id AND prior.ordinal<e.ordinal) AS position,
             CASE WHEN e.role IN('user','assistant') AND e.kind IN({kinds}) THEN
-                COALESCE((SELECT substr(cp.text,1,240) FROM content_part cp WHERE cp.entry_id=e.id AND cp.kind='text' AND cp.text IS NOT NULL ORDER BY cp.ordinal LIMIT 1),'') ELSE '' END AS summary,
+                (SELECT cp.id FROM content_part cp WHERE cp.entry_id=e.id AND CASE WHEN octet_length(cp.kind)<=64 THEN cp.kind='text' ELSE 0 END AND cp.text IS NOT NULL ORDER BY cp.ordinal LIMIT 1) ELSE NULL END AS summaryPartId,
             CASE WHEN julianday(COALESCE(e.occurred_at,s.last_event_at,s.started_at)) BETWEEN julianday('now','-15 minutes') AND julianday('now','+5 minutes') THEN 1 ELSE 0 END AS isRecent
             FROM session s JOIN agent a ON a.id=s.agent_id LEFT JOIN workspace w ON w.id=s.workspace_id
             LEFT JOIN entry e ON e.id=(SELECT latest.id FROM entry latest WHERE latest.session_id=s.id ORDER BY latest.ordinal DESC LIMIT 1)
@@ -149,6 +173,21 @@ impl Library {
         rows.truncate(request.limit as usize);
         let mut sessions = Vec::with_capacity(rows.len());
         for row in rows {
+            let summary = row["summaryPartId"]
+                .as_i64()
+                .map(|id| {
+                    crate::text_read::read_prefix(
+                        &tx,
+                        crate::text_read::TextColumn::ContentPartText,
+                        id,
+                        960,
+                        240,
+                    )
+                })
+                .transpose()
+                .map_err(query_error)?;
+            let summary_truncated = summary.as_ref().is_some_and(|s| s.truncated);
+            let summary = summary.map_or_else(String::new, |s| s.text);
             let status = if !source_available(row["nativeSource"].as_str().unwrap_or("")) {
                 "unavailable"
             } else if request.unhealthy {
@@ -161,7 +200,7 @@ impl Library {
             let latest = if row["entryId"].is_null() {
                 Value::Null
             } else {
-                json!({"id":row["entryId"],"ordinal":row["ordinal"],"position":row["position"],"kind":row["kind"],"role":row["role"],"summary":row["summary"],"occurredAt":row["occurredAt"]})
+                json!({"id":row["entryId"],"ordinal":row["ordinal"],"position":row["position"],"kind":row["kind"],"role":row["role"],"summary":summary,"summaryTruncated":summary_truncated,"occurredAt":row["occurredAt"]})
             };
             sessions.push(json!({"id":row["id"],"title":row["title"],"agent":row["agent"],"product":row["product"],"project":row["project"],"workspaceId":row["workspaceId"],"lastEventAt":row["lastEventAt"],"status":status,"latestEvent":latest}));
         }
