@@ -27,7 +27,7 @@ export function toolPresentation(tool) {
   const shortName = name.split('__').at(-1).split('.').at(-1).toLowerCase();
   const actions = { exec_command: 'Run command', shell_command: 'Run command', run_command: 'Run command', bash: 'Run command',
     read_file: 'Read file', read: 'Read file', write_file: 'Write file', edit_file: 'Edit file', apply_patch: 'Apply patch' };
-  const action = command != null ? 'Run command' : code != null ? 'Run code' : actions[shortName] || name;
+  const action = command != null ? 'Run command' : code != null ? 'Run code' : Object.hasOwn(actions, shortName) ? actions[shortName] : name;
   const codeLanguage = syntaxLanguage(parsed?.language || parsed?.lang || (/python/i.test(name) ? 'python' : /javascript|node_repl|(?:^|[._])js$|^functions\.exec$/i.test(name) ? 'javascript' : 'plaintext'));
   const commandLanguage = /powershell|pwsh/i.test(name) || syntaxLanguage(parsed?.shell) === 'powershell' ? 'powershell' : 'bash';
   const resultLanguage = recordedSyntax(result);

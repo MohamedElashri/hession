@@ -34,7 +34,7 @@
 .tool-panel-actions { display: flex; align-items: center; gap: 7px; margin-left: auto; }
 .tool-panel-actions button, .tool-panel-footer button { display: inline-flex; gap: 4px; align-items: center; padding: 3px 6px; border-radius: 4px; color: var(--text-2); font-size: var(--text-xs); }
 .tool-panel-actions button { min-height: 24px; }
-.tool-panel-actions button:last-child { min-width: 52px; justify-content: center; }
+.tool-panel-actions button:last-child { min-width: 68px; justify-content: center; }
 .tool-panel-actions button:hover, .tool-panel-footer button:hover { background: var(--hover); color: var(--text); }
 .tool-panel-actions [aria-pressed="true"] { background: var(--surface-3); color: var(--text); }
 .tool-copy-status:empty { display: none; }

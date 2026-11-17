@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { highlightSyntax } from '../syntax-engine.js';
 import { TextPanel } from './ToolActivity.jsx';
+import ToolActivity from './ToolActivity.jsx';
 import HighlightedCode from './HighlightedCode.jsx';
 import Markdown from './Markdown.jsx';
 
@@ -76,6 +77,12 @@ test('a worker failure leaves every source character readable', () => {
   act(() => service.requests[0].callback(null));
   expect(container.querySelector('code').textContent).toBe(code);
   expect(container.querySelector('code').dataset.highlighted).toBe('false');
+});
+test('unknown tool names and malformed language metadata remain readable', () => {
+  const { container } = render(<><ToolActivity tool={{ tool_name: 'constructor', arguments_json: '{"code":"retained", "language":{"toString":null}}' }} initiallyOpen/><HighlightedCode text="still literal" language="__proto__"/></>);
+  expect(screen.getByText('constructor')).toBeTruthy();
+  expect(screen.getByLabelText('Code text').textContent).toBe('retained');
+  expect(container.querySelector('code[data-language="plaintext"]')).toBeTruthy();
 });
 test('offscreen blocks wait until visible and disconnect on unmount', () => {
   const observers = [];

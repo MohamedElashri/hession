@@ -44,12 +44,15 @@ test('readable actions retain tool identity and distinguish failures even with e
   assert.equal(view.outcome, 'Failed'); assert.equal(view.completed, false);
   assert.equal(toolPresentation({ exit_code: 0 }).outcome, 'Completed');
   assert.equal(toolPresentation({ status: 'running' }).outcome, 'Recorded: running');
+  assert.equal(toolPresentation({ tool_name: 'constructor' }).action, 'constructor');
+  assert.equal(toolPresentation({ tool_name: '__proto__' }).action, '__proto__');
 });
 test('recorded code languages are honored without guessing a language for generic code', () => {
   assert.equal(toolPresentation({ name: 'functions.exec', args: '{"code":"const a = 1;"}' }).codeLanguage, 'javascript');
   assert.equal(toolPresentation({ name: 'python', args: '{"code":"print(1)"}' }).codeLanguage, 'python');
   assert.equal(toolPresentation({ name: 'custom', args: '{"code":"x", "language":"rs"}' }).codeLanguage, 'rust');
   assert.equal(toolPresentation({ name: 'custom', args: '{"code":"x"}' }).codeLanguage, 'plaintext');
+  assert.equal(toolPresentation({ name: 'custom', args: '{"code":"x", "language":{"toString":null}}' }).codeLanguage, 'plaintext');
   assert.equal(toolPresentation({ name: 'powershell', command_text: 'Get-Item .'}).commandLanguage, 'powershell');
 });
 test('only structured output gets an automatic syntax hint and valid JSON arguments keep their representation', () => {

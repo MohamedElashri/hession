@@ -22,6 +22,7 @@ for (const [language, text] of Object.entries(samples)) test(`${language} syntax
 test('syntax aliases are explicit; unknown languages and unbounded input remain plain', () => {
   assert.equal(syntaxLanguage('TSX'), 'typescript'); assert.equal(syntaxLanguage('ps1'), 'powershell');
   assert.equal(syntaxLanguage('made-up'), 'plaintext');
+  for (const name of ['constructor', '__proto__', { toString: null }]) assert.equal(syntaxLanguage(name), 'plaintext');
   for (const text of ['', null, 'a'.repeat(2001), 'x\n'.repeat(13000)]) assert.equal(canHighlight(text, 'bash'), false);
   assert.equal(highlightSyntax('const a = 1;', 'unknown'), null);
   assert.equal(canHighlight('a'.repeat(2000), 'bash'), true);

@@ -11,8 +11,8 @@ const aliases = { text: 'plaintext', plain: 'plaintext', txt: 'plaintext', sh: '
   yml: 'yaml', html: 'xml', htm: 'xml', xml: 'xml', ps1: 'powershell', pwsh: 'powershell', toml: 'ini', 'c++': 'cpp' };
 
 export function syntaxLanguage(value) {
-  const name = String(value ?? '').toLowerCase();
-  return aliases[name] || (languages.has(name) ? name : 'plaintext');
+  const name = typeof value === 'string' ? value.toLowerCase() : '';
+  return Object.hasOwn(aliases, name) ? aliases[name] : languages.has(name) ? name : 'plaintext';
 }
 
 // Keep both work and retained results bounded. Larger text remains fully readable/copyable.
