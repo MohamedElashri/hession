@@ -14,8 +14,8 @@ const location = entry => ({ entryId: entry.id, position: Number.isSafeInteger(e
 
 function LiveEntry({ entry, expanded, onToggle, onOpen }) {
   return <article className="live-entry" data-live-entry={entry.id}>
-    <div className="live-entry-heading"><button type="button" className="live-entry-toggle" aria-expanded={expanded} onClick={onToggle}>
-      <strong>{text(entry.role) || 'event'} · {text(entry.kind) || 'Recorded event'}</strong><span>{timeLabel(entry.occurred_at)}</span>
+    <div className="live-entry-heading"><button type="button" className="live-entry-toggle" aria-expanded={expanded} disabled={entry.oversized} onClick={onToggle}>
+      <strong>{entry.oversized ? 'Large recorded event' : `${text(entry.role) || 'event'} · ${text(entry.kind) || 'Recorded event'}`}</strong><span>{timeLabel(entry.occurred_at)}</span>
     </button><button type="button" className="text-button" onClick={onOpen}>Open full history<ArrowRight size={12}/></button></div>
     {expanded ? <div className="live-entry-content">
       {(entry.parts || []).map((part, index) => <div key={part.id || index}><span className="live-part-kind">{text(part.kind)}</span><pre>{text(part.text).slice(0, 12000)}{text(part.text).length > 12000 ? '\n… Open full history for the complete content.' : ''}</pre></div>)}
@@ -58,7 +58,9 @@ export function LiveTail({ session, available, onSelectSession }) {
       if (!isCurrent()) return false;
       if (!result || !Array.isArray(result.entries) || !result.cursor || typeof result.hasMore !== 'boolean') throw new Error('Invalid live event response.');
       if (result.hasMore && JSON.stringify(result.cursor) === JSON.stringify(previous.cursor)) throw new Error('Live cursor did not advance. Retry this session.');
-      const merged = mergeLiveEntries(previous.entries, result.entries, !!result.reset || !!result.deleted);
+      if (result.oversizedEntries != null && !Array.isArray(result.oversizedEntries)) throw new Error('Invalid live event response.');
+      const omitted = (result.oversizedEntries || []).map(item => ({ id: item.id, ordinal: item.ordinal, position: item.position, oversized: true }));
+      const merged = mergeLiveEntries(previous.entries, [...result.entries, ...omitted], !!result.reset || !!result.deleted);
       scrollSnapshot.current = previous.loaded && !result.reset && !result.deleted ? captureScroll() : { initial: true };
       const next = { sessionId, ...merged, cursor: result.cursor, loaded: true, error: '', reset: !!result.reset && previous.loaded, deleted: !!result.deleted,
         pending: !previous.loaded || result.reset || result.deleted || followingRef.current ? 0 : store.current.pending + merged.added };

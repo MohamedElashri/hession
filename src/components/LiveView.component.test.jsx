@@ -209,3 +209,18 @@ test('private event payloads stay collapsed, actual tool arguments expand explic
   expect(screen.queryByText('Different source output')).toBeNull();
   expect(screen.queryByText('Private reasoning')).toBeNull();
 });
+
+
+test('oversized events retain precise navigation while polling continues beyond their placeholders', async () => {
+  const onOpen = vi.fn();
+  api.mockResolvedValueOnce(delta([], 1, { reset: true, hasMore: true, oversizedEntries: [{ id: 1, ordinal: 900, position: 750, reason: 'payload_too_large' }] }));
+  api.mockResolvedValueOnce(delta([entry(2, 901, 751)], 2));
+  render(<LiveTail session={session()} available onSelectSession={onOpen}/>); await tick(); await tick(100);
+  const omitted = screen.getByText('Content omitted from the bounded live window. Open full history to inspect this event.').closest('article');
+  expect(within(omitted).getByRole('button', { name: /Large recorded event/ }).disabled).toBe(true);
+  fireEvent.click(within(omitted).getByRole('button', { name: 'Open full history' }));
+  expect(onOpen).toHaveBeenCalledWith(1, { entryId: 1, position: 750 });
+  expect(screen.getByText('Event 2')).toBeTruthy();
+  expect(api.mock.calls[1][1].cursor.seq).toBe(1);
+  expect(screen.queryByRole('alert')).toBeNull();
+});

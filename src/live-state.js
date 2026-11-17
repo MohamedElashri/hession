@@ -10,6 +10,7 @@ const CONVERSATION_KINDS = new Set(['message', 'text', 'user', 'assistant', 'use
   'user_feedback_diff', 'completion_result', 'followup', 'plan_mode_respond', 'USER_INPUT']);
 
 export function liveEntrySummary(entry) {
+  if (entry.oversized) return 'Content omitted from the bounded live window. Open full history to inspect this event.';
   if (['user', 'assistant'].includes(entry.role) && CONVERSATION_KINDS.has(entry.kind)) {
     const parts = (entry.parts || []).filter(part => part.kind === 'text' && typeof part.text === 'string');
     let summary = '';
