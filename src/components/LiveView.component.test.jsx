@@ -217,6 +217,7 @@ test('private event payloads stay collapsed, actual tool arguments expand explic
   expect(screen.getByText('Recorded tool activity: shell')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: /Agent · reasoning/ }));
   expect(screen.getByRole('region', { name: 'Command' }).textContent).toContain('private argument');
+  fireEvent.click(screen.getByText('All arguments')); await tick();
   expect(JSON.parse(screen.getByLabelText('Arguments text').textContent)).toEqual({ command: 'private argument' });
   expect(screen.getByText('Private tool output')).toBeTruthy();
   api.mockResolvedValueOnce(delta([{ ...privateEntry, tools: [{ tool_name: 'shell', result_text: 'Different source output' }] }], 2, { reset: true }));

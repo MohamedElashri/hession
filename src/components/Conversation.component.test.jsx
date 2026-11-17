@@ -15,10 +15,13 @@ test('tools have separate command, complete arguments and output with exact copy
   const panel = await screen.findByRole('region', { name: 'Command' });
   expect(within(panel).getByLabelText('Command text').textContent).toBe(command);
   expect(screen.getByRole('region', { name: 'Output' }).textContent).toContain('$HOME');
-  expect(screen.getByText('Exit 0')).toBeTruthy();
+  expect(screen.getByText('Completed')).toBeTruthy();
   fireEvent.click(within(panel).getByRole('button', { name: 'Copy command' }));
   expect(writeText).toHaveBeenCalledWith(command);
-  expect(await within(panel).findByText('Copied')).toBeTruthy();
+  expect(await within(panel).findAllByText('Copied')).toHaveLength(2);
+  expect(container.querySelector('.tool-arguments .tool-panel')).toBeNull();
+  fireEvent.click(container.querySelector('.tool-arguments summary'));
+  await screen.findByRole('region', { name: 'Arguments' });
   expect(container.querySelector('.tool-arguments').textContent).toContain('/work/demo');
 });
 
@@ -52,7 +55,7 @@ test('a long single-line command wraps locally and can scroll without changing i
 
 test('empty output, failures and missing output are distinguished; untrusted output stays text', () => {
   const { container } = render(<><ToolActivity tool={{ tool_name: 'bad', status: 'completed', exit_code: 1, result_text: '<img src=x onerror=alert(1)>' }} initiallyOpen/><ToolActivity tool={{ tool_name: 'empty', result_text: '' }} initiallyOpen/></>);
-  expect(container.querySelector('.tool-failed').textContent).toContain('Exit 1');
+  expect(container.querySelector('.tool-failed').textContent).toContain('Failed · exit 1');
   expect(container.querySelector('img')).toBeNull();
   expect(screen.getByText('Empty output.')).toBeTruthy();
   expect(screen.queryByText('No output recorded.')).toBeNull();
@@ -74,7 +77,7 @@ test('code arguments retain their line breaks and failed calls stay visible in f
   expect(screen.getByText('tool-8')).toBeTruthy();
   expect(screen.queryByText('tool-7')).toBeNull();
   expect(screen.getByLabelText('Code text').textContent).toBe('const a = 1;\nreturn a;');
-  expect(container.querySelector('.tool-failed').textContent).toContain('Exit 9');
+  expect(container.querySelector('.tool-failed').textContent).toContain('Failed · exit 9');
 });
 
 test('a Unicode preview boundary never leaves a dangling surrogate', () => {

@@ -11,6 +11,11 @@
   copy complete text, and expand explicitly labeled previews of large content.
 - Keep failed calls visible in folded tool runs, retain recorded exit codes,
   and distinguish empty output from output that was never recorded.
+- Reduce nested tool borders, show readable action names and explicit outcomes,
+  and distinguish command and output panels with labels, icons, and accents.
+- Add local syntax highlighting for commands, code, JSON arguments, diffs and
+  fenced Markdown. Choose a language or plain text per tool panel. Highlighting
+  runs in a bounded background worker; large blocks remain readable as plain text.
 
 ## [0.5.0] - 2026-11-17
 

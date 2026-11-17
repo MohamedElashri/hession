@@ -125,7 +125,7 @@ jobs:
           const timestamp = new Date().toISOString();
           const rows = [
             { timestamp, type: 'session_meta', payload: { id: 'candidate-native-gui', cwd: join(root, 'workspace') } },
-            { timestamp, type: 'event_msg', payload: { type: 'user_message', message: 'Native candidate smoke test: synthetic history only.' } },
+            { timestamp, type: 'event_msg', payload: { type: 'user_message', message: 'Native candidate smoke test: synthetic history only.\n\n```javascript\nconst greeting = "Syntax worker is ready";\nconsole.log(greeting);\n```' } },
           ];
           writeFileSync(join(root, 'codex/sessions/native.jsonl'), rows.map(row => JSON.stringify(row)).join('\n') + '\n');
           JS

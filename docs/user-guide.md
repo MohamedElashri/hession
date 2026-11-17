@@ -61,10 +61,15 @@ history stays available while a host is offline or removes its original files.
   separate cards with the tool name and recorded outcome. Failed calls remain
   visible when long tool runs are folded.
 - Tool cards separate **Command** or **Code**, **All arguments**, and **Output**.
-  **Wrap** switches between wrapped lines and horizontal scrolling. **Copy**
+  **Wrap lines** switches between wrapped lines and horizontal scrolling. **Copy**
   copies the complete panel text, including text outside a large-content preview.
   **Show all** reveals the rest inside a scrollable panel; **Show preview** folds
   it again. Full log and expanded Live events use the same controls.
+- Tool panels highlight shell commands, code with a recorded language, JSON, and
+  unified diffs. Use the language menu beside **Wrap lines** to select a language
+  or **Plain text**. Fenced Markdown code uses its language tag. Plain logs stay
+  uncolored; large blocks and unusually long lines use plain text to keep reading
+  responsive. Highlighting runs locally and preserves the exact text used by Copy.
 - **Prompts** lists prompts on the current page. **Full log** includes events
   and role filters. Long histories use pages of 500 entries.
 - Star sessions or add tags above the transcript. Multiple selected tags require
