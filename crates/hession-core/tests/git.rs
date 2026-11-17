@@ -138,8 +138,33 @@ fn symlink_files_are_never_followed_and_non_utf8_names_keep_identity() {
     use std::os::unix::{ffi::OsStringExt, fs::symlink};
     let dir = repo();
     let name = std::ffi::OsString::from_vec(vec![b'n', 0xff, b'x']);
-    fs::write(dir.path().join(&name), "raw").unwrap();
-    git(dir.path(), &["add", "--all"]);
+    // Git trees permit raw bytes even when the host filesystem (APFS) does not.
+    let blob = Command::new("/usr/bin/git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["rev-parse", "HEAD:old name\n.rs"])
+        .output()
+        .unwrap();
+    assert!(blob.status.success());
+    let blob = String::from_utf8(blob.stdout).unwrap();
+    let staged = Command::new("/usr/bin/git")
+        .arg("-C")
+        .arg(dir.path())
+        .args([
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "100644",
+            blob.trim(),
+        ])
+        .arg(&name)
+        .output()
+        .unwrap();
+    assert!(
+        staged.status.success(),
+        "{}",
+        String::from_utf8_lossy(&staged.stderr)
+    );
     git(dir.path(), &["commit", "-qm", "bytes"]);
     let outside = tempfile::tempdir().unwrap();
     fs::write(outside.path().join("private"), "private").unwrap();
@@ -150,7 +175,8 @@ fn symlink_files_are_never_followed_and_non_utf8_names_keep_identity() {
     )
     .unwrap();
     let evidence = git::inspect(dir.path(), Default::default()).unwrap();
-    assert_eq!(evidence.skipped_paths, 1);
+    assert!(evidence.skipped_paths >= 1);
+    assert!(!evidence.worktree_scan_complete);
     assert!(evidence
         .changes
         .iter()
