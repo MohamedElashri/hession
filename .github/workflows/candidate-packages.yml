@@ -43,7 +43,7 @@ jobs:
         if: matrix.os == 'linux'
         run: |
           make deps
-          sudo apt-get install -y --no-install-recommends patchelf xvfb xdg-utils rpm cpio
+          sudo apt-get install -y --no-install-recommends patchelf xvfb xauth xdg-utils rpm cpio
       - run: npm ci
       - run: make release-check VERSION=0.5.0
       - name: Generate disposable updater key
@@ -114,12 +114,27 @@ jobs:
           sh /Applications/Hession.app/Contents/Resources/install-cli.sh "$cli" "$RUNNER_TEMP/bin/hession"
           test "$("$RUNNER_TEMP/bin/hession" --version)" = 'hession 0.5.0'
           scratch=$(mktemp -d)
+          TASK_GUI_SCRATCH="$scratch" node --input-type=module <<'JS'
+          import { mkdirSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const root = process.env.TASK_GUI_SCRATCH;
+          mkdirSync(join(root, 'codex/sessions'), { recursive: true });
+          mkdirSync(join(root, 'workspace'));
+          const timestamp = new Date().toISOString();
+          const rows = [
+            { timestamp, type: 'session_meta', payload: { id: 'candidate-native-gui', cwd: join(root, 'workspace') } },
+            { timestamp, type: 'event_msg', payload: { type: 'user_message', message: 'Native candidate smoke test: synthetic history only.' } },
+          ];
+          writeFileSync(join(root, 'codex/sessions/native.jsonl'), rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+          JS
+          HESSION_DATA_DIR="$scratch/library" CODEX_HOME="$scratch/codex" "$cli" index --once --agent codex --json > "$RUNNER_TEMP/native-import.json"
           HESSION_DATA_DIR="$scratch/library" CODEX_HOME="$scratch/codex" "$cli" > "$RUNNER_TEMP/gui-smoke.log" 2>&1 &
           gui=$!
           trap 'kill "$gui" 2>/dev/null || true; hdiutil detach "$mount" || true' EXIT
-          sleep 5
+          sleep 8
           kill -0 "$gui"
           test -s "$scratch/library/sessions.sqlite"
+          /usr/sbin/screencapture -x "$RUNNER_TEMP/native-gui.png"
           kill "$gui"
           wait "$gui" || true
           cat "$RUNNER_TEMP/gui-smoke.log"
@@ -136,3 +151,19 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+      - name: Retain public key and native diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: candidate-diagnostics-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/candidate.key.pub
+            ${{ runner.temp }}/gui-smoke.log
+            ${{ runner.temp }}/native-gui.png
+            ${{ runner.temp }}/native-import.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Remove disposable private updater key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/candidate.key"
