@@ -97,6 +97,8 @@ services on workers and retains the existing transcript response shape. Run
 `cargo test --locked -p hession-core` for migration, snapshot, pagination and
 cross-process lock checks without building GTK/WebKit. The fixtures use frozen
 v0.4 schema DDL and synthetic history, not a developer's native stores.
+The Makefile defaults to four Rust test threads and Vitest uses two workers;
+override `RUST_TEST_THREADS` when investigating concurrent regressions.
 
 Application migrations run transactionally and record their version in
 `application_schema`. SQLite's `user_version` remains the portable-backup

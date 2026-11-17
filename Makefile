@@ -6,6 +6,9 @@ CARGO_DIR := src-tauri
 MANIFEST  := $(CARGO_DIR)/Cargo.toml
 NPM       ?= npm
 CARGO     ?= cargo
+# Bound fixture/process concurrency on hosts reporting many logical CPUs.
+RUST_TEST_THREADS ?= 4
+export RUST_TEST_THREADS
 TARGET    := $(or $(CARGO_TARGET_DIR),target)
 PROFILE   ?= release
 BUNDLE    := $(TARGET)/release/bundle
