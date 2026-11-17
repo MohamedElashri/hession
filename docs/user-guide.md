@@ -34,6 +34,41 @@ history stays available while a host is offline or removes its original files.
   every tag. **Export** saves a session, filtered results, or the whole library
   as Markdown or JSON, optionally with statistics.
 
+## Keyboard navigation
+
+Open **Commands** in the sidebar or press **Cmd+K** on macOS / **Ctrl+K** on Linux.
+The palette finds commands, indexed sessions, and workspaces. Session search is
+debounced and returns up to 12 sessions; workspace matches are limited to 12.
+Use ↑/↓, Home/End and Enter to choose a result. Escape closes the palette and
+restores your previous focus. Unavailable commands explain what is needed.
+Choose **Keyboard shortcuts** in the sidebar, palette, or press **?** for the
+current reference, including platform-specific modifier labels.
+
+| Key | Action |
+| --- | --- |
+| Cmd/Ctrl+K | Open command palette |
+| / | Focus global session search |
+| Cmd/Ctrl+F | Search the complete selected session |
+| Cmd/Ctrl+B | Show/hide navigation |
+| Cmd/Ctrl+, | Open Settings |
+| Cmd/Ctrl+Shift+L | Focus the session list |
+| Cmd/Ctrl+Shift+T | Focus the transcript for scrolling |
+| j/k or ↓/↑ | Move focus in the session list; Enter opens the focused session |
+| Home/End | Focus the first/last session while in the list |
+| ? | Show keyboard shortcuts |
+| Escape | Dismiss a menu or dialog when its operation permits |
+
+Tab reaches the sidebar, session list, transcript, and their controls. In the
+sidebar, ↑/↓ and Home/End move between navigation buttons. Once the transcript
+is focused, use arrows, Page Up/Down, and Home/End to scroll. Palette commands
+also change transcript pages, open export, show analytics, or prepare Resume.
+Resume and continuation still require their usual review before launching.
+Letter shortcuts are inactive in text fields, editors, selection controls, and
+dialogs. Cmd/Ctrl+K, Cmd/Ctrl+F, and the focus shortcuts remain available while
+typing outside dialogs.
+Shortcuts ignore input composition and held-key repeats. Motion preferences
+apply to keyboard navigation too.
+
 ## Resume or continue a task
 
 | Action | Result |
