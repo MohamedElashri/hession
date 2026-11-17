@@ -34,6 +34,15 @@ administrator authorization. Your library is kept when updating or uninstalling.
 Installer options: `--appimage`, `--version v0.5.0`, `--force`, `--uninstall`,
 `--help`; pass them after `sh -s --`.
 
+AppImages use [host graphics libraries](https://github.com/AppImageCommunity/pkg2appimage/blob/master/excludelist), including for terminal commands.
+On minimal Debian/Ubuntu systems, install them first:
+
+```sh
+sudo apt-get install -y libegl1 libgles2 libgl1 libgbm1
+```
+
+Debian/RPM packages resolve their runtime dependencies through the package manager.
+
 ## Start here
 
 1. Open Hession to index local agent histories and their changes. **Refresh

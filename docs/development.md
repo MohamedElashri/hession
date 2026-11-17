@@ -243,10 +243,11 @@ enrollment. Keep protocol-version and harness compatibility failures explicit.
 `make test` runs the Rust unit tests and the JS tests (`npm test`;
 `src/transcript.test.js` covers how transcripts become conversation turns and
 `src/appearance.test.js` covers saved settings, migration, and theme resolution).
-`remote.rs` includes an end-to-end test
-that puts a stand-in `ssh` on `PATH`, then exercises the real probe, rsync,
-and import against a fake remote home. Another test runs the generated
-resume command through `sh` with awkward paths and arguments. For visual checks,
+`remote.rs` includes an end-to-end test that runs in a child with a cleared
+environment, puts a stand-in `ssh` on `PATH`, and exercises the real probe,
+rsync and import against fake local/remote homes. Agent-store and credential
+overrides cannot escape into that fixture or affect parallel tests. Another test
+runs the generated resume command through `sh` with awkward paths and arguments. For visual checks,
 use `make preview` to inspect both sessions and analytics with sample data.
 
 ## Dependency security
