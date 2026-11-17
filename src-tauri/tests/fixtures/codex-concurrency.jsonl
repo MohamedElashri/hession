@@ -1,0 +1,4 @@
+{"timestamp":"2026-11-17T10:00:00Z","type":"session_meta","payload":{"id":"fixture-concurrency","cwd":"/fixture/project"}}
+{"timestamp":"2026-11-17T10:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"Inspect src/a.rs — naïve café"}}
+{"timestamp":"2026-11-17T10:00:02Z","type":"response_item","payload":{"type":"function_call","name":"read_file","call_id":"fixture-call","arguments":"{\"file_path\":\"/fixture/project/src/a.rs\"}"}}
+{"timestamp":"2026-11-17T10:00:03Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Inspection started."}]}}

@@ -362,6 +362,8 @@ fn streamed_export_is_atomic_and_cancellation_preserves_existing_file() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("sessions.sqlite");
     let conn = db::open_db(&database).unwrap();
+    // The test exercises export durability; batch fixture writes before exporting.
+    let fixture = conn.unchecked_transaction().unwrap();
     conn.execute(
         "INSERT INTO agent(id,family,product) VALUES(1,'codex','Codex')",
         [],
@@ -379,6 +381,7 @@ fn streamed_export_is_atomic_and_cancellation_preserves_existing_file() {
         )
         .unwrap();
     }
+    fixture.commit().unwrap();
     let target = directory.path().join("export.json");
     std::fs::write(&target, "original").unwrap();
     let job = ExportJob::default();
