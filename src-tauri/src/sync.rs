@@ -66,6 +66,7 @@ pub fn acquire_data_management_for(path: &Path) -> Result<DataManagementGuard, S
     if MANAGING_DATA.swap(true, Ordering::SeqCst) {
         return Err("Another data operation is in progress. Please wait.".into());
     }
+    crate::indexer::interrupt_for_manual();
     Ok(DataManagementGuard(path.to_path_buf()))
 }
 
@@ -93,6 +94,7 @@ pub fn start_sync(agent_filter: Option<String>, mode: &str) -> bool {
         if state.running || is_managing_data() {
             return false;
         }
+        crate::indexer::interrupt_for_manual();
         crate::importer::reset_stop();
         *state = SyncState {
             running: true,

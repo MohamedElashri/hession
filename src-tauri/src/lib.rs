@@ -14,6 +14,7 @@ pub mod device_sync;
 mod export_format;
 pub mod features;
 pub mod importer;
+pub mod indexer;
 mod library_revision;
 mod paths;
 pub mod pricing;
@@ -79,6 +80,10 @@ pub fn run() {
             device_sync::export_device_sync_recovery_key,
             device_sync::reset_device_sync_checkpoint,
             commands::ping,
+            indexer::start_indexing,
+            indexer::indexing_status,
+            indexer::pause_indexing,
+            indexer::session_delta,
             commands::get_health,
             commands::search_sessions,
             developer_search::developer_search,

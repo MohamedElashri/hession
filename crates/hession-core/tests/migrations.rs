@@ -122,7 +122,7 @@ fn migration_failure_rolls_back_schema_and_leaves_legacy_rows_readable() {
 
 #[test]
 fn future_and_corrupt_versions_fail_without_changing_data() {
-    for version in [2, -1] {
+    for version in [db::SCHEMA_VERSION + 1, -1] {
         let conn = Connection::open_in_memory().unwrap();
         legacy(&conn);
         conn.execute_batch("CREATE TABLE application_schema(id,version)")

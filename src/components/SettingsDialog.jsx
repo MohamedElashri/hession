@@ -5,6 +5,7 @@ import { updates } from '../updates.js';
 import useModalDialog from './useModalDialog.js';
 import DeviceSyncSettings from './DeviceSyncSettings.jsx';
 import FeatureDocumentation from './FeatureDocumentation.jsx';
+import IndexingControl from './IndexingControl.jsx';
 const AppearanceSettings = lazy(() => import('./AppearanceSettings.jsx'));
 const TerminalSettings = lazy(() => import('./TerminalSettings.jsx'));
 const RemoteHosts = lazy(() => import('./RemoteHosts.jsx'));
@@ -24,7 +25,7 @@ const sections = [
 
 export default function SettingsDialog({ initialTab = 'appearance', onClose, onSectionChange, onFeaturesChanged, onLibraryChanged,
   onManagedDataChanged, onRemotesChanged, preferences, onAppearanceChange, appearanceSaveError, autoSync, onAutoSyncChange,
-  onRefreshHistories, syncRunning }) {
+  onRefreshHistories, syncRunning, indexing }) {
   const dialog = useModalDialog();
   const initialSection = sections.some(section => section.id === initialTab) ? initialTab : 'appearance';
   const [tab, setTab] = useState(initialSection);
@@ -93,6 +94,7 @@ export default function SettingsDialog({ initialTab = 'appearance', onClose, onS
           {id === 'appearance' && <AppearanceSettings preferences={preferences} onChange={onAppearanceChange} saveError={appearanceSaveError}/>}
           {id === 'terminal' && <TerminalSettings onBusyChange={setBusy}/>}
           {id === 'history' && <section aria-label="History refresh preferences">
+            <IndexingControl observer={indexing} detailed/>
             <label className="settings-switch"><input type="checkbox" checked={!!autoSync} onChange={onAutoSyncChange}/><span>Refresh histories on startup</span></label>
             <p className="terminal-settings-hint">Read new sessions from local files and enabled SSH hosts when Hession opens. Private device sync is separate and always starts manually.</p>
             <button type="button" className="btn" disabled={syncRunning} onClick={onRefreshHistories}><RefreshCw size={14}/>{syncRunning ? 'Refreshing histories…' : 'Refresh histories'}</button>

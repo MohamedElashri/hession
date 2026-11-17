@@ -1,7 +1,7 @@
 //! Lossless content extraction and read-only adapters for agent SQLite sources.
 
 use super::{first_str, iso_time, normalize_record, stop_requested, NormalizedRecord};
-use rusqlite::{params, types::ValueRef, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{params, types::ValueRef, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -527,6 +527,31 @@ fn reported_usage(family: &str, values: &[Value]) -> Option<Value> {
 
 /// Resolve identity from the conversation directory, never a transcript name.
 /// The summary database is optional; older/local exports can use prompt titles.
+pub(super) fn configure_source(conn: &mut Connection) -> Result<(), String> {
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| e.to_string())?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    conn.progress_handler(
+        1000,
+        Some(move || stop_requested() || std::time::Instant::now() >= deadline),
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub(super) fn antigravity_summary(file: &Path) -> Option<std::path::PathBuf> {
+    let conversation = file.ancestors().find(|path| {
+        path.parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "brain")
+    })?;
+    Some(
+        conversation
+            .parent()?
+            .parent()?
+            .join("conversation_summaries.db"),
+    )
+}
+
 fn antigravity_metadata(file: &Path) -> Result<Map<String, Value>, String> {
     let mut metadata = Map::new();
     let Some(conversation) = file.ancestors().find(|path| {
@@ -541,32 +566,30 @@ fn antigravity_metadata(file: &Path) -> Result<Map<String, Value>, String> {
         .and_then(|name| name.to_str())
         .ok_or("Invalid Antigravity conversation directory")?;
     metadata.insert("id".into(), json!(id));
-    let root = conversation
-        .parent()
-        .and_then(Path::parent)
-        .ok_or("Invalid Antigravity source root")?;
-    let db = root.join("conversation_summaries.db");
+    let db = antigravity_summary(file).ok_or("Invalid Antigravity source root")?;
     if !db.is_file() {
         return Ok(metadata);
     }
-    let source = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    let mut source = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("open Antigravity summaries: {e}"))?;
-    source
-        .busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(|e| e.to_string())?;
-    let summary: Option<(String, String)> = source
-        .query_row(
-            "SELECT title,workspace_uris FROM conversation_summaries WHERE conversation_id=?1",
-            [id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|e| format!("read Antigravity title: {e}"))?;
-    if let Some((title, workspaces)) = summary {
+    configure_source(&mut source)?;
+    let summary = rows(
+        &source,
+        "SELECT title,workspace_uris FROM conversation_summaries WHERE conversation_id=?",
+        Some(id),
+    )?
+    .pop();
+    if let Some(summary) = summary {
+        let title = summary["title"]
+            .as_str()
+            .ok_or("Invalid Antigravity title")?;
+        let workspaces = summary["workspace_uris"]
+            .as_str()
+            .ok_or("Invalid Antigravity workspaces")?;
         if !title.trim().is_empty() {
             metadata.insert("title".into(), json!(title));
         }
-        let uris: Vec<String> = serde_json::from_str(&workspaces)
+        let uris: Vec<String> = serde_json::from_str(workspaces)
             .map_err(|e| format!("read Antigravity workspaces: {e}"))?;
         if let Some(path) = uris
             .iter()
@@ -830,12 +853,27 @@ pub(super) fn rows(
     }
     .map_err(|e| e.to_string())?;
     let mut values = Vec::new();
+    let mut budget = super::MAX_DECODED_BYTES;
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
         if stop_requested() {
             return Err("Import stopped".into());
         }
         let mut value = Map::new();
         for (i, name) in names.iter().enumerate() {
+            let raw = row.get_ref(i).map_err(|e| e.to_string())?;
+            let length = match raw {
+                ValueRef::Text(bytes) | ValueRef::Blob(bytes) => bytes.len(),
+                _ => 16,
+            };
+            if length > hession_core::jsonl::MAX_LINE_BYTES {
+                return Err(
+                    "Source database cell exceeds 8 MiB; previous completed imports were preserved"
+                        .into(),
+                );
+            }
+            if matches!(raw, ValueRef::Blob(_)) && length.saturating_mul(128) > budget {
+                return Err("Source database blob exceeds decoded memory budget".into());
+            }
             let v = match row.get_ref(i).map_err(|e| e.to_string())? {
                 ValueRef::Null => Value::Null,
                 ValueRef::Integer(n) => json!(n),
@@ -852,20 +890,28 @@ pub(super) fn rows(
             };
             value.insert(name.clone(), v);
         }
-        values.push(Value::Object(value));
+        let value = Value::Object(value);
+        super::charge_value(&value, &mut budget)?;
+        if values.len() >= super::MAX_RECORDS {
+            return Err("Source database query exceeds 100000 rows".into());
+        }
+        values.push(value);
     }
     Ok(values)
 }
 
 fn source_json(value: &Value, column: &str, default: Value) -> Result<Value, String> {
-    match value.get(column) {
+    let parsed = match value.get(column) {
         None | Some(Value::Null) => Ok(default),
         Some(Value::String(s)) if s.is_empty() => Ok(default),
         Some(Value::String(s)) => {
             serde_json::from_str(s).map_err(|e| format!("Invalid JSON in source {column}: {e}"))
         }
         Some(v) => Ok(v.clone()),
-    }
+    }?;
+    let mut budget = super::MAX_DECODED_BYTES;
+    super::charge_value(&parsed, &mut budget)?;
+    Ok(parsed)
 }
 
 fn source_id(value: &Value) -> Result<String, String> {
@@ -978,9 +1024,7 @@ pub(super) fn import_database(
     }
     let mut source = Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("open source database: {e}"))?;
-    source
-        .busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(|e| e.to_string())?;
+    configure_source(&mut source)?;
     // A read transaction reads a consistent set of session/message/part rows.
     let snapshot = source.transaction().map_err(|e| e.to_string())?;
     let sessions = rows(

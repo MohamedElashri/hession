@@ -8,6 +8,22 @@ For installation, see [Install](../README.md#install).
 startup unless disabled under **Settings → History refresh**. Its menu offers a per-agent refresh
 and **Full rescan**. Stopping keeps completed imports; original files are unchanged.
 
+Hession also indexes **local** changes automatically while its desktop window is
+open. Pause or resume it in the sidebar or **Settings → History refresh**. This
+preference is saved on this computer; an existing startup-refresh opt-out also
+disables automatic indexing until you explicitly resume it. Settings shows the
+source roots, unavailable stores, last successful import, and recent errors.
+Stores for agents you have not installed can be absent. No operating-system
+daemon is installed. SSH mirrors and private device transfers keep their separate
+explicit refresh/sync actions.
+
+Claude Code and Codex append complete JSONL lines without rebuilding earlier
+entries. Incomplete final lines wait for completion; malformed complete lines
+preserve the previous import and report an error. Replaced or rewritten files and
+other adapters use a safe rebuild. Deleted saved histories stay excluded from
+automatic imports; **Refresh histories** or **Full rescan** can import native
+sources again. Removing saved history never deletes native agent files.
+
 To add a remote machine, open **Settings → Remote hosts** (or **+** beside **Hosts**), select an SSH suggestion
 or enter an alias or `user@host`, then **Test** and refresh. Both machines need
 `rsync`; this computer needs `ssh` and a login that works without prompts:
