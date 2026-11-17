@@ -63,6 +63,29 @@ jobs:
           [ -n "$installed" ]
           if [ -n "$VERSION" ]; then [ "v$installed" = "$VERSION" ]; fi
 
+      - name: Check installed headless dispatch
+        shell: sh
+        run: |
+          installed=$(${{ matrix.check }})
+          case "$installed" in 0.[0-4].*) echo "CLI smoke test starts with v0.5"; exit 0 ;; esac
+          if [ "${{ runner.os }}" = macOS ]; then
+            cli=/Applications/Hession.app/Contents/MacOS/hession
+            shim=/Applications/Hession.app/Contents/Resources/install-cli.sh
+            link_dir=$(mktemp -d)
+            sh "$shim" "$cli" "$link_dir/hession"
+            "$link_dir/hession" --version
+          else
+            cli=$(command -v hession)
+          fi
+          env -u DISPLAY -u WAYLAND_DISPLAY "$cli" --help
+          scratch=$(mktemp -d)
+          code=0
+          env -u DISPLAY -u WAYLAND_DISPLAY "$cli" --database "$scratch/missing/library.sqlite" status --json >"$scratch/stdout" 2>"$scratch/stderr" || code=$?
+          [ "$code" -eq 3 ]
+          [ ! -s "$scratch/stdout" ]
+          [ ! -e "$scratch/missing" ]
+          grep -q '"code":3' "$scratch/stderr"
+
       - name: Check the app is universal (Apple silicon and Intel)
         if: runner.os == 'macOS'
         shell: sh

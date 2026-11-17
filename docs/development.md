@@ -528,3 +528,86 @@ and only `deflate-flate2-zlib-rs`; exact `regex 1.13.1` (Rust 1.65, MIT/Apache-2
 for fixed linear-time redaction patterns; and existing `tempfile 3.27.0` (Rust 1.63,
 MIT/Apache-2.0) promoted to a runtime dependency. These fit the project's Rust 1.90
 minimum and reuse existing locked compression/runtime packages.
+
+
+### Headless CLI and MCP boundary
+
+`crates/hession-cli` is independently testable without linking the desktop GUI.
+The installed app calls `hession_cli::dispatch_env()` before Tauri/webview
+initialization. `Gui` preserves no-argument startup; `Handled(code)` exits;
+`Index(IndexRequest)` delegates to the application's existing local importer and
+observer. The adapter receives the database path, once/watch mode, optional
+agent and JSON preference. It may await `wait_for_shutdown()` to handle
+SIGINT/SIGTERM. `write_output_async` admits one bounded stdout worker; select it
+against a persistent shutdown future so an unread pipe cannot block the signal
+driver. A cancelled write retains that worker permit until the OS write returns.
+Stop/join catalog workers before exiting; the dispatch runtime uses a bounded
+shutdown timeout so a blocked stdout thread cannot prevent process exit.
+`write_output` is the synchronous variant for callers that can tolerate blocking.
+`report_error` writes stderr and returns its documented exit code. No second
+importer is implemented in the CLI crate.
+
+For isolated development, `cargo run -p hession-cli --bin hession-headless --
+--database /path/to/existing.sqlite status --json` runs the same reader/MCP/export
+dispatch. That development binary intentionally lacks GUI and index adapters.
+`cargo test --locked -p hession-cli` includes synthetic database fixtures and
+actual subprocess stdio tests. No test uses real histories, credentials or model
+calls. Tokio signal notifications require a working local Unix socket pair; a
+sandbox that suppresses those writes cannot validate signal shutdown. Run that
+process test in a normal native environment rather than treating its sandbox
+timeout as a production pass. Run `node --test .github/scripts/install-cli.test.mjs` to test the optional
+non-overwriting bundle link installer.
+
+The command parser pins [clap 4.6.7](https://docs.rs/crate/clap/4.6.7)
+(MIT OR Apache-2.0, declared Rust 1.85), and the stdio server pins the official
+[rmcp 3.10.0 SDK](https://docs.rs/crate/rmcp/3.10.0)
+(Apache-2.0, declared Rust 1.88). The crate MSRV remains 1.90. Both disable default
+features; rmcp enables only `server` and `transport-io`, with no HTTP/auth/client
+transport feature. Tokio is pinned to the workspace's cached 1.54.1. Verify the
+resolved feature graph with `cargo tree --locked -p hession-cli -e features`.
+
+`ScopedReader::projects` captures immutable workspace-ID/exact-recorded-path
+bindings plus library identity. It requires 1–512 explicit selectors. Every
+operation opens `db::open_read_only`, validates those bindings in its read
+snapshot and applies the allowlist in SQL before reading session content.
+`unrestricted` and `search_indexed` are explicit local CLI APIs; MCP never calls
+them. It fixes MetadataOnly/Conversation visibility from startup permission,
+never from request data. Cursor fingerprints bind operation, arguments, page
+size, exact scope and exposure policy to library revision. Replacement or ID
+reuse fails closed. Project paths are indexed identities, not filesystem access;
+file paths are literal reported metadata, including external references.
+
+MCP uses an explicit projection whitelist over core project evidence. It drops
+free-form evidence, actions, tool bodies, raw provider/context payloads, original
+native source fields and Git inspection data. Consent still permits only
+`VISIBLE_CONVERSATION_KINDS`, user/assistant roles and explicit text parts.
+Session text is capped at 2048 characters from 16 parts per entry. Legacy combined
+text has no safe fallback. Direct metadata fields use conditional byte-size gates before clipping. Session
+text uses read-only incremental BLOB prefixes (at most 8192 bytes), so SQLite
+does not materialize a large TEXT cell before a substring is applied. Search
+rejects eligible text cells over 1 MiB before entering the shared matcher. Its
+metadata preflight caps a row's selected fields at 64 KiB and their aggregate
+at 16 MiB within the approved scope; project/file descriptor reads use the same
+metadata guard. These checks use SQLite `octet_length(column)`, which reads the
+stored byte size without materializing TEXT. Oversized input returns exit code 5
+with a size-limit error; narrowing scope or repairing oversized indexed fields
+is required. Metadata-only search never inspects transcript cells, and oversized
+excluded/denied conversation cells cannot affect consent-mode results. The
+common snapshot response cap is 1 MiB.
+
+MCP input lines are capped at 128 KiB (oversized lines are discarded by the SDK),
+arguments at 16 KiB, tools at 512 KiB, pages at 100 rows, queries at 4096 bytes/64
+terms and cursors at 4096 bytes. At most 16 requests are in flight; pipe
+backpressure retains permits until writes complete. Two database workers use
+immediate busy rejection instead of a work queue, with a three-second SQLite
+progress deadline and five-second outer deadline. Cancellation interrupts the
+read; the permit stays with a detached blocking worker until it actually exits.
+Duplicate pending request IDs close the malformed stream. Responses mark
+historical data untrusted; no text is interpreted or executed. Diagnostics go to
+stderr and stdout is exclusively SDK JSON-RPC.
+
+CLI export calls the shared immutable prepare/write API with one exact project
+scope, validates the prepared project key and library identity, and writes only
+on an explicit export command. Preview writes nothing. No MCP tool reaches the
+writer. Portable archive construction and atomic no-clobber publication remain
+owned by the shared export service.

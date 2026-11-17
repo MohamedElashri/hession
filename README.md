@@ -80,7 +80,7 @@ backups contain plaintext. See [security and limits](docs/sync-security.md).
 
 ## Guides
 
-- [User guide](docs/user-guide.md): everyday use, supported stores, backups, fixes.
+- [User guide](docs/user-guide.md): everyday use, [terminal/MCP](docs/user-guide.md#terminal-commands-and-read-only-mcp), supported stores, backups, fixes.
 - [Private sync](docs/private-sync.md) · [Self-hosting](docs/self-hosting.md).
 - [Continuation](docs/continuation.md) · [What's changed](CHANGELOG.md).
 - [Development](docs/development.md) · [Sync protocol](docs/sync-protocol.md).

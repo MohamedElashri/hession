@@ -122,7 +122,7 @@ lint-js: NPM_SCRIPT = lint
 lint-js: ## Lint the frontend and scripts
 
 lint-sh: ## ShellCheck the install script (skipped if shellcheck is missing)
-	@if command -v shellcheck >/dev/null; then shellcheck -s sh install.sh && echo "install.sh: shellcheck clean"; \
+	@if command -v shellcheck >/dev/null; then shellcheck -s sh install.sh scripts/install-cli.sh && echo "install scripts: shellcheck clean"; \
 	else echo "shellcheck not installed; skipping install.sh check"; fi
 
 unused: ## Find unused files, exports, and dependencies

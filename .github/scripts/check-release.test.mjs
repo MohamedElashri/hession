@@ -22,10 +22,11 @@ function fixture(run) {
   write('CHANGELOG.md', '## [0.3.0]\n\nA complete release.\n\n## [0.4.0]\n\nAnother release.\n');
   for (const [path, name] of [
     ['src-tauri/Cargo.toml', 'app'], ['crates/hession-core/Cargo.toml', 'hession-core'],
+    ['crates/hession-cli/Cargo.toml', 'hession-cli'],
     ['crates/hession-sync/Cargo.toml', 'hession-sync'],
     ['crates/hession-relay/Cargo.toml', 'hession-relay'],
   ]) write(path, `[package]\nname = "${name}"\nversion = "0.3.0"\n\n[dependencies]\nexample = "1.2.3"\n`);
-  write('Cargo.lock', ['app', 'hession-core', 'hession-sync', 'hession-relay'].map(name => `[[package]]\nname = "${name}"\nversion = "0.3.0"\n`).join('\n'));
+  write('Cargo.lock', ['app', 'hession-core', 'hession-cli', 'hession-sync', 'hession-relay'].map(name => `[[package]]\nname = "${name}"\nversion = "0.3.0"\n`).join('\n'));
   write('deploy/relay/compose.yaml', 'services:\n  relay:\n    image: hession-relay:0.3.0\n');
   const check = version => spawnSync(process.execPath, [join(root, '.github/scripts/check-release.mjs'), `v${version}`], { encoding: 'utf8' });
   try { run({ root, write, check, read: path => readFileSync(join(root, path), 'utf8') }); }
@@ -39,6 +40,7 @@ test('release checks accept matching desktop, relay, image, and lockfile version
 
 for (const [path, marker] of [
   ['crates/hession-core/Cargo.toml', 'crates/hession-core/Cargo.toml'],
+  ['crates/hession-cli/Cargo.toml', 'crates/hession-cli/Cargo.toml'],
   ['crates/hession-relay/Cargo.toml', 'crates/hession-relay/Cargo.toml'],
   ['crates/hession-sync/Cargo.toml', 'crates/hession-sync/Cargo.toml'],
   ['deploy/relay/compose.yaml', 'deploy/relay/compose.yaml image'],
@@ -49,7 +51,7 @@ for (const [path, marker] of [
   assert(result.stderr.includes(`${marker} version must match`), result.stderr);
 }));
 
-for (const name of ['app', 'hession-core', 'hession-sync', 'hession-relay']) {
+for (const name of ['app', 'hession-core', 'hession-cli', 'hession-sync', 'hession-relay']) {
   test(`release checks reject a stale ${name} lockfile entry`, () => fixture(({ read, write, check }) => {
     write('Cargo.lock', read('Cargo.lock').replace(`name = "${name}"\nversion = "0.3.0"`, `name = "${name}"\nversion = "0.2.1"`));
     const result = check('0.3.0');
