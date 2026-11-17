@@ -34,13 +34,13 @@ impl Compiler {
         match t.field.as_ref().unwrap() {
             Field::Agent => { let a=self.contains("s.family",&t.value); let b=self.contains("s.product",&t.value); format!("({a} OR {b})") },
             Field::Project => { let a=self.contains("s.project",&t.value); let b=self.contains("s.display_name",&t.value); format!("({a} OR {b})") },
-            Field::File => { let c=self.contains("f.path",&t.value); format!("EXISTS(SELECT 1 FROM file_activity f WHERE f.session_id=s.id AND {c})") },
-            Field::Tool => { let c=self.contains("t.tool_name",&t.value); format!("EXISTS(SELECT 1 FROM tool_invocation t WHERE t.session_id=s.id AND {c})") },
-            Field::Branch => { let c=self.contains("c.branch",&t.value); format!("EXISTS(SELECT 1 FROM session_context c WHERE c.session_id=s.id AND {c})") },
+            Field::File => { let c=self.contains("f.path",&t.value); format!("EXISTS(SELECT 1 FROM file_activity f INDEXED BY file_session_idx WHERE f.session_id=s.id AND {c})") },
+            Field::Tool => { let c=self.contains("t.tool_name",&t.value); format!("EXISTS(SELECT 1 FROM tool_invocation t INDEXED BY tool_session_idx WHERE t.session_id=s.id AND {c})") },
+            Field::Branch => { let c=self.contains("c.branch",&t.value); format!("EXISTS(SELECT 1 FROM session_context c INDEXED BY context_session_latest_idx WHERE c.session_id=s.id AND {c})") },
             Field::Host if t.value=="@local" => "s.host IS NULL".into(),
             Field::Host => { let p=self.bind(t.value.clone()); format!("s.host={p} COLLATE NOCASE") },
             Field::After|Field::Before => { let p=self.bind(t.value.clone()); let op=if t.field==Some(Field::After) { ">=" } else { "<" }; format!("julianday(s.activity_at){op}julianday({p})") },
-            Field::Errors => "EXISTS(SELECT 1 FROM tool_invocation t WHERE t.session_id=s.id AND (t.exit_code<>0 OR lower(t.status) IN ('error','failed','failure')))".into(),
+            Field::Errors => "EXISTS(SELECT 1 FROM tool_invocation t INDEXED BY tool_session_idx WHERE t.session_id=s.id AND (t.exit_code<>0 OR lower(t.status) IN ('error','failed','failure')))".into(),
         }
     }
     fn term(&mut self, t: &Term, mode: SearchMode) -> String {
@@ -54,15 +54,15 @@ impl Compiler {
             } else if self.visibility == SearchVisibility::Conversation {
                 let p = self.bind(t.value.clone());
                 let literal = i32::from(query::is_literal(&t.value));
-                format!("h{index} AS MATERIALIZED (SELECT e.id,e.session_id,-0.000001 AS rank FROM scoped s JOIN entry e ON e.session_id=s.id WHERE {} AND EXISTS(SELECT 1 FROM content_part p WHERE p.entry_id=e.id AND p.kind='text' AND _hession_visible_match_v1(p.text,{p},{literal})))",visible_entry_predicate())
+                format!("h{index} AS MATERIALIZED (SELECT _hession_hit_budget_v1(e.id) AS id,e.session_id,-0.000001 AS rank FROM scoped s CROSS JOIN entry e INDEXED BY entry_session_order_idx ON e.session_id=s.id WHERE {} AND EXISTS(SELECT 1 FROM content_part p INDEXED BY sqlite_autoindex_content_part_1 WHERE p.entry_id=e.id AND p.kind='text' AND _hession_visible_match_v1(CASE WHEN e.session_id IN(SELECT id FROM scoped) THEN CASE WHEN {} THEN CASE WHEN p.kind='text' THEN p.text END END END,{p},{literal})))",visible_entry_predicate(),visible_entry_predicate())
             } else if query::is_literal(&t.value) {
                 let p = self.bind(t.value.clone());
-                format!("h{index} AS MATERIALIZED (SELECT e.id,e.session_id,-0.000001 AS rank FROM scoped s JOIN entry e ON e.session_id=s.id WHERE _hession_visible_match_v1(e.search_text,{p},1)>0)")
+                format!("h{index} AS MATERIALIZED (SELECT _hession_hit_budget_v1(e.id) AS id,e.session_id,-0.000001 AS rank FROM scoped s CROSS JOIN entry e INDEXED BY entry_session_order_idx ON e.session_id=s.id WHERE _hession_visible_match_v1(CASE WHEN e.session_id IN(SELECT id FROM scoped) THEN e.search_text END,{p},1)>0)")
             } else {
                 let p = self.bind(query::fts_literal(&t.value));
                 // FTS reads its index first; rowid scope is checked before any
                 // content-table payload is selected by this service.
-                format!("h{index} AS MATERIALIZED (SELECT e.id,e.session_id,bm25(entry_fts) AS rank FROM entry_fts JOIN entry e ON e.id=entry_fts.rowid JOIN scoped s ON s.id=e.session_id WHERE entry_fts MATCH {p})")
+                format!("h{index} AS MATERIALIZED (SELECT _hession_hit_budget_v1(e.id) AS id,e.session_id,bm25(entry_fts) AS rank FROM entry_fts JOIN entry e ON e.id=entry_fts.rowid JOIN scoped s ON s.id=e.session_id WHERE entry_fts MATCH {p})")
             };
             self.ctes.push(cte);
             if !t.excluded {
@@ -84,7 +84,7 @@ impl Compiler {
                 let display = self.contains("s.display_name", &t.value);
                 let family = self.contains("s.family", &t.value);
                 let file = self.contains("f.path", &t.value);
-                format!("({entry_match} OR {title} OR {project} OR {display} OR {family} OR EXISTS(SELECT 1 FROM file_activity f WHERE f.session_id=s.id AND {file}))")
+                format!("({entry_match} OR {title} OR {project} OR {display} OR {family} OR EXISTS(SELECT 1 FROM file_activity f INDEXED BY file_session_idx WHERE f.session_id=s.id AND {file}))")
             }
         };
         if t.excluded {
@@ -113,15 +113,15 @@ impl Compiler {
         if !f.branch.is_empty() {
             let c = self.contains("c.branch", &f.branch);
             out.push(format!(
-                "EXISTS(SELECT 1 FROM session_context c WHERE c.session_id=s.id AND {c})"
+                "EXISTS(SELECT 1 FROM session_context c INDEXED BY context_session_latest_idx WHERE c.session_id=s.id AND {c})"
             ));
         }
-        for (values,sql) in [(&f.models,"SELECT 1 FROM session_context c JOIN model m ON m.id=c.model_id WHERE c.session_id=s.id AND m.model_key"),(&f.tools,"SELECT 1 FROM tool_invocation t WHERE t.session_id=s.id AND t.tool_name")] {
+        for (values,sql) in [(&f.models,"SELECT 1 FROM session_context c INDEXED BY context_session_latest_idx JOIN model m ON m.id=c.model_id WHERE c.session_id=s.id AND m.model_key"),(&f.tools,"SELECT 1 FROM tool_invocation t INDEXED BY tool_session_idx WHERE t.session_id=s.id AND t.tool_name")] {
             if !values.is_empty() { let ps=values.iter().map(|v|self.bind(v.clone())).collect::<Vec<_>>().join(",");out.push(format!("EXISTS({sql} IN({ps}))")); }
         }
         for tag in &f.tags {
             let p = self.bind(tag.clone());
-            out.push(format!("EXISTS(SELECT 1 FROM session_tag t WHERE t.session_id=s.id AND t.label={p} COLLATE NOCASE)"));
+            out.push(format!("EXISTS(SELECT 1 FROM session_tag t NOT INDEXED WHERE t.session_id=s.id AND CASE WHEN t.session_id=s.id THEN t.label END={p} COLLATE NOCASE)"));
         }
         if f.starred {
             out.push("EXISTS(SELECT 1 FROM session_annotation n WHERE n.session_id=s.id AND n.starred=1)".into());
@@ -143,6 +143,10 @@ pub(super) fn execute(
     q: &Query,
     offset: u64,
 ) -> Result<Vec<SearchResult>, SearchError> {
+    if r.mode == SearchMode::Messages {
+        bounds::check_message_window(offset, r.limit)?;
+    }
+    bounds::register_hit_budget(conn)?;
     let mut c = Compiler {
         visibility: r.visibility,
         params: Vec::new(),
@@ -164,7 +168,7 @@ pub(super) fn execute(
     } else {
         "1".into()
     };
-    c.ctes.push(format!("scoped AS MATERIALIZED (SELECT s.id,s.workspace_id,s.title,s.host,coalesce(s.last_event_at,s.started_at) AS activity_at,a.family,a.product,w.path AS project,w.display_name FROM session s JOIN agent a ON a.id=s.agent_id LEFT JOIN workspace w ON w.id=s.workspace_id WHERE {scope_sql})"));
+    c.ctes.push(format!("scoped AS MATERIALIZED (SELECT s.id,s.workspace_id,s.title,s.host,coalesce(s.last_event_at,s.started_at) AS activity_at,a.family,a.product,w.path AS project,w.display_name FROM session s NOT INDEXED JOIN agent a ON a.id=s.agent_id LEFT JOIN workspace w ON w.id=s.workspace_id WHERE {scope_sql})"));
     let alternatives = q
         .alternatives
         .iter()
@@ -185,7 +189,7 @@ pub(super) fn execute(
     predicates.push(format!("({alternatives})"));
     if r.mode == SearchMode::Messages && r.visibility == SearchVisibility::Conversation {
         predicates.push(format!(
-            "{} AND EXISTS(SELECT 1 FROM content_part p WHERE p.entry_id=e.id AND p.kind='text')",
+            "{} AND EXISTS(SELECT 1 FROM content_part p INDEXED BY sqlite_autoindex_content_part_1 WHERE p.entry_id=e.id AND p.kind='text')",
             visible_entry_predicate()
         ));
     }
@@ -209,20 +213,22 @@ pub(super) fn execute(
         let title = c.contains("s.title", &term.value);
         score_parts.push(format!("CASE WHEN {title} THEN -0.000004 ELSE 0 END"));
         let p = c.bind(term.value.clone());
-        score_parts.push(format!("CASE WHEN EXISTS(SELECT 1 FROM file_activity f WHERE f.session_id=s.id AND f.path={p} COLLATE NOCASE) THEN -0.000008 ELSE 0 END"));
+        score_parts.push(format!("CASE WHEN EXISTS(SELECT 1 FROM file_activity f INDEXED BY file_session_idx WHERE f.session_id=s.id AND f.path={p} COLLATE NOCASE) THEN -0.000008 ELSE 0 END"));
         metadata_locations.push(("title", title));
         let project = c.contains("s.project", &term.value);
         metadata_locations.push(("project", project));
         let file = c.contains("f.path", &term.value);
         metadata_locations.push((
             "file",
-            format!("EXISTS(SELECT 1 FROM file_activity f WHERE f.session_id=s.id AND {file})"),
+            format!("EXISTS(SELECT 1 FROM file_activity f INDEXED BY file_session_idx WHERE f.session_id=s.id AND {file})"),
         ));
-        hit_unions.push(format!("SELECT id,session_id,rank FROM h{index}"));
+        hit_unions.push(format!(
+            "SELECT _hession_hit_budget_v1(id) AS id,session_id,rank FROM h{index}"
+        ));
     }
     let (join, entry_select) = if r.mode == SearchMode::Messages {
         (
-            "JOIN entry e ON e.session_id=s.id".to_owned(),
+            "JOIN entry e INDEXED BY entry_session_order_idx ON e.session_id=s.id".to_owned(),
             "e.id AS entry_id,e.ordinal".to_owned(),
         )
     } else if !hit_unions.is_empty() {
@@ -292,7 +298,8 @@ pub(super) fn execute(
         };
         format!("WITH {} SELECT {metadata},{entry_select},s.score,s.locations{entry_location} FROM ranked s {join} ORDER BY s.score ASC,julianday(s.activity_at) DESC,s.id DESC,ordinal ASC,entry_id ASC",c.ctes.join(","))
     } else {
-        format!("WITH {} SELECT {metadata},{entry_select},({score}) AS score,({locations}) AS locations FROM scoped s {join} WHERE {} ORDER BY score ASC,julianday(s.activity_at) DESC,s.id DESC,ordinal ASC,entry_id ASC LIMIT {limit} OFFSET {offset}",c.ctes.join(","),predicates.join(" AND "))
+        c.ctes.push(format!("ranked_messages AS MATERIALIZED (SELECT s.id AS session_id,e.id AS entry_id,e.ordinal,({score}) AS score,julianday(s.activity_at) AS activity_sort FROM scoped s {join} WHERE {} ORDER BY score ASC,activity_sort DESC,s.id DESC,e.ordinal ASC,e.id ASC LIMIT {limit} OFFSET {offset})",predicates.join(" AND ")));
+        format!("WITH {} SELECT {metadata},{entry_select},ranked.score,({locations}) AS locations FROM ranked_messages ranked JOIN scoped s ON s.id=ranked.session_id JOIN entry e ON e.id=ranked.entry_id ORDER BY ranked.score ASC,ranked.activity_sort DESC,s.id DESC,e.ordinal ASC,e.id ASC",c.ctes.join(","))
     };
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(c.params.iter()), |row| {
@@ -331,7 +338,7 @@ pub(super) fn execute(
                 [result.session_id],
                 |r| r.get::<_, bool>(0),
             )?;
-            let mut statement=conn.prepare("SELECT substr(label,1,80) FROM session_tag WHERE session_id=? ORDER BY label COLLATE NOCASE LIMIT 50")?;
+            let mut statement=conn.prepare("SELECT substr(CASE WHEN session_id=?1 THEN label END,1,80) FROM session_tag NOT INDEXED WHERE session_id=?1 ORDER BY CASE WHEN session_id=?1 THEN label END COLLATE NOCASE LIMIT 50")?;
             let tags = statement
                 .query_map([result.session_id], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -355,8 +362,11 @@ pub(super) fn execute(
                 for (_, term) in &c.positives {
                     let literal = i32::from(query::is_literal(&term.value));
                     let sql=match r.visibility {
-                        SearchVisibility::AllIndexedText=>"SELECT substr(e.search_text,max(1,_hession_visible_match_v1(e.search_text,?2,?3)-120),480) FROM entry e WHERE e.id=?1 AND e.session_id=?4 AND _hession_visible_match_v1(e.search_text,?2,?3)>0".to_owned(),
-                        SearchVisibility::Conversation=>format!("SELECT substr(p.text,max(1,_hession_visible_match_v1(p.text,?2,?3)-120),480) FROM entry e JOIN content_part p ON p.entry_id=e.id WHERE e.id=?1 AND e.session_id=?4 AND {} AND p.kind='text' AND _hession_visible_match_v1(p.text,?2,?3)>0 ORDER BY p.ordinal LIMIT 1",visible_entry_predicate()),
+                        SearchVisibility::AllIndexedText=>"SELECT substr(CASE WHEN e.id=?1 AND e.session_id=?4 THEN e.search_text END,max(1,_hession_visible_match_v1(CASE WHEN e.id=?1 AND e.session_id=?4 THEN e.search_text END,?2,?3)-120),480) FROM entry e WHERE e.id=?1 AND e.session_id=?4 AND _hession_visible_match_v1(CASE WHEN e.id=?1 AND e.session_id=?4 THEN e.search_text END,?2,?3)>0".to_owned(),
+                        SearchVisibility::Conversation=>{
+                            let text=format!("CASE WHEN e.id=?1 AND e.session_id=?4 THEN CASE WHEN {} THEN CASE WHEN p.kind='text' THEN p.text END END END",visible_entry_predicate());
+                            format!("SELECT substr({text},max(1,_hession_visible_match_v1({text},?2,?3)-120),480) FROM entry e JOIN content_part p INDEXED BY sqlite_autoindex_content_part_1 ON p.entry_id=e.id WHERE e.id=?1 AND e.session_id=?4 AND {} AND p.kind='text' AND _hession_visible_match_v1({text},?2,?3)>0 ORDER BY p.ordinal LIMIT 1",visible_entry_predicate())
+                        },
                         SearchVisibility::MetadataOnly=>unreachable!(),
                     };
                     let excerpt: Option<String> = conn

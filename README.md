@@ -31,13 +31,14 @@ sync, continuation, and saved data. Update through **Settings → About → Chec
 updates → Download and install → Restart Hession**.
 In-app downloads are signature-verified. Linux system packages may request
 administrator authorization. Your library is kept when updating or uninstalling.
-Installer options: `--appimage`, `--version v0.4.0`, `--force`, `--uninstall`,
+Installer options: `--appimage`, `--version v0.5.0`, `--force`, `--uninstall`,
 `--help`; pass them after `sh -s --`.
 
 ## Start here
 
-1. Open Hession to import local agent histories. **Refresh histories** imports
-   changes; its menu controls startup refresh and full rescans.
+1. Open Hession to index local agent histories and their changes. **Refresh
+   histories** also imports SSH copies; its menu offers full rescans. Configure
+   startup refresh under **Settings → History refresh**.
 2. Add an SSH machine with **+** beside **Hosts**, then refresh. SSH must work
    without password prompts, and `rsync` must be installed on both machines.
 3. Search or filter sessions, read the conversation or full log, and use
@@ -47,12 +48,18 @@ Supported histories: Claude Code, Codex, OpenCode, Cline, Pi, Command Code,
 Muse, Hermes Agent, and Antigravity. Stars, tags, Markdown/JSON export, token
 and cost analytics, appearance options, and terminal preferences are included.
 
-## New in 0.4.0
+## New in 0.5.0
 
-One **Settings** window brings preferences, remote hosts, saved data, and
-**About** together. Check for updates and restart to apply them from About;
-the Settings button keeps update progress visible. Section changes preserve
-unfinished edits, and saves and backup operations finish before you can leave.
+- Automatic local indexing with pause, recovery and health controls; **Live**
+  follows recorded events while preserving your reading position.
+- Developer search supports AND, OR, phrases, exclusions and typed filters, with
+  matching-message excerpts and precise transcript jumps. Legacy search remains.
+- **Files and Git** connects recorded projects and paths to source events, with
+  explicit Git inspection and separate reported intent/observed-change labels.
+- Preview portable project ZIPs with privacy options, redaction and checksums.
+- Open commands, sessions and workspaces with **Cmd/Ctrl+K** and keyboard shortcuts.
+- Use [terminal commands and scoped read-only MCP](docs/user-guide.md#terminal-commands-and-read-only-mcp)
+  without opening a desktop window.
 
 ## Optional features
 
@@ -76,7 +83,7 @@ from models.dev and update checks/downloads from GitHub are user-initiated.
 Private sync encrypts selected history before sending it to your relay.
 Continuation prepares context locally; the destination harness may send that
 context to its normal model provider. Local libraries, handoff files, and ordinary
-backups contain plaintext. See [security and limits](docs/sync-security.md).
+backups and project ZIPs contain plaintext. Review archive previews before sharing. See [security and limits](docs/sync-security.md).
 
 ## Guides
 

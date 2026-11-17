@@ -247,24 +247,17 @@ impl ScopedReader {
             cursor: request.cursor.clone(),
         }
         .validate()?;
-        let parsed = search::query::parse(&request.query).map_err(search::SearchError::from)?;
-        let has_text = parsed
-            .alternatives
-            .iter()
-            .flatten()
-            .any(|term| term.field.is_none());
         let mut request = request.clone();
         request.visibility = if self.expose_conversation {
             SearchVisibility::Conversation
         } else {
             SearchVisibility::MetadataOnly
         };
+        // The shared checker already guards authorized metadata/text cells and
+        // actual materialization. Repeating broad preflights can create unsafe
+        // covering indexes and duplicate full-scope scans before that fence.
         self.snapshot(cancel, |tx, _| {
-            metadata_budget(tx, &self.ids()?)?;
-            if self.expose_conversation && has_text {
-                visible_text_budget(tx, &self.ids()?)?;
-            }
-            Ok(search::search_snapshot(tx, &request, &self.scope)?)
+            search::search_snapshot(tx, &request, &self.scope).map_err(search_error)
         })
     }
     /// Explicit local CLI indexed-text policy; MCP must only call `search`.
@@ -278,20 +271,10 @@ impl ScopedReader {
             cursor: request.cursor.clone(),
         }
         .validate()?;
-        let parsed = search::query::parse(&request.query).map_err(search::SearchError::from)?;
-        let has_text = parsed
-            .alternatives
-            .iter()
-            .flatten()
-            .any(|term| term.field.is_none());
         let mut request = request.clone();
         request.visibility = SearchVisibility::AllIndexedText;
         self.snapshot(cancel, |tx, _| {
-            metadata_budget(tx, &self.ids()?)?;
-            if has_text {
-                indexed_text_budget(tx, &self.ids()?)?;
-            }
-            Ok(search::search_snapshot(tx, &request, &self.scope)?)
+            search::search_snapshot(tx, &request, &self.scope).map_err(search_error)
         })
     }
     pub fn identity(&self) -> &str {
@@ -322,12 +305,12 @@ impl ScopedReader {
             let fingerprint=self.fingerprint("session",&(id,page.limit))?;
             let offset=decode_cursor(page,&fingerprint,revision)?;
             let kinds=visible_kinds();
-            let sql=format!("SELECT e.id,e.ordinal,e.role FROM entry e JOIN session s ON s.id=e.session_id WHERE s.id=?1 AND (?2='null' OR s.workspace_id IN(SELECT value FROM json_each(?2))) AND CASE WHEN octet_length(e.role)<=32 THEN e.role END IN('user','assistant') AND CASE WHEN octet_length(e.kind)<=128 THEN e.kind END IN({kinds}) AND EXISTS(SELECT 1 FROM content_part p WHERE p.entry_id=e.id AND CASE WHEN octet_length(p.kind)<=128 THEN p.kind END='text' AND p.text IS NOT NULL) ORDER BY e.ordinal,e.id LIMIT ?3 OFFSET ?4");
+            let sql=format!("SELECT e.id,e.ordinal,e.role FROM session s CROSS JOIN entry e INDEXED BY entry_session_order_idx ON e.session_id=s.id WHERE s.id=?1 AND (?2='null' OR s.workspace_id IN(SELECT value FROM json_each(?2))) AND CASE WHEN octet_length(e.role)<=32 THEN e.role END IN('user','assistant') AND CASE WHEN octet_length(e.kind)<=128 THEN e.kind END IN({kinds}) AND EXISTS(SELECT 1 FROM content_part p INDEXED BY sqlite_autoindex_content_part_1 WHERE p.entry_id=e.id AND CASE WHEN octet_length(p.kind)<=128 THEN p.kind END='text' AND p.text IS NOT NULL) ORDER BY e.ordinal,e.id LIMIT ?3 OFFSET ?4");
             let mut stmt=tx.prepare(&sql)?;
             let rows=stmt.query_map(params![id,ids,i64::from(page.limit)+1,offset as i64],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
             let more=rows.len()>page.limit as usize;let mut entries=Vec::new();
             for (entry_id,ordinal,role) in rows.into_iter().take(page.limit as usize){
-                let sql=format!("SELECT p.id FROM content_part p JOIN entry e ON e.id=p.entry_id JOIN session s ON s.id=e.session_id WHERE e.id=?1 AND s.id=?2 AND (?3='null' OR s.workspace_id IN(SELECT value FROM json_each(?3))) AND CASE WHEN octet_length(e.role)<=32 THEN e.role END IN('user','assistant') AND CASE WHEN octet_length(e.kind)<=128 THEN e.kind END IN({kinds}) AND CASE WHEN octet_length(p.kind)<=128 THEN p.kind END='text' AND p.text IS NOT NULL ORDER BY p.ordinal LIMIT 16");
+                let sql=format!("SELECT p.id FROM content_part p INDEXED BY sqlite_autoindex_content_part_1 JOIN entry e ON e.id=p.entry_id JOIN session s ON s.id=e.session_id WHERE e.id=?1 AND s.id=?2 AND (?3='null' OR s.workspace_id IN(SELECT value FROM json_each(?3))) AND CASE WHEN octet_length(e.role)<=32 THEN e.role END IN('user','assistant') AND CASE WHEN octet_length(e.kind)<=128 THEN e.kind END IN({kinds}) AND CASE WHEN octet_length(p.kind)<=128 THEN p.kind END='text' AND p.text IS NOT NULL ORDER BY p.ordinal LIMIT 16");
                 let mut parts=tx.prepare(&sql)?;let mut text=String::new();let mut length=0;
                 for part in parts.query_map(params![entry_id,id,ids],|r|r.get::<_,i64>(0))?{
                     let mut blob=tx.blob_open("main","content_part","text",part?,true)?;
@@ -353,7 +336,7 @@ impl ScopedReader {
         self.snapshot(cancel,|tx,revision|{
             let ids=self.ids()?;metadata(tx,id,&ids)?;
             let fingerprint=self.fingerprint("tools",&(id,page.limit))?;let offset=decode_cursor(page,&fingerprint,revision)?;
-            let mut stmt=tx.prepare("SELECT t.id,e.id,CASE WHEN octet_length(t.tool_name)<=65536 THEN substr(t.tool_name,1,128) ELSE '[metadata exceeds limit]' END,CASE WHEN octet_length(t.status)<=65536 THEN substr(t.status,1,64) ELSE '[metadata exceeds limit]' END,t.exit_code,CASE WHEN octet_length(t.started_at)<=65536 THEN substr(t.started_at,1,64) ELSE '[metadata exceeds limit]' END,CASE WHEN octet_length(t.ended_at)<=65536 THEN substr(t.ended_at,1,64) ELSE '[metadata exceeds limit]' END,t.duration_ms FROM tool_invocation t JOIN session s ON s.id=t.session_id LEFT JOIN entry e ON e.id=t.entry_id AND e.session_id=t.session_id WHERE s.id=?1 AND (?2='null' OR s.workspace_id IN(SELECT value FROM json_each(?2))) ORDER BY t.id LIMIT ?3 OFFSET ?4")?;
+            let mut stmt=tx.prepare("SELECT t.id,e.id,CASE WHEN octet_length(t.tool_name)<=65536 THEN substr(t.tool_name,1,128) ELSE '[metadata exceeds limit]' END,CASE WHEN octet_length(t.status)<=65536 THEN substr(t.status,1,64) ELSE '[metadata exceeds limit]' END,t.exit_code,CASE WHEN octet_length(t.started_at)<=65536 THEN substr(t.started_at,1,64) ELSE '[metadata exceeds limit]' END,CASE WHEN octet_length(t.ended_at)<=65536 THEN substr(t.ended_at,1,64) ELSE '[metadata exceeds limit]' END,t.duration_ms FROM session s CROSS JOIN tool_invocation t INDEXED BY tool_session_idx ON t.session_id=s.id LEFT JOIN entry e ON e.id=t.entry_id AND e.session_id=t.session_id WHERE s.id=?1 AND (?2='null' OR s.workspace_id IN(SELECT value FROM json_each(?2))) ORDER BY t.id LIMIT ?3 OFFSET ?4")?;
             let mut rows=stmt.query_map(params![id,ids,i64::from(page.limit)+1,offset as i64],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"entryId":r.get::<_,Option<i64>>(1)?,"name":r.get::<_,String>(2)?,"status":r.get::<_,Option<String>>(3)?,"exitCode":r.get::<_,Option<i64>>(4)?,"startedAt":r.get::<_,Option<String>>(5)?,"endedAt":r.get::<_,Option<String>>(6)?,"durationMs":r.get::<_,Option<i64>>(7)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
             let more=rows.len()>page.limit as usize;if more{rows.pop();}let next=encode_cursor(more,offset+rows.len() as u64,fingerprint,revision)?;
             Ok(json!({"sessionId":id,"revision":revision,"tools":rows,"nextCursor":next,"accessLimited":true,"notice":"Tool names and recorded status only; raw inputs, commands, outputs and payloads are excluded."}))
@@ -366,11 +349,10 @@ impl ScopedReader {
     ) -> Result<Value, ReadError> {
         page.validate()?;
         self.snapshot(cancel,|tx,revision|{
-            metadata_budget(tx,&self.ids()?)?;
             let fingerprint=self.fingerprint("projects",&page.limit)?;let offset=decode_cursor(page,&fingerprint,revision)?;
             let ids=self.ids()?;let mut stmt=tx.prepare("SELECT w.id FROM workspace w WHERE (?1='null' OR w.id IN(SELECT value FROM json_each(?1))) ORDER BY w.id LIMIT ?2 OFFSET ?3")?;
             let rows=stmt.query_map(params![ids,i64::from(page.limit)+1,offset as i64],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;let more=rows.len()>page.limit as usize;
-            let projects=rows.into_iter().take(page.limit as usize).map(|id|projects::project_on_connection(tx,id,&self.scope).map_err(ReadError::from)).collect::<Result<Vec<_>,_>>()?;
+            let projects=rows.into_iter().take(page.limit as usize).map(|id|projects::project_on_connection(tx,id,&self.scope).map_err(project_error)).collect::<Result<Vec<_>,_>>()?;
             let next=encode_cursor(more,offset+projects.len() as u64,fingerprint,revision)?;
             Ok(json!({"revision":revision,"projects":projects,"nextCursor":next}))
         })
@@ -381,11 +363,7 @@ impl ScopedReader {
             if !self.scope.allows_workspace(id) {
                 return Err(ReadError::OutsideScope);
             }
-            metadata_budget(
-                tx,
-                &serde_json::to_string(&Some(vec![id])).map_err(|_| ReadError::DataTooLarge)?,
-            )?;
-            Ok(projects::project_on_connection(tx, id, &self.scope)?)
+            projects::project_on_connection(tx, id, &self.scope).map_err(project_error)
         })
     }
     pub fn project_activity(
@@ -404,14 +382,14 @@ impl ScopedReader {
             let fingerprint = self.fingerprint("activity", &(id, path, page.limit))?;
             let offset = decode_cursor(page, &fingerprint, revision)?;
             if !self.scope.allows_workspace(id){return Err(ReadError::OutsideScope);}
-            metadata_budget(tx,&serde_json::to_string(&Some(vec![id])).map_err(|_|ReadError::DataTooLarge)?)?;
-            let project=projects::project_on_connection(tx,id,&self.scope)?;
+            let project=projects::project_on_connection(tx,id,&self.scope).map_err(project_error)?;
+            projects::check_file_metadata(tx,id,&self.scope).map_err(project_error)?;
             // Select the permission-safe fields in SQL. Never fetch evidence,
             // native cwd/source strings or tool bodies merely to discard them.
             let mut stmt=tx.prepare("SELECT f.id,f.session_id,e.id,e.ordinal,t.id,f.path,
                 CASE WHEN f.action='read' THEN 'reported_read' WHEN f.action IN('write','edit','patch','delete','create','rename') THEN 'reported_write_intent' ELSE 'reported_reference' END,
                 substr(e.occurred_at,1,128),CASE WHEN octet_length(a.family)<=65536 THEN substr(a.family,1,128) ELSE '[metadata exceeds limit]' END
-                FROM file_activity f JOIN session s ON s.id=f.session_id JOIN agent a ON a.id=s.agent_id
+                FROM session s NOT INDEXED CROSS JOIN file_activity f INDEXED BY file_session_idx ON f.session_id=s.id JOIN agent a ON a.id=s.agent_id
                 LEFT JOIN entry e ON e.id=f.entry_id AND e.session_id=f.session_id
                 LEFT JOIN tool_invocation t ON t.id=f.tool_invocation_id AND t.session_id=f.session_id
                 WHERE s.workspace_id=?1 AND (?2 IS NULL OR f.path=?2)
@@ -443,10 +421,6 @@ impl ScopedReader {
             if !self.scope.allows_workspace(id) {
                 return Err(ReadError::OutsideScope);
             }
-            metadata_budget(
-                tx,
-                &serde_json::to_string(&Some(vec![id])).map_err(|_| ReadError::DataTooLarge)?,
-            )?;
             let result = projects::files_on_connection(
                 tx,
                 id,
@@ -456,7 +430,8 @@ impl ScopedReader {
                     offset,
                 },
                 filter,
-            )?;
+            )
+            .map_err(project_error)?;
             let next = encode_cursor(
                 result.has_more,
                 result.next_offset.unwrap_or(offset),
@@ -570,39 +545,17 @@ fn is_interrupted(error: &ReadError) -> bool {
     matches!(sql,Some(rusqlite::Error::SqliteFailure(code,message)) if code.code==rusqlite::ErrorCode::OperationInterrupted || message.as_deref().is_some_and(|m|m.contains("HESSION_SEARCH_TIME_BUDGET")))
 }
 
-/// Bound inputs to the shared metadata compiler before it materializes its CTE.
-/// All identifiers are application constants, and scope is bound independently.
-fn metadata_budget(conn: &Connection, ids: &str) -> Result<(), ReadError> {
-    let mut total = 0_i64;
-    for (from,columns) in [
-        ("session s JOIN agent a ON a.id=s.agent_id LEFT JOIN workspace w ON w.id=s.workspace_id","s.title,s.host,s.started_at,s.last_event_at,s.source_uri,a.family,a.product,w.path,w.display_name"),
-        ("workspace w LEFT JOIN session s ON s.workspace_id=w.id","w.path,w.display_name"),
-        ("file_activity f JOIN session s ON s.id=f.session_id","f.path,f.action"),
-        ("entry e JOIN session s ON s.id=e.session_id","e.kind,e.role,e.occurred_at"),
-        ("tool_invocation t JOIN session s ON s.id=t.session_id","t.tool_name,t.status,t.started_at,t.ended_at"),
-        ("session_context c JOIN session s ON s.id=c.session_id LEFT JOIN model m ON m.id=c.model_id","c.branch,m.model_key"),
-        ("session_tag t JOIN session s ON s.id=t.session_id","t.label"),
-    ]{
-        let bytes=columns.split(',').map(|c|format!("coalesce(octet_length({c}),0)")).collect::<Vec<_>>().join("+");
-        let scope=if from.starts_with("workspace "){"w.id"}else{"s.workspace_id"};
-        let sql=format!("SELECT coalesce(sum({bytes}),0),coalesce(max({bytes}),0) FROM {from} WHERE (?1='null' OR {scope} IN(SELECT value FROM json_each(?1)))");
-        let (sum,max):(i64,i64)=conn.query_row(&sql,[ids],|r|Ok((r.get(0)?,r.get(1)?)))?;
-        total=total.saturating_add(sum);if max>65536||total>16*1024*1024{return Err(ReadError::DataTooLarge);}
+fn search_error(error: search::SearchError) -> ReadError {
+    match error {
+        search::SearchError::InputTooLarge => ReadError::DataTooLarge,
+        error => ReadError::Search(error),
     }
-    Ok(())
 }
-fn visible_text_budget(conn: &Connection, ids: &str) -> Result<(), ReadError> {
-    let sql=format!("SELECT EXISTS(SELECT 1 FROM content_part p JOIN entry e ON e.id=p.entry_id JOIN session s ON s.id=e.session_id WHERE (?1='null' OR s.workspace_id IN(SELECT value FROM json_each(?1))) AND e.role IN('user','assistant') AND e.kind IN({}) AND p.kind='text' AND octet_length(p.text)>1048576)",visible_kinds());
-    if conn.query_row(&sql, [ids], |r| r.get::<_, bool>(0))? {
-        return Err(ReadError::DataTooLarge);
+fn project_error(error: ProjectError) -> ReadError {
+    match error {
+        ProjectError::Service(crate::service::ServiceError::ResponseTooLarge) => {
+            ReadError::DataTooLarge
+        }
+        error => ReadError::Project(error),
     }
-    Ok(())
-}
-
-fn indexed_text_budget(conn: &Connection, ids: &str) -> Result<(), ReadError> {
-    let oversized:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM entry e JOIN session s ON s.id=e.session_id WHERE (?1='null' OR s.workspace_id IN(SELECT value FROM json_each(?1))) AND octet_length(e.search_text)>1048576)",[ids],|r|r.get(0))?;
-    if oversized {
-        return Err(ReadError::DataTooLarge);
-    }
-    Ok(())
 }

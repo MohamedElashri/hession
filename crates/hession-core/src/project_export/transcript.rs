@@ -5,6 +5,59 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 
+/// Fixed schema expressions only; callers cannot select identifiers or limits.
+/// The direct-column octet_length check is lazy before any TEXT read/substring.
+#[derive(Clone, Copy)]
+pub(super) enum Metadata {
+    Family,
+    Product,
+    PortableId,
+    CallId,
+    ToolName,
+    Status,
+    Tag,
+    Branch,
+    EntryKind,
+    Role,
+    Occurred,
+    PartKind,
+    Action,
+    Evidence,
+    Observed,
+    EntryOrdinal,
+    PartOrdinal,
+    ExitCode,
+    FileToolId,
+    RepositoryId,
+}
+impl Metadata {
+    pub(super) fn sql(self) -> String {
+        let (column, limit) = match self {
+            Self::Family => ("a.family", 1024),
+            Self::Product => ("a.product", 1024),
+            Self::PortableId => ("portable_id", 4096),
+            Self::CallId => ("t.call_id", 4096),
+            Self::ToolName => ("t.tool_name", 1024),
+            Self::Status => ("t.status", 128),
+            Self::Tag => ("label", 1024),
+            Self::Branch => ("branch", 4096),
+            Self::EntryKind => ("e.kind", 128),
+            Self::Role => ("e.role", 128),
+            Self::Occurred => ("e.occurred_at", 128),
+            Self::PartKind => ("p.kind", 128),
+            Self::Action => ("f.action", 128),
+            Self::Evidence => ("f.evidence", 512),
+            Self::Observed => ("c.observed_at", 128),
+            Self::EntryOrdinal => ("e.ordinal", 128),
+            Self::PartOrdinal => ("p.ordinal", 128),
+            Self::ExitCode => ("t.exit_code", 128),
+            Self::FileToolId => ("f.tool_invocation_id", 128),
+            Self::RepositoryId => ("c.repository_id", 128),
+        };
+        format!("CASE WHEN coalesce(octet_length({column}),0)<={limit} THEN {column} ELSE _hession_export_metadata_limit_v1() END")
+    }
+}
+
 pub(super) fn digest(parts: &[&[u8]]) -> String {
     let mut hash = Sha256::new();
     for part in parts {
@@ -69,7 +122,16 @@ pub(super) fn logical_id(work: &Work<'_>, id: i64) -> Result<(String, &'static s
     } else {
         let existing:bool=work.conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='replication_identity')",[],|r|r.get(0))?;
         let mapped = if existing {
-            work.conn.query_row("SELECT substr(portable_id,1,4097) FROM replication_identity WHERE local_session_id=? LIMIT 1",[id],|r|r.get::<_,String>(0)).optional()?
+            work.conn
+                .query_row(
+                    &format!(
+                        "SELECT {} FROM replication_identity WHERE local_session_id=? LIMIT 1",
+                        Metadata::PortableId.sql()
+                    ),
+                    [id],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?
         } else {
             None
         };
@@ -87,7 +149,14 @@ pub(super) fn logical_id(work: &Work<'_>, id: i64) -> Result<(String, &'static s
         )?
         .filter(|s| !s.is_empty())
         {
-            let family=work.conn.query_row("SELECT substr(a.family,1,1025) FROM session s JOIN agent a ON a.id=s.agent_id WHERE s.id=?",[id],|r|r.get::<_,String>(0))?;
+            let family = work.conn.query_row(
+                &format!(
+                    "SELECT {} FROM session s CROSS JOIN agent a ON a.id=s.agent_id WHERE s.id=?",
+                    Metadata::Family.sql()
+                ),
+                [id],
+                |r| r.get::<_, String>(0),
+            )?;
             let started = cell(work, "session", "started_at", id, 4096)?.unwrap_or_default();
             digest(&[
                 b"hession-session-v1",
@@ -117,7 +186,7 @@ pub(super) fn tool_id(
     session_id: i64,
     id: i64,
 ) -> Result<Option<String>, ExportError> {
-    let row=conn.query_row("SELECT substr(coalesce(t.call_id,''),1,4097),coalesce(e.ordinal,-1),substr(t.tool_name,1,1025),(SELECT count(*) FROM tool_invocation other WHERE other.session_id=t.session_id AND other.entry_id IS t.entry_id AND other.id<t.id) FROM tool_invocation t LEFT JOIN entry e ON e.id=t.entry_id AND e.session_id=t.session_id WHERE t.id=?1 AND t.session_id=?2",params![id,session_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?))).optional()?;
+    let row=conn.query_row(&format!("SELECT coalesce({},''),coalesce({},-1),{},(SELECT count(*) FROM tool_invocation other INDEXED BY tool_entry_idx WHERE other.session_id=t.session_id AND other.entry_id IS t.entry_id AND other.id<t.id) FROM tool_invocation t LEFT JOIN entry e ON e.id=t.entry_id AND e.session_id=t.session_id WHERE t.id=?1 AND t.session_id=?2",Metadata::CallId.sql(),Metadata::EntryOrdinal.sql(),Metadata::ToolName.sql()),params![id,session_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?))).optional()?;
     row.map(|(call, ordinal, name, rank)| {
         if call.len() > 4096 {
             return Err(ExportError::Limit("tool call identity"));
@@ -141,7 +210,7 @@ fn metadata(
     portable: &str,
     privacy: &mut Sanitizer<'_>,
 ) -> Result<Value, ExportError> {
-    let (family,product,starred):(String,String,bool)=work.conn.query_row("SELECT substr(a.family,1,1025),substr(a.product,1,1025),coalesce((SELECT starred FROM session_annotation WHERE session_id=s.id),0) FROM session s JOIN agent a ON a.id=s.agent_id WHERE s.id=?",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+    let (family,product,starred):(String,String,bool)=work.conn.query_row(&format!("SELECT {},{},coalesce((SELECT starred FROM session_annotation WHERE session_id=s.id),0) FROM session s CROSS JOIN agent a ON a.id=s.agent_id WHERE s.id=?",Metadata::Family.sql(),Metadata::Product.sql()),[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     let mut value =
         json!({"id":portable,"agent":small(family)?,"product":small(product)?,"starred":starred});
     for name in ["title", "started_at", "last_event_at"] {
@@ -149,7 +218,7 @@ fn metadata(
             .map(Value::String)
             .unwrap_or(Value::Null);
     }
-    let mut tags=work.conn.prepare("SELECT substr(label,1,1025) FROM session_tag WHERE session_id=? ORDER BY label COLLATE BINARY LIMIT 101")?;
+    let mut tags=work.conn.prepare(&format!("SELECT {} AS export_label FROM session_tag NOT INDEXED WHERE session_id=? ORDER BY export_label COLLATE BINARY LIMIT 101",Metadata::Tag.sql()))?;
     let tags = tags
         .query_map([id], |r| r.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -165,7 +234,7 @@ fn metadata(
         }
     }
     if privacy.options.include_git_metadata {
-        value["branch"]=work.conn.query_row("SELECT substr(branch,1,4097) FROM session_context WHERE session_id=? AND branch IS NOT NULL ORDER BY id DESC LIMIT 1",[id],|r|r.get::<_,String>(0)).optional()?.map(Value::String).unwrap_or(Value::Null);
+        value["branch"]=work.conn.query_row(&format!("SELECT {} FROM session_context INDEXED BY context_session_latest_idx WHERE session_id=? AND branch IS NOT NULL ORDER BY id DESC LIMIT 1",Metadata::Branch.sql()),[id],|r|r.get::<_,String>(0)).optional()?.map(Value::String).unwrap_or(Value::Null);
     }
     privacy.value(&mut value)?;
     Ok(value)
@@ -178,7 +247,7 @@ fn tool(
     privacy: &mut Sanitizer<'_>,
     remaining: &mut usize,
 ) -> Result<Value, ExportError> {
-    let (name,status,exit,ordinal):(String,Option<String>,Option<i64>,Option<i64>)=work.conn.query_row("SELECT substr(t.tool_name,1,1025),substr(t.status,1,129),t.exit_code,e.ordinal FROM tool_invocation t LEFT JOIN entry e ON e.id=t.entry_id AND e.session_id=t.session_id WHERE t.session_id=?1 AND t.id=?2",params![session_id,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+    let (name,status,exit,ordinal):(String,Option<String>,Option<i64>,Option<i64>)=work.conn.query_row(&format!("SELECT {},{},{},{} FROM tool_invocation t LEFT JOIN entry e ON e.id=t.entry_id AND e.session_id=t.session_id WHERE t.session_id=?1 AND t.id=?2",Metadata::ToolName.sql(),Metadata::Status.sql(),Metadata::ExitCode.sql(),Metadata::EntryOrdinal.sql()),params![session_id,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
     let mut value = json!({"id":tool_id(work.conn,portable,session_id,id)?,"entry_id":ordinal.map(|o|entry_id(portable,o)),"tool_name":small(name)?,"status":status,"exit_code":exit});
     privacy.value(&mut value)?;
     if privacy.options.include_tool_bodies {
@@ -227,7 +296,7 @@ pub(super) fn write_transcript(
     let mut counts = TranscriptCounts::default();
     loop {
         work.check()?;
-        let mut stmt=work.conn.prepare("SELECT id,ordinal,substr(kind,1,129),substr(role,1,129),substr(occurred_at,1,129) FROM entry WHERE session_id=?1 AND (?2 IS NULL OR ordinal>?2) ORDER BY ordinal LIMIT 50")?;
+        let mut stmt=work.conn.prepare(&format!("SELECT e.id,{},{},{},{} FROM entry e INDEXED BY entry_session_order_idx WHERE e.session_id=?1 AND (?2 IS NULL OR e.ordinal>?2) ORDER BY e.ordinal LIMIT 50",Metadata::EntryOrdinal.sql(),Metadata::EntryKind.sql(),Metadata::Role.sql(),Metadata::Occurred.sql()))?;
         let rows = stmt
             .query_map(params![session_id, after], |r| {
                 Ok((
@@ -270,7 +339,7 @@ pub(super) fn write_transcript(
             }
             let mut remaining = work.limits.max_entry_bytes;
             let mut parts = Vec::new();
-            let mut part_stmt=work.conn.prepare("SELECT id,substr(kind,1,129),ordinal FROM content_part WHERE entry_id=? ORDER BY ordinal LIMIT 1001")?;
+            let mut part_stmt=work.conn.prepare(&format!("SELECT p.id,{},{} FROM content_part p INDEXED BY sqlite_autoindex_content_part_1 WHERE p.entry_id=? ORDER BY p.ordinal LIMIT 1001",Metadata::PartKind.sql(),Metadata::PartOrdinal.sql()))?;
             let source_parts = part_stmt
                 .query_map([id], |r| {
                     Ok((
@@ -313,7 +382,7 @@ pub(super) fn write_transcript(
                 }
                 parts.push(part);
             }
-            let mut tool_stmt=work.conn.prepare("SELECT id FROM tool_invocation WHERE session_id=?1 AND entry_id=?2 ORDER BY id LIMIT 101")?;
+            let mut tool_stmt=work.conn.prepare("SELECT id FROM tool_invocation INDEXED BY tool_entry_idx WHERE session_id=?1 AND entry_id=?2 ORDER BY id LIMIT 101")?;
             let ids = tool_stmt
                 .query_map(params![session_id, id], |r| r.get::<_, i64>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -344,7 +413,7 @@ pub(super) fn write_transcript(
     let mut after = 0;
     loop {
         work.check()?;
-        let mut stmt=work.conn.prepare("SELECT id FROM tool_invocation WHERE session_id=?1 AND entry_id IS NULL AND id>?2 ORDER BY id LIMIT 100")?;
+        let mut stmt=work.conn.prepare("SELECT id FROM tool_invocation INDEXED BY tool_session_idx WHERE session_id=?1 AND entry_id IS NULL AND id>?2 ORDER BY id LIMIT 100")?;
         let ids = stmt
             .query_map(params![session_id, after], |r| r.get::<_, i64>(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -373,5 +442,44 @@ pub(super) fn write_transcript(
     Ok(counts)
 }
 pub(super) fn session_stats(conn: &Connection, id: i64) -> Result<Option<Value>, ExportError> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM session_analytics WHERE session_id=?)",
+        [id],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok(None);
+    }
+    let fields = [
+        "duration_seconds",
+        "input_tokens",
+        "output_tokens",
+        "cached_tokens",
+        "total_tokens",
+        "estimated_cost",
+        "user_turns",
+        "assistant_turns",
+        "tool_count",
+        "tool_error_count",
+    ];
+    // REAL affinity can force a TEXT load even inside typeof(column). A
+    // read-only incremental handle inspects the record type without loading
+    // the cell. TEXT/BLOB succeeds, so reject it; numeric/null is reported by
+    // SQLite's fixed builtin diagnostic. Propagate every other database error.
+    // The caller holds one read snapshot across these probes and the SELECT.
+    for field in fields {
+        match conn.blob_open("main", "session_analytics", field, id, true) {
+            Ok(_) => return Err(ExportError::Limit("metadata bytes")),
+            Err(rusqlite::Error::SqliteFailure(error, Some(message)))
+                if error.extended_code == rusqlite::ffi::SQLITE_ERROR
+                    && matches!(
+                        message.as_str(),
+                        "cannot open value of type integer"
+                            | "cannot open value of type real"
+                            | "cannot open value of type null"
+                    ) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     Ok(conn.query_row("SELECT duration_seconds,input_tokens,output_tokens,cached_tokens,total_tokens,estimated_cost,user_turns,assistant_turns,tool_count,tool_error_count FROM session_analytics WHERE session_id=?",[id],|r|Ok(json!({"duration_seconds":r.get::<_,Option<f64>>(0)?,"input_tokens":r.get::<_,i64>(1)?,"output_tokens":r.get::<_,i64>(2)?,"cached_tokens":r.get::<_,i64>(3)?,"total_tokens":r.get::<_,i64>(4)?,"estimated_cost":r.get::<_,Option<f64>>(5)?,"user_turns":r.get::<_,i64>(6)?,"assistant_turns":r.get::<_,i64>(7)?,"tool_count":r.get::<_,i64>(8)?,"tool_error_count":r.get::<_,i64>(9)?}))).optional()?)
 }

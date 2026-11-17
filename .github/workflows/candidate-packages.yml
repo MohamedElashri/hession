@@ -1,0 +1,174 @@
+name: Candidate packages
+
+# Test artifacts use a disposable updater key. Nothing is tagged or published.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-packages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    if: (github.head_ref == 'v0.5/release' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch'
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS universal, runner: macos-26, target: universal-apple-darwin, native: aarch64-apple-darwin, targets: 'aarch64-apple-darwin,x86_64-apple-darwin', bundles: 'app,dmg', os: macos }
+          - { name: Linux x64, runner: ubuntu-22.04, target: x86_64-unknown-linux-gnu, native: x86_64-unknown-linux-gnu, targets: x86_64-unknown-linux-gnu, bundles: 'appimage,deb,rpm', os: linux }
+          - { name: Linux ARM64, runner: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, native: aarch64-unknown-linux-gnu, targets: aarch64-unknown-linux-gnu, bundles: 'appimage,deb,rpm', os: linux }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: candidate-${{ matrix.target }}
+      - name: Install Linux build and package tools
+        if: matrix.os == 'linux'
+        run: |
+          make deps
+          sudo apt-get install -y --no-install-recommends patchelf xvfb xauth xdg-utils rpm cpio
+      - run: npm ci
+      - run: make release-check VERSION=0.5.0
+      - name: Generate disposable updater key
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_modules/.bin/tauri signer generate --ci --password '' --write-keys "$RUNNER_TEMP/candidate.key" > "$RUNNER_TEMP/keygen.log"
+          node --input-type=module <<'JS'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const pubkey = readFileSync(`${process.env.RUNNER_TEMP}/candidate.key.pub`, 'utf8').trim();
+          writeFileSync(`${process.env.RUNNER_TEMP}/candidate.json`, JSON.stringify({ plugins: { updater: { pubkey } } }));
+          JS
+          echo "TAURI_SIGNING_PRIVATE_KEY=$RUNNER_TEMP/candidate.key" >> "$GITHUB_ENV"
+          echo 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD=' >> "$GITHUB_ENV"
+      - name: Build test-signed native packages
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ matrix.os == 'macos' && '-' || '' }}
+        run: npm run tauri -- build --ci --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/candidate.json" --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
+      - name: Verify updater cryptography and signed version
+        run: node .github/scripts/verify-updater-artifacts.mjs 'target/${{ matrix.target }}/release/bundle' "$RUNNER_TEMP/candidate.key.pub" 0.5.0
+      - name: Exercise actual app commands and official MCP client
+        run: cargo test --release --locked --target ${{ matrix.native }} -p app --test headless
+      - name: Install, reinstall and remove Linux packages
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="$PWD/target/${{ matrix.target }}/release/bundle"
+          sudo dpkg -i "$bundle"/deb/*.deb
+          test "$(env -u DISPLAY -u WAYLAND_DISPLAY hession --version)" = 'hession 0.5.0'
+          scratch=$(mktemp -d)
+          status=0
+          HESSION_DATA_DIR="$scratch/library" CODEX_HOME="$scratch/codex" WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 \
+            dbus-run-session -- xvfb-run -a timeout --signal=TERM 10s /usr/bin/hession > "$RUNNER_TEMP/gui-smoke.log" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/gui-smoke.log"
+          test "$status" -eq 124
+          test -s "$scratch/library/sessions.sqlite"
+          sudo dpkg -i "$bundle"/deb/*.deb
+          sudo dpkg -r hession
+          test ! -e /usr/bin/hession
+          image=$(find "$bundle/appimage" -maxdepth 1 -name '*.AppImage' -type f)
+          test "$(APPIMAGE_EXTRACT_AND_RUN=1 "$image" --version)" = 'hession 0.5.0'
+          APPIMAGE_EXTRACT_AND_RUN=1 "$image" --help > "$RUNNER_TEMP/appimage-help.txt"
+          docker run --rm -v "$bundle/rpm:/packages:ro" fedora:42 sh -eu -c '
+            dnf install -y /packages/*.rpm
+            test "$(env -u DISPLAY -u WAYLAND_DISPLAY hession --version)" = "hession 0.5.0"
+            rpm -Uvh --replacepkgs /packages/*.rpm
+            dnf remove -y hession
+            test ! -e /usr/bin/hession
+          '
+      - name: Inspect and install the universal macOS bundle
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="$PWD/target/${{ matrix.target }}/release/bundle"
+          mount="$RUNNER_TEMP/hession-dmg"
+          mkdir -p "$mount"
+          hdiutil attach "$bundle"/dmg/*.dmg -readonly -nobrowse -mountpoint "$mount"
+          trap 'hdiutil detach "$mount" || true' EXIT
+          test ! -e /Applications/Hession.app
+          sudo ditto "$mount/Hession.app" /Applications/Hession.app
+          cli=/Applications/Hession.app/Contents/MacOS/hession
+          lipo -archs "$cli" | grep -q arm64
+          lipo -archs "$cli" | grep -q x86_64
+          codesign --verify --deep /Applications/Hession.app
+          test "$("$cli" --version)" = 'hession 0.5.0'
+          sh /Applications/Hession.app/Contents/Resources/install-cli.sh "$cli" "$RUNNER_TEMP/bin/hession"
+          test "$("$RUNNER_TEMP/bin/hession" --version)" = 'hession 0.5.0'
+          scratch=$(mktemp -d)
+          TASK_GUI_SCRATCH="$scratch" node --input-type=module <<'JS'
+          import { mkdirSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const root = process.env.TASK_GUI_SCRATCH;
+          mkdirSync(join(root, 'codex/sessions'), { recursive: true });
+          mkdirSync(join(root, 'workspace'));
+          const timestamp = new Date().toISOString();
+          const rows = [
+            { timestamp, type: 'session_meta', payload: { id: 'candidate-native-gui', cwd: join(root, 'workspace') } },
+            { timestamp, type: 'event_msg', payload: { type: 'user_message', message: 'Native candidate smoke test: synthetic history only.' } },
+          ];
+          writeFileSync(join(root, 'codex/sessions/native.jsonl'), rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+          JS
+          HESSION_DATA_DIR="$scratch/library" CODEX_HOME="$scratch/codex" "$cli" index --once --agent codex --json > "$RUNNER_TEMP/native-import.json"
+          HESSION_DATA_DIR="$scratch/library" CODEX_HOME="$scratch/codex" "$cli" > "$RUNNER_TEMP/gui-smoke.log" 2>&1 &
+          gui=$!
+          trap 'kill "$gui" 2>/dev/null || true; hdiutil detach "$mount" || true' EXIT
+          sleep 8
+          kill -0 "$gui"
+          test -s "$scratch/library/sessions.sqlite"
+          /usr/sbin/screencapture -x "$RUNNER_TEMP/native-gui.png"
+          kill "$gui"
+          wait "$gui" || true
+          cat "$RUNNER_TEMP/gui-smoke.log"
+          sudo ditto "$mount/Hession.app" /Applications/Hession.app
+          sh /Applications/Hession.app/Contents/Resources/install-cli.sh "$cli" "$RUNNER_TEMP/bin/hession"
+          "$RUNNER_TEMP/bin/hession" --help
+          sudo rm -rf /Applications/Hession.app
+          rm "$RUNNER_TEMP/bin/hession"
+      - name: Retain candidate test artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: candidate-test-signed-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/bundle/deb/*.deb*
+            target/${{ matrix.target }}/release/bundle/rpm/*.rpm*
+            target/${{ matrix.target }}/release/bundle/appimage/*.AppImage*
+            target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz*
+            target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Retain public key and native diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: candidate-diagnostics-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/candidate.key.pub
+            ${{ runner.temp }}/gui-smoke.log
+            ${{ runner.temp }}/native-gui.png
+            ${{ runner.temp }}/native-import.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Remove disposable private updater key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/candidate.key"

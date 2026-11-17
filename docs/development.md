@@ -251,17 +251,21 @@ use `make preview` to inspect both sessions and analytics with sample data.
 
 ## Dependency security
 
-The scans on 2026-11-12 found no entries in npm audit or RustSec's vulnerability
-category after updating bundled SQLite, TLS/certificate dependencies, Tokio,
-rustix, and Vite. This is a dated scan result, not an independent protocol audit;
-rerun against current advisories before release.
+The 2026-11-17 advisory scan queried 1,187 locked public Rust/npm
+name-version pairs against OSV/RustSec. No vulnerability-category advisory
+matched. This is a dated dependency scan, not an independent security audit.
+Rerun it before publishing.
 
-RustSec's separate warnings include the upstream
-[GTK/glib soundness advisory](https://rustsec.org/advisories/RUSTSEC-2024-0429.html)
-in Tauri's Linux tree, plus maintenance notices for proc-macro-error and optional
-async Secret Service dependencies. Hession uses synchronous Secret Service.
-These warnings are not silently ignored; resolving GTK requires a compatible
-upstream toolkit change. See [Security](sync-security.md) for user-facing limits.
+Informational notices remain for
+[chrono](https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2026-0543.json),
+[chrono-tz](https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2026-0555.json),
+proc-macro-error and the older zvariant/zvariant_derive/zbus_names tree.
+The previously documented
+[glib VariantStrIter soundness issue](https://rustsec.org/advisories/RUSTSEC-2024-0429.html)
+remains in Tauri's GTK dependency tree. Those toolkit/maintenance notices are
+retained explicitly; no compatible dependency-only replacement resolves them
+all. Hession uses synchronous Secret Service. See
+[Security](sync-security.md) for product limits.
 
 ## Large-project regression checks
 
@@ -377,7 +381,32 @@ content is fetched, outside every query OR. An empty allowlist denies all;
 unrestricted access requires explicitly constructing `SearchScope::all()`.
 Never deserialize or construct an MCP scope from a per-call request. The
 service caps queries at 4096 bytes/64 terms, pages at 100 results, scope at 512
-workspace IDs and encoded responses at 1 MiB. Cursor tokens are bound to query,
+workspace IDs and encoded responses at 1 MiB. Before string functions run, metadata cells are capped at 64 KiB and eligible
+transcript cells at 1 MiB. Total transcript bytes are not a query limit: the
+matcher consumes one cell at a time. The materialized scoped metadata has a
+16 MiB budget, including 128 bytes of estimated overhead per session. Its
+approved-ID fence is capped before construction and rejects an oversized scope
+rather than silently truncating it. Materialized hit CTEs contain only IDs and
+rank, and a per-query counter permits at most 174,762 records across the term
+CTEs and their union copies (a conservative 96-byte-per-record estimate).
+Messages rank fixed-width IDs/score/date before projecting display metadata;
+the retained sort window, including cursor offset and the extra paging row,
+has the same record cap. Exceeding an input budget returns `InputTooLarge`;
+narrow the query/scope or restart with a smaller paging window. These are record
+and input budgets, not a claim about an exact allocator or process RSS.
+Explicit nested `CASE` gates check scope, visible entry kind/role and part kind
+before a matcher can access its TEXT argument; a neighboring SQL `WHERE`
+predicate alone does not establish evaluation order. Approved-first `CROSS JOIN`
+loops and existing numeric per-session indexes also prevent automatic covering indexes
+from copying denied text before those gates. Automatic indexes remain enabled
+for bounded numeric hit CTEs. Preflight session/tag scans avoid TEXT-bearing
+indexes entirely: SQLite's index-rowid lookup reads a complete index entry,
+including its date or label, before a later cell guard could reject it.
+ScopedReader search delegates to this shared
+checker; project/file reads use a separate metadata-only fence over the fields
+those services actually consume.
+
+Cursor tokens are bound to query,
 filters, mode, visibility, page size, scope and library identity/revision. Any
 library mutation expires a cursor; restart the search instead of silently
 skipping/duplicating results. `countLowerBound` reports only observed rows plus
@@ -407,23 +436,78 @@ OS-cold-cache claim; no global cache dropping is attempted:
 CARGO_BUILD_JOBS=4 cargo test --locked --release -p hession-core --test search benchmark_10k -- --ignored --nocapture
 ```
 
-Reference run (2026-11-17): optimized Rust build on Linux x86_64 kernel
+Reference run (2026-11-17): optimized Rust 1.92 build on Linux x86_64 kernel
 7.0.0-42, AMD Ryzen 7 7735H, 61,008 MiB RAM, NVMe/ext4 temporary storage.
-The database was 19,734,528 bytes. The one-minute host load average was 18.48
-at the start and 15.40 at the end on sixteen logical CPUs. Each policy used the same four queries
+The schema-3 database was 19,996,672 bytes. Team builds/stress were paused;
+external workloads remained: one-minute host load was 5.17 at the start and
+5.61 at the end on sixteen logical CPUs. Each policy used the same four queries
 (`compiler regression`, `"regression needle"`, `src/module-42.rs`,
-`agent:codex compiler`), twenty warmup searches and one hundred measured
-searches, with a new read-only connection per request. Results are local
-measurements, not a guarantee for every library or machine.
+`agent:codex compiler`), twenty warmup searches and one hundred measured searches,
+with a new read-only connection per request. These are local measurements.
 
 | Visibility | Warm median | Warm p95 | First connection |
 | --- | ---: | ---: | ---: |
-| All indexed text | 240.89 ms | 379.93 ms | 347.31 ms |
-| Conversation | 197.45 ms | 398.14 ms | 351.45 ms |
-| Metadata only | 36.69 ms | 64.72 ms | 50.15 ms |
+| All indexed text | 151.27 ms | 169.93 ms | 169.41 ms |
+| Conversation | 238.81 ms | 335.89 ms | 333.59 ms |
+| Metadata only | 33.66 ms | 52.00 ms | 41.11 ms |
 
-The 250 ms warm p95 target was not met in this run. These measurements
-include the recorded host load and do not establish quiet-host performance.
+The indexed-search 250 ms warm p95 target was met. Restricted Conversation
+scanning remains slower. The complete fixture/build-and-query process took
+82.22 seconds wall and 77.17 seconds CPU. Earlier indexed p95 was 379.93 ms under
+one-minute load 18.48–15.40; load/schema/code differences prevent attributing the
+change to one optimization. First connection still makes no OS-cache-cold claim.
+
+
+The separate Linux-only advisory file-cache experiment recreates the exact
+10,000-session/50,000-entry corpus without changing the warm benchmark. It
+checkpoints/truncates its own WAL and closes all SQLite handles, fsyncs only its
+private fixture DB/WAL, and calls `posix_fadvise(DONTNEED)` on those files before
+each fresh read-only query. It never drops global OS caches, touches a user
+library, or advises unrelated files:
+
+```sh
+CARGO_BUILD_JOBS=4 cargo test --locked --release -p hession-core --test search_cold advisory_file_cache_10k -- --ignored --nocapture --test-threads=1
+```
+
+Run it only in a coordinated quiet window. Each query/policy sample reports
+advice return codes, query and CPU time, process `read_bytes`, input blocks and
+major faults. Successful advisory calls are not proof every page was absent
+from the OS cache, and process counters cannot attribute every read exclusively
+to the fixture. Query code/allocator and storage-device caches may remain warm.
+If eviction is unsupported or storage reads cannot be demonstrated, report that
+limit and the ordinary first-connection case rather than claiming a cold-cache
+measurement. Other platforms print the unsupported limitation explicitly.
+
+
+The first advisory attempt (2026-11-17, same hardware) accepted DONTNEED for the
+19,996,672-byte fixture DB and observed 1,191,936 process storage-read bytes
+(2,328 input blocks). The indexed `compiler regression` query returned the
+existing execution-budget timeout after 3,281.17 ms elapsed and 19.93 ms CPU.
+This is an observed non-CPU-wait limit with actual I/O, not a cold-cache pass or
+proof that every page was cold. The initial harness stopped on that first
+timeout; the final test records all twelve query/policy outcomes, tolerates only
+`SearchError::TimedOut` as a measured limit, and still fails unexpected errors.
+Its summary reports success/timeout counts explicitly. Test completion does not
+mean every query passed or met a latency goal. Production deadlines are unchanged.
+
+
+The final twelve-sample advisory run (2026-11-17) completed with twelve successful
+queries and zero timeouts. All twenty-three DB/WAL advisory calls returned zero
+(the WAL was initially absent and subsequently empty); every sample observed
+positive process storage reads. Four distinct queries per policy give ranges,
+not latency quantiles:
+
+| Visibility | Query elapsed range | Query CPU range | Process storage-read bytes |
+| --- | ---: | ---: | ---: |
+| All indexed text | 658.37–1,040.91 ms | 66.86–197.69 ms | 12,550,144–13,656,064 |
+| Conversation | 646.39–821.36 ms | 177.16–334.51 ms | 18,272,256 |
+| Metadata only | 43.44–203.65 ms | 25.08–46.13 ms | 1,200,128–1,204,224 |
+
+Fixture construction plus sampling took 34.89 seconds wall and 28.82 seconds CPU;
+one-minute load was 4.26–3.31 with team jobs paused. The earlier timeout remains
+an observed outcome. These file-advice/I/O samples are not proof of all-pages
+OS-cache coldness, and they do not replace the warm p95 gate.
+
 ## Background indexing storage and bounds
 
 Application schema 3 adds local-only `index_full_source`, `index_source_session`,
@@ -486,6 +570,33 @@ number of imports already attempted. The local-only `LocalCatalog::manual_pass`
 captures a maintenance epoch before discovery and uses manual inclusion policy;
 continuous observation retains deletion exclusions. Neither path refreshes SSH
 mirrors or starts device sync.
+
+### Indexing measurements
+
+On the same Linux Ryzen 7 7735H host (16 logical CPUs, about 59.6 GiB RAM),
+30 serialized, fsynced appends across 36 synthetic source files containing
+7,224 entries and 7.42 MB measured optimized write-to-commit median/p95 of
+422.64/427.64 ms and matching-notification latency of 418.90/424.71 ms. Debug
+commit latency was 826.80/858.05 ms. The real filesystem observer, parsers and
+SQLite commits were used; one-minute load was 3.88–3.60 in the optimized run.
+Quiet legacy metadata checks measured 0.744/1.309 ms and content audits
+2.306/2.981 ms (30 samples each).
+
+A 30-second idle watcher over 100 files and 1,100 entries consumed 0.04 process
+CPU seconds (0.133% of one CPU), with 15,452 KiB RSS and 15,508 KiB high-water
+memory. Two 15-second metadata polls left library revision/event count unchanged.
+This is isolated headless watcher memory, not full desktop memory.
+
+Five paired samples appending ten events to 1,000/10,000/100,000 existing events
+measured median append costs of 5/18/203 ms, versus 198/5,472/33,151 ms for full
+reimports. The first 100,000-event append took 8,306 ms; the remaining four took
+193–204 ms. That outlier is retained; checkpoint/I/O attribution is unproven.
+Full-prefix hashing reads O(total source bytes) to detect rewrites while
+normalization stages new records. This correctness tradeoff does not establish
+strictly new-byte-only I/O or a universal two-second bound.
+
+Reproduce with the ignored `indexing_benchmark` and `indexing_scaling_benchmark`
+tests in the app crate; they use disposable stores and source directories.
 
 ## Portable project export service
 
@@ -611,3 +722,61 @@ scope, validates the prepared project key and library identity, and writes only
 on an explicit export command. Preview writes nothing. No MCP tool reaches the
 writer. Portable archive construction and atomic no-clobber publication remain
 owned by the shared export service.
+
+
+### Project export measurements
+
+An optimized shared-core benchmark on the same reference host used a
+230,387,712-byte synthetic database with 1,000 approved sessions, 50,000 events,
+50,000 content parts (72 MB text), 5,000 tool calls and 5,000 file-activity rows.
+Ten fresh processes per profile ran in alternating order after a separate
+checksum warmed filesystem pages; SQLite/application caches were fresh.
+One-minute load ranged from 2.68 to 5.94. These are export-reader measurements,
+not resident desktop memory or cold-disk results. With ten samples, nearest-rank
+p95 is the maximum.
+
+| Profile | Prepare median/p95 | Write median/p95 | Total median/p95 | Peak reader RSS |
+| --- | ---: | ---: | ---: | ---: |
+| Defaults | 7.47/7.95 s | 9.31/11.63 s | 16.99/19.19 s | 15,500 KiB |
+| Tool bodies included | 14.59/15.22 s | 17.02/20.34 s | 31.47/35.42 s | 15,632 KiB |
+
+All twenty completed within unchanged 120-second per-phase limits. Each had
+1,003 members; all ZIP CRC checks, 20,040 member checksum/size checks, redaction
+canaries and database/native-source invariance checks passed. Median compressed
+sizes were 10.145/16.535 MB for defaults/tools. Validation was outside timing.
+Earlier pilots under concurrent builds include a 120-second tool-export write
+timeout with clean temporary-file removal, and a successful retry with about
+88 seconds of non-CPU preparation wait. Those pilots remain recorded; final
+warmed samples do not erase them.
+
+## Candidate package validation
+
+The `Candidate packages` workflow builds macOS universal and Linux x86_64/ARM64
+installers from the release PR with disposable updater keys. It verifies real
+package signatures and their authenticated release version independently with
+Node's Ed25519 and streaming BLAKE2b APIs, exercises the real application's
+headless dispatch and an official MCP SDK client, and checks package installation,
+reinstallation, CLI paths and removal. No tag, GitHub release or update feed is
+created. The retained artifacts are test-signed candidates; they do not use the
+production updater key and must not replace production release artifacts.
+
+The workflow's short native GUI launches check startup and backend initialization;
+these are distinct from manual visual review. Synthetic browser checks cover
+keyboard/focus, Live scrolling and export dialogs, including light/dark and the
+800-pixel minimum width. They do not establish macOS/Linux native-webview visual
+parity. The regular release workflow remains the publishing path after review.
+
+Library write paths require UTF-8 filenames. An unresolved SQLite filename must
+fail instead of falling back to a process-local lock; in-memory fixtures alone
+use that fallback. An invalid explicit data-directory override is preserved and
+rejected, never silently redirected to the default personal library.
+
+The local Linux x86_64 test-signed deb candidate was also launched on an isolated
+Xvfb display with synthetic history and private config/data/source directories.
+Its native webview displayed the initial session, automatically indexed and
+displayed a timestamped append in Live, and opened the command palette with
+Ctrl+K. Screenshots were inspected. Extracted deb/rpm/AppImage executables passed
+help/version, missing-library, synthetic import and status checks. All three real
+updater signatures and their signed 0.5.0 version verified. This limited native
+Linux check does not establish macOS/ARM64 package or visual parity; those
+remain candidate-CI gates. The test-signed files are not production updates.

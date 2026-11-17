@@ -1,5 +1,5 @@
 use super::{
-    transcript::{cell, entry_id, tool_id},
+    transcript::{cell, entry_id, tool_id, Metadata},
     *,
 };
 use crate::projects::EvidenceCategory;
@@ -178,7 +178,7 @@ fn files(
         let mut after = 0;
         loop {
             work.check()?;
-            let mut stmt=work.conn.prepare("SELECT f.id,e.ordinal,f.tool_invocation_id,substr(f.action,1,129),substr(e.occurred_at,1,129),substr(f.evidence,1,513) FROM file_activity f LEFT JOIN entry e ON e.id=f.entry_id AND e.session_id=f.session_id WHERE f.session_id=?1 AND f.id>?2 ORDER BY f.id LIMIT 100")?;
+            let mut stmt=work.conn.prepare(&format!("SELECT f.id,{},{},{},{},{} FROM file_activity f INDEXED BY file_session_idx LEFT JOIN entry e ON e.id=f.entry_id AND e.session_id=f.session_id WHERE f.session_id=?1 AND f.id>?2 ORDER BY f.id LIMIT 100",Metadata::EntryOrdinal.sql(),Metadata::FileToolId.sql(),Metadata::Action.sql(),Metadata::Occurred.sql(),Metadata::Evidence.sql()))?;
             let rows = stmt
                 .query_map(params![session.local_id, after], |r| {
                     Ok((
@@ -247,7 +247,7 @@ fn git(
         let mut after = 0;
         loop {
             work.check()?;
-            let mut stmt=work.conn.prepare("SELECT c.id,e.ordinal,substr(c.observed_at,1,129),c.repository_id FROM session_context c LEFT JOIN entry e ON e.id=c.entry_id AND e.session_id=c.session_id WHERE c.session_id=?1 AND c.id>?2 ORDER BY c.id LIMIT 100")?;
+            let mut stmt=work.conn.prepare(&format!("SELECT c.id,{},{},{} FROM session_context c INDEXED BY context_session_latest_idx LEFT JOIN entry e ON e.id=c.entry_id AND e.session_id=c.session_id WHERE c.session_id=?1 AND c.id>?2 ORDER BY c.id LIMIT 100",Metadata::EntryOrdinal.sql(),Metadata::Observed.sql(),Metadata::RepositoryId.sql()))?;
             let rows = stmt
                 .query_map(params![session.local_id, after], |r| {
                     Ok((

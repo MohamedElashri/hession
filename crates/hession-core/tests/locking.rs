@@ -178,3 +178,37 @@ fn symlink_database_uses_same_lock_and_symlink_lock_is_rejected() {
     .is_err());
     assert_eq!(std::fs::read(&target).unwrap(), b"preserve");
 }
+
+#[test]
+fn invalid_library_filename_never_silently_drops_cross_process_coordination() {
+    use std::os::unix::ffi::OsStringExt;
+    let dir = tempfile::tempdir().unwrap();
+    let invalid = dir
+        .path()
+        .join(std::ffi::OsString::from_vec(vec![b'x', 0xff]));
+    assert!(hession_core::db::open_db(&invalid)
+        .unwrap_err()
+        .to_string()
+        .contains("UTF-8"));
+    assert!(hession_core::db::open_read_only(&invalid)
+        .unwrap_err()
+        .to_string()
+        .contains("UTF-8"));
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    // Linux permits such filenames; macOS APFS rejects them before SQLite.
+    #[cfg(target_os = "linux")]
+    {
+        let conn = rusqlite::Connection::open(&invalid).unwrap();
+        assert!(conn.path().is_none());
+        assert!(hession_core::db::init_schema(&conn)
+            .unwrap_err()
+            .to_string()
+            .contains("UTF-8"));
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}

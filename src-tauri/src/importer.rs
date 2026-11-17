@@ -2006,6 +2006,14 @@ fn sort_by_mtime_desc_vec(files: &mut [(String, PathBuf)]) {
 mod hardening_tests;
 
 #[cfg(test)]
+#[path = "indexing_benchmark.rs"]
+mod indexing_benchmark;
+
+#[cfg(test)]
+#[path = "indexing_scaling_benchmark.rs"]
+mod indexing_scaling_benchmark;
+
+#[cfg(test)]
 mod concurrency_tests {
     use super::*;
     use std::io::Write;

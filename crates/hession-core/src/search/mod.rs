@@ -267,7 +267,8 @@ pub fn search_snapshot(
     } else {
         0
     };
-    let mut results = compiler::execute(conn, request, scope, &parsed, offset)?;
+    let mut results = compiler::execute(conn, request, scope, &parsed, offset)
+        .map_err(bounds::map_execution_error)?;
     let more = results.len() > request.limit as usize;
     if more {
         results.pop();
