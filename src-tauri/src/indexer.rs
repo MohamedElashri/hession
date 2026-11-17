@@ -26,6 +26,10 @@ use std::{
 const POLL: Duration = Duration::from_secs(15);
 const AUDIT: Duration = Duration::from_secs(600);
 const MAX_DIRECTORIES: usize = 4096;
+#[cfg(not(test))]
+const NATIVE_RETRY: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const NATIVE_RETRY: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +60,7 @@ struct Control {
     paused: AtomicBool,
     cancel: Arc<AtomicBool>,
     status: Mutex<Status>,
+    native_error: Arc<Mutex<Option<String>>>,
 }
 impl Control {
     fn update(&self, task: impl FnOnce(&mut Status)) {
@@ -98,6 +103,7 @@ impl Observer {
                 may_be_stale: true,
                 ..Status::default()
             }),
+            native_error: Arc::new(Mutex::new(None)),
         });
         let worker_control = control.clone();
         let worker = thread::Builder::new()
@@ -209,10 +215,35 @@ fn directories(roots: &[PathBuf]) -> (BTreeSet<PathBuf>, bool) {
     (found, truncated)
 }
 
-fn affected(source: &Path, event: &Path) -> bool {
-    source==event || source.starts_with(event)
-        || source.parent()==event.parent() // WAL and companion manifests.
-        || event.to_string_lossy().strip_suffix("-wal").is_some_and(|p|Path::new(p)==source)
+fn affected(family: &str, source: &Path, event: &Path) -> bool {
+    importer::source_paths(family, source)
+        .iter()
+        .any(|path| path == event || path.starts_with(event) || path.parent() == event.parent())
+}
+
+fn native_watcher(
+    sender: mpsc::SyncSender<PathBuf>,
+    overflow: Arc<AtomicBool>,
+    errors: Arc<Mutex<Option<String>>>,
+) -> notify::Result<notify::RecommendedWatcher> {
+    notify::recommended_watcher(move |result: notify::Result<Event>| match result {
+        Ok(event) if !matches!(event.kind, EventKind::Access(_)) => {
+            if event.need_rescan() || event.paths.len() > 32 {
+                overflow.store(true, Ordering::SeqCst);
+            }
+            for path in event.paths.into_iter().take(32) {
+                if sender.try_send(path).is_err() {
+                    overflow.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+        Err(error) => {
+            *errors.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(error.to_string().chars().take(300).collect());
+            overflow.store(true, Ordering::SeqCst);
+        }
+        _ => {}
+    })
 }
 
 fn run(
@@ -236,32 +267,20 @@ fn run(
     // Keep timeout-based polling asleep when the native backend cannot start.
     let _keepalive = sender.clone();
     let overflow = Arc::new(AtomicBool::new(false));
-    let callback_overflow = overflow.clone();
-    let mut watcher =
-        match notify::recommended_watcher(move |result: notify::Result<Event>| match result {
-            Ok(event) if !matches!(event.kind, EventKind::Access(_)) => {
-                if event.need_rescan() || event.paths.len() > 32 {
-                    callback_overflow.store(true, Ordering::SeqCst);
-                }
-                for path in event.paths.into_iter().take(32) {
-                    if sender.try_send(path).is_err() {
-                        callback_overflow.store(true, Ordering::SeqCst);
-                    }
-                }
-            }
-            Err(_) => {
-                callback_overflow.store(true, Ordering::SeqCst);
-            }
-            _ => {}
-        }) {
-            Ok(watcher) => Some(watcher),
-            Err(e) => {
-                control.error(format!(
-                    "Native observation unavailable; polling every 15 seconds: {e}"
-                ));
-                None
-            }
-        };
+    let mut watcher = match native_watcher(
+        sender.clone(),
+        overflow.clone(),
+        control.native_error.clone(),
+    ) {
+        Ok(watcher) => Some(watcher),
+        Err(e) => {
+            control.error(format!(
+                "Native observation unavailable; polling every 15 seconds: {e}"
+            ));
+            None
+        }
+    };
+    let mut last_native_attempt = Instant::now();
     let roots = catalog.roots();
     let mut watched = BTreeSet::new();
     let mut seen_roots = BTreeSet::new();
@@ -291,6 +310,24 @@ fn run(
             control.update(|s| s.overflow_count = s.overflow_count.saturating_add(1));
             control.error("Observation queue overflow or native gap; reconciling known roots");
         }
+        let native_error = control
+            .native_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(error) = native_error {
+            control.error(format!(
+                "Native observation failed; polling until a successful retry: {error}"
+            ));
+            watcher = None;
+            watched.clear();
+            scan = true;
+            last_native_attempt = Instant::now();
+            control.update(|s| {
+                s.phase = "degraded".into();
+                s.watched_directories = 0;
+            });
+        }
         let suspended = control.paused.load(Ordering::SeqCst)
             || crate::sync::is_managing_data()
             || crate::sync::get_status().running;
@@ -311,13 +348,28 @@ fn run(
             scan = true;
             was_suspended = false;
         }
+        if watcher.is_none() && last_native_attempt.elapsed() >= NATIVE_RETRY {
+            last_native_attempt = Instant::now();
+            match native_watcher(
+                sender.clone(),
+                overflow.clone(),
+                control.native_error.clone(),
+            ) {
+                Ok(next) => {
+                    watcher = Some(next);
+                    scan = true;
+                }
+                Err(error) => control.error(format!(
+                    "Native observation retry failed; polling continues: {error}"
+                )),
+            }
+        }
         control.cancel.store(false, Ordering::SeqCst);
         let now = Instant::now();
         let (events, recovery) = pending.take_ready(now);
         let audit = now.duration_since(last_audit) >= AUDIT;
         let poll = now.duration_since(last_poll) >= POLL;
         let do_scan = scan || recovery || audit || poll || !events.is_empty();
-        control.update(|s| s.pending_sources = pending.len());
         if do_scan {
             let full_audit = scan || recovery || audit;
             scan = false;
@@ -357,7 +409,10 @@ fn run(
             let missing_previously_available =
                 unavailable.iter().any(|root| seen_roots.contains(root));
             seen_roots.extend(roots.iter().filter(|root| root.is_dir()).cloned());
-            let observation_incomplete = watcher.is_none() || watched != desired;
+            let observation_incomplete = watcher.is_none()
+                || watched != desired
+                || (desired.is_empty() && !roots.is_empty())
+                || missing_previously_available;
             control.update(|s| {
                 s.unavailable_roots = unavailable;
                 s.watched_directories = watched.len();
@@ -378,6 +433,8 @@ fn run(
             let files = importer::with_cancellation(control.cancel.clone(), || catalog.files());
             let mut live = BTreeSet::new();
             let mut pass_failed = false;
+            let mut remaining_sources = files.len();
+            control.update(|s| s.pending_sources = remaining_sources);
             for (family, path) in files {
                 if control.cancel.load(Ordering::SeqCst)
                     || control.paused.load(Ordering::SeqCst)
@@ -386,6 +443,8 @@ fn run(
                     scan = true;
                     break;
                 }
+                remaining_sources = remaining_sources.saturating_sub(1);
+                control.update(|s| s.pending_sources = remaining_sources);
                 let key = (family.clone(), path.clone());
                 live.insert(key.clone());
                 let stamp = match catalog.fingerprint(&family, &path) {
@@ -398,7 +457,7 @@ fn run(
                 };
                 if !full_audit
                     && fingerprints.get(&key) == Some(&stamp)
-                    && !events.iter().any(|event| affected(&path, event))
+                    && !events.iter().any(|event| affected(&family, &path, event))
                 {
                     continue;
                 }
@@ -409,7 +468,6 @@ fn run(
                             .to_string_lossy()
                             .into_owned(),
                     );
-                    s.pending_sources = s.pending_sources.saturating_add(1);
                 });
                 let before = conn
                     .query_row("SELECT COALESCE(MAX(seq),0) FROM index_change", [], |r| {
@@ -418,7 +476,11 @@ fn run(
                     .unwrap_or(0);
                 let import_started = Instant::now();
                 let result = importer::with_cancellation(control.cancel.clone(), || {
-                    catalog.import(&mut conn, &family, &path, epoch)
+                    if full_audit || events.iter().any(|event| affected(&family, &path, event)) {
+                        catalog.import_with_policy(&mut conn, &family, &path, epoch, true)
+                    } else {
+                        catalog.import(&mut conn, &family, &path, epoch)
+                    }
                 });
                 match result {
                     Ok(_) => {
@@ -436,6 +498,7 @@ fn run(
                     }
                     Err(_) => {
                         scan = true;
+                        remaining_sources = remaining_sources.saturating_add(1);
                     }
                 }
                 if let Ok(mut stmt) = conn
@@ -460,7 +523,7 @@ fn run(
             }
             control.update(|s| {
                 s.active_source = None;
-                s.pending_sources = pending.len();
+                s.pending_sources = remaining_sources;
                 s.may_be_stale = pass_failed
                     || truncated
                     || observation_incomplete
@@ -665,8 +728,82 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert!(!truncated);
         assert!(affected(
+            "hermes",
             Path::new("/store/state.db"),
             Path::new("/store/state.db-wal")
         ));
+        assert!(affected(
+            "antigravity",
+            Path::new("/store/brain/conversation/trace.jsonl"),
+            Path::new("/store/conversation_summaries.db-wal")
+        ));
+        assert!(affected(
+            "cline",
+            Path::new("/store/tasks/task/api_conversation_history.json"),
+            Path::new("/store/state/taskHistory.json")
+        ));
+    }
+
+    #[test]
+    fn native_callback_failure_stays_degraded_until_backend_retry_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("codex");
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        let observer = Observer::start(
+            dir.path().join("library.sqlite"),
+            LocalCatalog::fixture(root),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        wait_until(|| observer.status().phase == "active");
+        *observer.control.native_error.lock().unwrap() =
+            Some("synthetic callback backend failure".into());
+        wait_until(|| observer.status().phase == "degraded");
+        let failed = observer.status();
+        assert!(failed.may_be_stale);
+        assert_eq!(failed.watched_directories, 0);
+        assert!(failed
+            .errors
+            .iter()
+            .any(|e| e.contains("synthetic callback")));
+        wait_until(|| {
+            observer.status().phase == "active" && observer.status().watched_directories > 0
+        });
+        assert!(!observer.status().may_be_stale);
+        assert_eq!(observer.status().pending_sources, 0);
+    }
+
+    #[test]
+    fn initially_missing_root_reports_degraded_and_polling_recovers_when_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("new-agent");
+        let database = dir.path().join("library.sqlite");
+        let observer = Observer::start(
+            database.clone(),
+            LocalCatalog::fixture(root.clone()),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        wait_until(|| observer.status().phase == "degraded");
+        assert!(observer.status().may_be_stale);
+        assert_eq!(
+            observer.status().unavailable_roots,
+            vec![root.join("sessions")]
+        );
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        std::fs::write(
+            root.join("sessions/new.jsonl"),
+            include_str!("../tests/fixtures/codex-concurrency.jsonl"),
+        )
+        .unwrap();
+        let conn = db::open_db(&database).unwrap();
+        wait_until(|| {
+            conn.query_row("SELECT count(*) FROM entry", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+                == 4
+        });
+        wait_until(|| observer.status().phase == "active");
+        assert!(observer.status().unavailable_roots.is_empty());
+        assert_eq!(observer.status().pending_sources, 0);
     }
 }

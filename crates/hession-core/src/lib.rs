@@ -13,4 +13,5 @@ pub mod projects;
 pub mod search;
 pub mod service;
 pub mod sessions;
+pub mod source;
 pub mod sql;
