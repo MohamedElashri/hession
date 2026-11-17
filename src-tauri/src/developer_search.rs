@@ -17,20 +17,25 @@ impl Drop for SearchPermit {
     }
 }
 fn search_worker() -> Result<SearchPermit, SearchIpcError> {
-    SEARCH_WORKERS
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-            if active < 2 {
-                Some(active + 1)
-            } else {
-                None
-            }
-        })
-        .map(|_| SearchPermit)
-        .map_err(|_| SearchIpcError {
-            kind: "busy",
-            message: "Search workers are busy. Wait briefly and retry.".into(),
-            position: None,
-        })
+    let mut active = SEARCH_WORKERS.load(Ordering::Acquire);
+    loop {
+        if active >= 2 {
+            return Err(SearchIpcError {
+                kind: "busy",
+                message: "Search workers are busy. Wait briefly and retry.".into(),
+                position: None,
+            });
+        }
+        match SEARCH_WORKERS.compare_exchange(
+            active,
+            active + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return Ok(SearchPermit),
+            Err(current) => active = current,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
