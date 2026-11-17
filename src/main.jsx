@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useStat
 import { createRoot } from 'react-dom/client';
 import Markdown from './components/Markdown.jsx';
 import SessionSearch from './components/SessionSearch.jsx';
+import DeveloperSearch from './components/DeveloperSearch.jsx';
 import {
   ArrowRight, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Code2,
   Copy, Download, FileCode2, Folder, GitBranch, Laptop, Layers3,
@@ -60,6 +61,8 @@ function App(){
   const [sessions,setSessions]=useState([]),[total,setTotal]=useState(0),[agents,setAgents]=useState([]),[projects,setProjects]=useState([]);
   const [syncCheckpoints,setSyncCheckpoints]=useState([]),[syncMenuOpen,setSyncMenuOpen]=useState(false);
   const [stats,setStats]=useState({sessions:0,entries:0,agents:0,files:0}),[detail,setDetail]=useState(null);
+  const [searchEngine,setSearchEngine]=useState(()=>{try{return localStorage.getItem(storageKey('search-engine'))==='legacy'?'legacy':'developer';}catch{return 'developer';}});
+  const [sourceJump,setSourceJump]=useState(null),[searchRevision,setSearchRevision]=useState(0);
   const [query,setQuery]=useState(''),[agentFilter,setAgentFilter]=useState(''),[projectFilter,setProjectFilter]=useState('');
   // '' = every machine, '@local' = this computer, otherwise an SSH host.
   const [hostFilter,setHostFilter]=useState('');
@@ -131,10 +134,13 @@ function App(){
     setShownSelection(selected);
     setContinuationOpen(false);
     setResumeOpen(false);setResumeInfo(null);setResumeError('');setResumeCopied(false);setResumeTerminals([]);setResumeTerminal('');
-    setSearchEntry(null);setCollapsedEntries(new Set());setDetailPage(1);setDetailJump('');setTagDraft('');
+    const target=sourceJump&&String(sourceJump.sessionId)===String(selected)?sourceJump:null;
+    setSearchEntry(target?.entryId??null);setCollapsedEntries(new Set());setDetailPage(target?Math.floor(target.position/DETAIL_PAGE_SIZE)+1:1);setDetailJump('');setTagDraft('');
   }
   // Back to the first page whenever the filters change.
-  const filterKey=JSON.stringify([query,hostFilter,agentFilter,projectFilter,modelFilters,branchFilter,toolFilters,timeFilter,sortOrder,starredOnly,tagFilters]);
+  const developerSearchActive=searchEngine==='developer'&&Boolean(query.trim());
+  const developerFilters=useMemo(()=>({agent:agentFilter,project:projectFilter,models:modelFilters,tools:toolFilters,branch:branchFilter,host:hostFilter,since:timeFilter,starred:starredOnly,tags:tagFilters}),[agentFilter,projectFilter,modelFilters,toolFilters,branchFilter,hostFilter,timeFilter,starredOnly,tagFilters]);
+  const filterKey=JSON.stringify([searchEngine,query,hostFilter,agentFilter,projectFilter,modelFilters,branchFilter,toolFilters,timeFilter,sortOrder,starredOnly,tagFilters]);
   const [pageFilterKey,setPageFilterKey]=useState(filterKey);
   if(pageFilterKey!==filterKey){setPageFilterKey(filterKey);setPage(0);}
   const navigate=useCallback((patch,{replace=false}={})=>{
@@ -148,6 +154,7 @@ function App(){
     if(navigationRef.current.view==='sessions'&&String(navigationRef.current.selected)===String(sessionId))return;
     // Invalidate the previous detail request before rendering the new selection.
     detailRequest.current++;
+    setSourceJump(null);
     setDetailPage(1);setDetailJump('');setDetail(null);setDetailError('');setDetailLoading(true);
     navigate({view:'sessions',selected:sessionId,selectionExplicit:true});
     setMobileNav(false);
@@ -260,7 +267,7 @@ function App(){
     const requestId=++sessionRequest.current;
     if(!silent)setLoading(true);
     try{
-      const sessionParams={q:query,host:hostFilter,agent:agentFilter,project:projectFilter,model:modelFilters.join(','),branch:branchFilter,tool:toolFilters.join(','),since:filterSince(timeFilter),sort:sortOrder,starred:String(starredOnly),tags:tagFilters,limit:String(PAGE_SIZE),offset:String(page*PAGE_SIZE)};
+      const sessionParams={q:developerSearchActive?'':query,host:hostFilter,agent:agentFilter,project:projectFilter,model:modelFilters.join(','),branch:branchFilter,tool:toolFilters.join(','),since:filterSince(timeFilter),sort:sortOrder,starred:String(starredOnly),tags:tagFilters,limit:String(PAGE_SIZE),offset:String(page*PAGE_SIZE)};
       const result=await api('search_sessions',sessionParams);
       if(requestId!==sessionRequest.current)return;
       setSessions(result.sessions||[]);setTotal(result.total??result.sessions?.length??0);setLibraryReady(true);
@@ -274,7 +281,7 @@ function App(){
       if(page>lastPage)setPage(lastPage);
     }catch(e){if(requestId===sessionRequest.current){if(syncActiveRef.current&&isSyncLockError(e))return;setSessions([]);setTotal(0);setSyncError(e.message);}}
     finally{if(requestId===sessionRequest.current)setLoading(false);}
-  },[query,hostFilter,agentFilter,projectFilter,modelFilters,branchFilter,toolFilters,timeFilter,sortOrder,starredOnly,tagFilters,page,navigate]);
+  },[query,developerSearchActive,hostFilter,agentFilter,projectFilter,modelFilters,branchFilter,toolFilters,timeFilter,sortOrder,starredOnly,tagFilters,page,navigate]);
 
   useEffect(()=>{loadMeta();},[loadMeta]);
   useEffect(()=>{const timer=setInterval(()=>setCurrentTime(Date.now()),60000);return()=>clearInterval(timer);},[]);
@@ -339,7 +346,7 @@ function App(){
     try{
       const updated=await api('update_session_annotations',{id,...patch});
       setDetail(current=>current?.session.id===id?{...current,session:{...current.session,...updated}}:current);
-      setTagDraft('');
+      setTagDraft('');setSearchRevision(value=>value+1);
       await Promise.all([loadSessions({silent:true}),loadMeta({silent:true})]);
     }catch(e){setNotice(e.message);}finally{setAnnotationBusy(false);}
   };
@@ -349,6 +356,7 @@ function App(){
     starPendingRef.current.add(id);setStarPending(new Set(starPendingRef.current));
     try{
       const updated=await api('update_session_annotations',{id,starred:!session.starred});
+      setSearchRevision(value=>value+1);
       setSessions(current=>current.map(item=>item.id===id?{...item,...updated}:item));
       setDetail(current=>current?.session.id===id?{...current,session:{...current.session,...updated}}:current);
       if(starredOnly)await loadSessions({silent:true});
@@ -369,6 +377,7 @@ function App(){
   };
   const runExport=async()=>{
     if(exportJobRef.current)return;
+    if(developerSearchActive&&exportScope==='filtered'){setNotice('Switch to Legacy search for filtered transcript exports, or choose the selected session or whole library.');return;}
     const job={id:crypto.randomUUID(),cancelled:false};
     exportJobRef.current=job;
     setExportBusy(true);setExportStopping(false);setExportProgress({phase:'Preparing export',done:0,total:0});
@@ -471,6 +480,17 @@ function App(){
     setDetailPage(Math.floor(entry.position/DETAIL_PAGE_SIZE)+1);setDetailJump('');
     requestAnimationFrame(()=>document.getElementById(`entry-${entry.id}`)?.scrollIntoView({block:'center'}));
   };
+  // Shared with project/file sources: positions are row offsets, not ordinals.
+  const openSessionSource=(sessionId,source)=>{
+    selectSession(sessionId);
+    if(!source||!Number.isInteger(source.entryId)||!Number.isInteger(source.position)||source.position<0)return;
+    setSourceJump({sessionId,entryId:source.entryId,position:source.position});
+    setEntryFilter('all');setTranscriptView('log');setSearchEntry(source.entryId);
+    setCollapsedEntries(previous=>{const next=new Set(previous);next.delete(source.entryId);return next;});
+    setDetailPage(Math.floor(source.position/DETAIL_PAGE_SIZE)+1);setDetailJump('');
+    requestAnimationFrame(()=>document.getElementById(`entry-${source.entryId}`)?.scrollIntoView({block:'center'}));
+  };
+  const openDeveloperResult=result=>openSessionSource(result.sessionId,{entryId:result.entryId,position:result.position});
   const turns=useMemo(()=>buildConversation(detail?.entries),[detail?.entries]);
   const openTurn=id=>{setTranscriptView('conversation');requestAnimationFrame(()=>document.getElementById(`turn-${id}`)?.scrollIntoView({block:'start'}));};
   // Transcript pagination derived from the backend's total/limit/offset.
@@ -587,7 +607,8 @@ function App(){
         <div className="content-area">
           <header className="toolbar">
             <button className="icon-button mobile-menu" onClick={()=>setMobileNav(true)} aria-label="Open navigation"><Menu size={18}/></button>
-            <div className="search-wrap"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search titles, prompts, and transcripts" aria-label="Search sessions"/>{query&&<button className="clear-search" onClick={()=>setQuery('')} aria-label="Clear search"><X size={14}/></button>}</div>
+            <div className="search-wrap"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder={searchEngine==='developer'?'Words, "phrases", agent:codex, file:src/…':'Search titles, prompts, and transcripts'} aria-label="Search sessions" maxLength={4096} aria-describedby={developerSearchActive?'developer-search-help':undefined}/>{query&&<button className="clear-search" onClick={()=>setQuery('')} aria-label="Clear search"><X size={14}/></button>}</div>
+            <div className="search-engine-switch" role="group" aria-label="Search engine">{[['developer','Developer search'],['legacy','Legacy search']].map(([value,label])=><button type="button" key={value} aria-pressed={searchEngine===value} onClick={()=>{setSearchEngine(value);try{localStorage.setItem(storageKey('search-engine'),value);}catch{/* preference only */}}}>{label}</button>)}</div>
             <div className="toolbar-actions">
               <button type="button" className={`filter-button ${starredOnly?'filter-has-value':''}`} onClick={()=>setStarredOnly(v=>!v)} aria-pressed={starredOnly} title="Show starred sessions"><Star size={14} fill={starredOnly?'currentColor':'none'}/><span>Starred</span></button>
               <DateFilter value={timeFilter} onChange={setTimeFilter}/>
@@ -606,6 +627,7 @@ function App(){
 
           <div className="browser-grid">
             <section className="session-column" aria-label="Sessions">
+              {developerSearchActive?<DeveloperSearch query={query} filters={developerFilters} selected={selected} onOpen={openDeveloperResult} onToggleStar={toggleSessionStar} starPending={starPending} refreshKey={`${reportRevision}:${searchRevision}`}/>:<>
               <div className="list-head">
                 <span className="list-count">{loading&&!sessions.length?'Loading…':`${total.toLocaleString()} ${query?'results':total===1?'session':'sessions'}`}</span>
                 <div className="sort-anchor" ref={sortAnchorRef}><button className="text-button" onClick={()=>setSortOpen(!sortOpen)} aria-expanded={sortOpen} aria-label="Sort sessions">{{recent:'Most recent',oldest:'Oldest',longest:'Longest',messages:'Most messages'}[sortOrder]}<ChevronDown size={13}/></button>{sortOpen&&<div className="sort-menu">{[{value:'recent',label:'Most recent'},{value:'oldest',label:'Oldest'},{value:'longest',label:'Longest'},{value:'messages',label:'Most messages'}].map(opt=><button key={opt.value} className={`sort-menu-item ${sortOrder===opt.value?'sort-menu-active':''}`} onClick={()=>{setSortOrder(opt.value);setSortOpen(false);}}><span>{opt.label}</span>{sortOrder===opt.value&&<Check size={13}/>}</button>)}</div>}</div>
@@ -622,6 +644,7 @@ function App(){
                 {!loading&&!sessions.length&&<div className="empty-list"><div className="empty-orb"><MessageSquareText size={20}/></div><strong>{query||!filterDefaults?'No matching sessions':'Your library is empty'}</strong><p>{query||!filterDefaults?'Try another search or clear a filter.':'Refresh histories to import sessions from this computer and your SSH hosts.'}</p>{!filterDefaults?<button className="btn" onClick={clearAllFilters}>Clear filters</button>:!query&&<button className="btn primary" disabled={sync.running||syncStarting} onClick={()=>startSync()}><RefreshCw size={14}/>Refresh histories</button>}</div>}
               </div>
               {total>PAGE_SIZE&&<div className="list-footer"><span>{`${(page*PAGE_SIZE)+1}–${(page*PAGE_SIZE)+sessions.length} of ${total.toLocaleString()}`}</span><div className="pagination-controls"><button aria-label="Previous page" disabled={page===0||loading} onClick={()=>setPage(current=>Math.max(0,current-1))}><ChevronLeft size={14}/></button><button aria-label="Next page" disabled={(page+1)*PAGE_SIZE>=total||loading} onClick={()=>setPage(current=>current+1)}><ChevronRight size={14}/></button></div></div>}
+              </>}
             </section>
 
             <section className="detail-column" aria-label="Session">
@@ -693,7 +716,7 @@ function App(){
         </div>
       )}
     </main>
-    {exportOpen&&<div className="export-backdrop" onClick={e=>{if(e.target===e.currentTarget&&!exportBusy)setExportOpen(false);}}><div ref={exportDialogRef} className="export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-title" onKeyDown={e=>{if(e.key==='Escape'&&!exportBusy)setExportOpen(false);if(e.key==='Tab'){const controls=Array.from(e.currentTarget.querySelectorAll('button:not(:disabled),input:not(:disabled)'));const first=controls[0],last=controls.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus();}}}}><div className="export-heading"><h2 id="export-title">Export sessions</h2><button type="button" className="icon-button" aria-label="Close export" disabled={exportBusy} onClick={()=>setExportOpen(false)}><X size={17}/></button></div><ExportSelect label="Export scope" value={exportScope} disabled={exportBusy} onChange={setExportScope} options={[{value:'session',label:'Selected session',disabled:!detail||isDetailLoading},{value:'filtered',label:`Filtered view (all ${total.toLocaleString()} matches)`},{value:'library',label:'Whole library'}]}/><ExportSelect label="Format" value={exportFormat} disabled={exportBusy} onChange={setExportFormat} options={[{value:'markdown',label:'Markdown (.md)'},{value:'json',label:'JSON (.json)'}]}/><label className="export-stats"><input type="checkbox" checked={includeStats} disabled={exportBusy} onChange={e=>{setIncludeStats(e.target.checked);try{localStorage.setItem(storageKey('export-stats'),String(e.target.checked));}catch{setNotice('Could not save the export preference.');}}}/>Include session stats (tokens, estimated cost, duration, turns, tools)</label><p>Exports include full transcripts, bookmarks, and tags.</p>{exportBusy&&<div className="export-progress-status" role="status" aria-live="polite"><LoaderCircle className="spin" size={16}/><span>{exportStopping?'Stopping export…':exportProgress.phase}{!exportStopping&&exportProgress.total>0?` · ${exportProgress.done} / ${exportProgress.total}`:''}</span></div>}{exportBusy&&exportProgress.total>0&&<progress className="export-progress-bar" value={exportProgress.done} max={exportProgress.total} aria-label="Export progress"/>}<div className="export-actions">{exportBusy&&<button type="button" className="btn" disabled={exportStopping} onClick={stopExport}><X size={14}/>{exportStopping?'Stopping…':'Stop export'}</button>}<button type="button" className="btn primary" disabled={exportBusy||(exportScope==='session'&&(!detail||isDetailLoading))} onClick={runExport}>{exportBusy?<LoaderCircle className="spin" size={14}/>:<Download size={14}/>} {exportBusy?'Exporting…':'Save export'}</button></div></div></div>}
+    {exportOpen&&<div className="export-backdrop" onClick={e=>{if(e.target===e.currentTarget&&!exportBusy)setExportOpen(false);}}><div ref={exportDialogRef} className="export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-title" onKeyDown={e=>{if(e.key==='Escape'&&!exportBusy)setExportOpen(false);if(e.key==='Tab'){const controls=Array.from(e.currentTarget.querySelectorAll('button:not(:disabled),input:not(:disabled)'));const first=controls[0],last=controls.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus();}}}}><div className="export-heading"><h2 id="export-title">Export sessions</h2><button type="button" className="icon-button" aria-label="Close export" disabled={exportBusy} onClick={()=>setExportOpen(false)}><X size={17}/></button></div><ExportSelect label="Export scope" value={exportScope} disabled={exportBusy} onChange={setExportScope} options={[{value:'session',label:'Selected session',disabled:!detail||isDetailLoading},{value:'filtered',label:developerSearchActive?'Filtered view (Legacy search only)':`Filtered view (all ${total.toLocaleString()} matches)`,disabled:developerSearchActive},{value:'library',label:'Whole library'}]}/><ExportSelect label="Format" value={exportFormat} disabled={exportBusy} onChange={setExportFormat} options={[{value:'markdown',label:'Markdown (.md)'},{value:'json',label:'JSON (.json)'}]}/><label className="export-stats"><input type="checkbox" checked={includeStats} disabled={exportBusy} onChange={e=>{setIncludeStats(e.target.checked);try{localStorage.setItem(storageKey('export-stats'),String(e.target.checked));}catch{setNotice('Could not save the export preference.');}}}/>Include session stats (tokens, estimated cost, duration, turns, tools)</label><p>Exports include full transcripts, bookmarks, and tags.</p>{developerSearchActive&&<p>Switch to Legacy search for filtered transcript exports. Selected-session and whole-library exports remain available.</p>}{exportBusy&&<div className="export-progress-status" role="status" aria-live="polite"><LoaderCircle className="spin" size={16}/><span>{exportStopping?'Stopping export…':exportProgress.phase}{!exportStopping&&exportProgress.total>0?` · ${exportProgress.done} / ${exportProgress.total}`:''}</span></div>}{exportBusy&&exportProgress.total>0&&<progress className="export-progress-bar" value={exportProgress.done} max={exportProgress.total} aria-label="Export progress"/>}<div className="export-actions">{exportBusy&&<button type="button" className="btn" disabled={exportStopping} onClick={stopExport}><X size={14}/>{exportStopping?'Stopping…':'Stop export'}</button>}<button type="button" className="btn primary" disabled={exportBusy||(developerSearchActive&&exportScope==='filtered')||(exportScope==='session'&&(!detail||isDetailLoading))} onClick={runExport}>{exportBusy?<LoaderCircle className="spin" size={14}/>:<Download size={14}/>} {exportBusy?'Exporting…':'Save export'}</button></div></div></div>}
     {resumeOpen&&<div className="export-backdrop" onClick={e=>{if(e.target===e.currentTarget&&!resumeBusy)setResumeOpen(false);}}><div ref={resumeDialogRef} className="export-dialog resume-dialog" role="dialog" aria-modal="true" aria-labelledby="resume-title" onKeyDown={e=>{if(e.key==='Escape'&&!resumeBusy)setResumeOpen(false);}}><div className="export-heading"><h2 id="resume-title">Resume session</h2><button type="button" className="icon-button" aria-label="Close resume" disabled={resumeBusy} onClick={()=>setResumeOpen(false)}><X size={17}/></button></div>{detail&&<p className="resume-sub">{familyLabel(detail.session.agent)} · {detail.session.title||'Untitled session'}</p>}{resumeTerminals.length>0&&<ExportSelect label="Terminal" value={resumeTerminal} disabled={resumeBusy} onChange={changeResumeTerminal} options={resumeTerminals.map(t=>({value:t.id,label:t.available?t.label:`${t.label} — not installed`,disabled:!t.available}))}/>}{resumeBusy&&!resumeInfo&&<div className="export-progress-status" role="status" aria-live="polite"><LoaderCircle className="spin" size={16}/><span>Preparing resume command…</span></div>}{resumeInfo?.displayCommand&&<pre className="resume-command">{resumeInfo.displayCommand}</pre>}{resumeInfo?.host?<p className="resume-meta">Runs on <strong>{resumeInfo.host}</strong> over SSH, in {detail?.session.cwd||'the home directory'}.</p>:resumeInfo?.cwd&&<p className="resume-meta">Working directory: {resumeInfo.cwd}{resumeInfo.cwdFallback?' (fallback)':''}</p>}{resumeInfo?.cliFound===false&&<p className="resume-meta resume-warn">Agent CLI not found. Install it or copy the command above into a terminal.</p>}{resumeInfo?.sourceExists===false&&<p className="resume-meta resume-warn">Original session file is missing; the agent may report it as not found.</p>}{(resumeInfo?.warnings||[]).map(w=><p key={w} className="resume-meta resume-warn">{w}</p>)}{resumeError&&<div className="error-strip"><CircleHelp size={15}/><span>{resumeError}</span><button onClick={()=>setResumeError('')} aria-label="Dismiss"><X size={14}/></button></div>}<div className="export-actions"><button type="button" className="btn" disabled={resumeBusy||!(resumeInfo?.displayCommand)} onClick={copyResumeCommand}>{resumeCopied?<Check size={14}/>:<Copy size={14}/>}{resumeCopied?'Copied':'Copy command'}</button><button type="button" className="btn primary" disabled={resumeBusy||!resumeInfo} onClick={launchResume}>{resumeBusy?<LoaderCircle className="spin" size={14}/>:<Terminal size={14}/>}{resumeBusy?'Working…':'Resume in terminal'}</button></div></div></div>}
   </div>;
 }

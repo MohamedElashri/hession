@@ -6,7 +6,11 @@ export async function api(command, args = {}) {
   try {
     return await invoke(command, args);
   } catch (e) {
-    throw e instanceof Error ? e : new Error(typeof e === 'string' ? e : (e?.message || JSON.stringify(e ?? 'Unknown error')));
+    const error = e instanceof Error ? e : new Error(typeof e === 'string' ? e : (e?.message || JSON.stringify(e ?? 'Unknown error')));
+    // Structured search failures retain actionable cursor and syntax details.
+    if (typeof e?.kind === 'string') error.kind = e.kind;
+    if (Number.isInteger(e?.position) && e.position >= 0) error.position = e.position;
+    throw error;
   }
 }
 
