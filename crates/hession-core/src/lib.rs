@@ -6,5 +6,6 @@ pub mod db;
 pub mod library_revision;
 pub mod locking;
 pub mod service;
+pub mod search;
 pub mod sessions;
 pub mod sql;

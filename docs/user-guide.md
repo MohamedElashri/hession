@@ -21,9 +21,22 @@ history stays available while a host is offline or removes its original files.
 
 ## Find and read sessions
 
-- The main search covers transcript text, titles, and workspace paths. Use
-  sidebar and toolbar filters to narrow it. Words match prefixes, ignore case
-  and accents, and match **any** word in a multiword search.
+- **Developer search** uses AND between words, quoted phrases, uppercase OR,
+  and `-exclusions`. Filters include `agent:`, `project:`, `file:`, `tool:`,
+  `branch:`, `host:`, `after:`, `before:` and `has:errors`. Quote field values
+  with spaces. Dates use `YYYY-MM-DD` in UTC: after includes the date; before
+  excludes it. Code such as `C++`, `foo::bar`, and paths keeps its punctuation.
+  Query syntax errors identify their byte position. Parenthesized groups and
+  regexes are unsupported.
+- Developer results rank by relevance. Choose **Sessions** to find words across
+  a session, or **Messages** to require text terms in the same entry. Open a
+  result to jump to its matching entry in **Full log**. Metadata-only matches
+  open the session. Sidebar and toolbar filters, stars, and tags still apply.
+  If the library changes between pages, use **Restart search** for fresh results.
+- **Legacy search** preserves the earlier prefix and any-word matching over
+  transcripts, titles, and workspace paths, with its existing sort choices.
+  It is also available in the browser preview; developer search needs the
+  desktop SQLite service. **Query syntax** beside developer results provides help.
 - **Search this session** searches the complete history, including tool inputs
   and output. Open a result to jump to it in **Full log**; Escape clears results.
 - **Conversation** groups prompts, replies, and tools. Expand tool calls,
@@ -32,7 +45,9 @@ history stays available while a host is offline or removes its original files.
   and role filters. Long histories use pages of 500 entries.
 - Star sessions or add tags above the transcript. Multiple selected tags require
   every tag. **Export** saves a session, filtered results, or the whole library
-  as Markdown or JSON, optionally with statistics.
+  as Markdown or JSON, optionally with statistics. Filtered transcript exports
+  use Legacy search; developer queries support selected-session or whole-library
+  exports until shared project export selection is available.
 
 ## Resume or continue a task
 
