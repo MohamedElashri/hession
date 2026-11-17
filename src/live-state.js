@@ -30,7 +30,7 @@ export function mergeLiveEntries(previous, incoming, reset = false) {
   let added = 0, updated = 0;
   for (const entry of incoming) {
     if (!entry || !Number.isSafeInteger(entry.id) || entry.id <= 0 || !Number.isSafeInteger(entry.ordinal)) throw new Error('Invalid live event response.');
-    const id = String(entry.id), old = before.get(id);
+    const id = String(entry.id), old = reset ? null : before.get(id);
     if (!old && (reset || entry.ordinal > lastOrdinal)) added++;
     else if (!old) updated++;
     else if (JSON.stringify(old) !== JSON.stringify(entry)) updated++;

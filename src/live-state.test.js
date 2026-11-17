@@ -12,6 +12,8 @@ test('live merge updates stable IDs, preserves gapped order and replaces resets'
   assert.equal(next.entries[0].tools[0].result_text, 'Late result');
   assert.equal(next.added, 1); assert.equal(next.updated, 1);
   assert.deepEqual(mergeLiveEntries(next.entries, [entry(4, 40)], true).entries, [entry(4, 40)]);
+  const reused = mergeLiveEntries(next.entries, [{ ...entry(1, 10), parts: [{ kind: 'text', text: 'Rebuilt event' }] }], true);
+  assert.equal(reused.updated, 0); assert.equal(reused.added, 1);
   const historical = mergeLiveEntries(next.entries, [entry(5, 5)]);
   assert.equal(historical.added, 0); assert.equal(historical.updated, 1);
 });
