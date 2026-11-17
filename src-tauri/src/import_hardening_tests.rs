@@ -432,7 +432,8 @@ fn native_non_utf8_paths_are_rejected_without_aliasing_but_unicode_paths_import(
         let file = dir.path().join(std::ffi::OsString::from_vec(vec![
             b'x', byte, b'.', b'j', b's', b'o', b'n', b'l',
         ]));
-        fs::write(&file, legacy("alpha")).unwrap();
+        // URI validation runs before source reads. These paths need no native
+        // directory entries, which some filesystems reject for invalid UTF-8.
         assert!(catalog
             .import_with_policy(&mut conn, "pi", &file, epoch, false)
             .unwrap_err()
