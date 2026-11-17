@@ -19,6 +19,7 @@ tauri-build = { version = "2", features = [] }
 serde_json = "1"
 
 [dependencies]
+hession-core = { path = "../crates/hession-core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2.14.1"

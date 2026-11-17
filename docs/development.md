@@ -64,10 +64,10 @@ To develop against a scratch library, set
 
 Standard Tauri layout: the frontend in `src/`, the Rust app in `src-tauri/`.
 A Cargo workspace at the root keeps one `Cargo.lock` and one `target/`, shared
-by the app, the encrypted record library, and the optional relay server.
+by the app, shared history services, the encrypted record library, and the optional relay server.
 
 ```
-Cargo.toml, Cargo.lock  Cargo workspace (member: src-tauri)
+Cargo.toml, Cargo.lock  Cargo workspace and shared dependency lockfile
 package.json            frontend dependencies and scripts
 brand.json              product identity (the only place the name is defined)
 branding/               logo sources (mark, icon, favicon) and generated assets
@@ -83,13 +83,33 @@ src-tauri/src/
   resume.rs             resume in a terminal (local or ssh), open in VS Code
   updates.rs            installation metadata, safe restart, release-page fallback
   commands.rs           IPC commands for search, sessions, facets, and export
-  db.rs                 SQLite schema and connections
+  db.rs                 compatibility facade for shared SQLite storage
   analytics.rs, pricing.rs, data_management.rs, sync.rs
 src-tauri/tauri.conf.json, capabilities/, icons/   Tauri app config and icons
+crates/hession-core/    storage, migrations, transcript reads, revisions and lock primitives
 crates/hession-sync/    portable encrypted snapshots and protocol primitives
 crates/hession-relay/   standalone self-hosted opaque-record HTTP relay
 deploy/                relay container and Compose deployment examples
 ```
+
+`hession-core` has no Tauri or network dependency. Desktop IPC runs its blocking
+services on workers and retains the existing transcript response shape. Run
+`cargo test --locked -p hession-core` for migration, snapshot, pagination and
+cross-process lock checks without building GTK/WebKit. The fixtures use frozen
+v0.4 schema DDL and synthetic history, not a developer's native stores.
+
+Application migrations run transactionally and record their version in
+`application_schema`. SQLite's `user_version` remains the portable-backup
+format version. Newer or malformed application versions fail without clearing
+history. `db::open_read_only` never creates or migrates a library; callers must
+explicitly initialize it through the desktop before querying an older schema.
+Keep backup/sync allowlists and release-version tooling in step with future
+schema or workspace changes.
+
+`service::Library` bounds page sizes, offsets and response bytes, and returns a
+library identity/revision from the same WAL snapshot as its transcript. These
+are internal adapter APIs; transcript payloads require a separate allowlist and
+project-scope check before exposing them through external tools.
 
 Build output (all ignored by git):
 
