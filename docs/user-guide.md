@@ -256,6 +256,8 @@ must be rebuilt. Releases predating the updater need one manual update first.
 Running `hession` without arguments opens the desktop. Explicit commands run
 without a webview. Linux packages install `hession` on `PATH`; the AppImage
 installer forwards command arguments through its launcher.
+AppImage terminal commands also require the host graphics libraries listed in
+[Install](../README.md#install), even when no display is available.
 
 On macOS, use `/Applications/Hession.app/Contents/MacOS/hession` directly, or
 create an optional user-owned link:
