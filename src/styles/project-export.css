@@ -1,0 +1,15 @@
+.project-export-dialog{width:min(760px,calc(100vw - 32px))}
+.project-export-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;border:0;padding:0;margin:18px 0}
+.project-export-fields label{display:flex;flex-direction:column;gap:6px;color:var(--text-2);font-size:var(--text-sm)}
+.project-export-fields label:first-child{grid-column:1/-1}
+.project-export-fields input:not([type=checkbox]),.project-export-fields select{width:100%;min-height:34px;padding:6px 9px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font:inherit}
+.project-export-fields .project-export-checkbox{flex-direction:row;align-items:center;gap:8px}
+.project-export-target{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:9px;font-size:var(--text-sm)}
+.project-export-target code{flex:1;min-width:150px}
+.project-export-dialog code{overflow-wrap:anywhere;white-space:pre-wrap;font-size:var(--text-sm)}
+.project-export-dialog .project-export-hint{color:var(--text-3);font-size:var(--text-sm)}
+.project-export-preview{border-top:1px solid var(--border);padding-top:14px;margin-top:14px}
+.project-export-dialog h3{font-size:var(--text-base);margin:0 0 9px}
+.project-export-dialog ul{padding-left:20px;color:var(--text-2);font-size:var(--text-sm);line-height:1.6}
+.project-export-dialog .project-export-error{color:var(--danger)}
+@media(max-width:600px){.project-export-fields{grid-template-columns:1fr}}

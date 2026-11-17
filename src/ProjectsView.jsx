@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ChevronLeft, ChevronRight, FileCode2, Folder, GitBranch, Menu, RefreshCw, Search } from 'lucide-react';
 import { api } from './api.js';
+import { ProjectExportButton } from './components/ProjectExportDialog.jsx';
 import './styles/projects.css';
 
 const PAGE_SIZE = 20;
@@ -136,7 +137,7 @@ function ProjectDetails({ project, refreshKey, onSelectSession }) {
   const rows = files.data?.files || [];
   return <div className="project-detail">
     <header className="project-heading"><span className="project-eyebrow">Recorded workspace</span><h1>{project.display_name || project.recorded_path}</h1><code>{project.recorded_path}</code>
-      <p>{project.session_count} sessions · {project.host ? `SSH host ${project.host}` : `${project.local_session_count} local, ${project.synced_session_count} synced`}{project.ambiguous_host && ' · ambiguous host evidence'}</p></header>
+      <p>{project.session_count} sessions · {project.host ? `SSH host ${project.host}` : `${project.local_session_count} local, ${project.synced_session_count} synced`}{project.ambiguous_host && ' · ambiguous host evidence'}</p><ProjectExportButton project={project}/></header>
     <section className="project-card" aria-label="Reported files">
       <h2><FileCode2 size={17}/>Reported files</h2>
       <label className="project-search"><Search size={14}/><input type="search" aria-label="Filter reported filenames" value={filename} onChange={event => { setFilename(event.target.value); setOffset(0); setSelectedPath(null); }} placeholder="Filter recorded paths"/></label>

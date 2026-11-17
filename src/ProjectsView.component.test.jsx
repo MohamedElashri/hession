@@ -109,3 +109,15 @@ test('workspace filtering resets paging and explicit inspection admits only one 
   await act(async () => finish(inspection));
   await screen.findByText('current-branch');
 });
+
+test('project export opens a preview for the selected recorded workspace', async () => {
+  const user = userEvent.setup();
+  render(<ProjectsView onSelectSession={vi.fn()}/>);
+  await user.click(await screen.findByRole('button', { name: 'Export project ZIP' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Export project history' });
+  expect(within(dialog).getByText('project', { selector: 'strong' })).toBeTruthy();
+  expect(within(dialog).getByRole('button', { name: 'Save reviewed ZIP' }).disabled).toBe(true);
+  expect(calls('prepare_project_archive')).toHaveLength(0);
+  await user.click(within(dialog).getByRole('button', { name: 'Close project export' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
