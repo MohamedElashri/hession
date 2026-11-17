@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.5.0] - 2026-11-17
+
+### New
+
+- **Automatic local indexing:** observe local history while Hession is open, with
+  incremental Claude/Codex appends, recovery checks for other stores, pause/resume
+  controls and indexing health. SSH refresh keeps its startup/manual settings;
+  private device sync remains manual.
+- **Live activity:** browse recent local sessions and follow bounded event updates.
+  Following starts off; new events preserve your reading position. Labels describe
+  recorded activity rather than claiming that an agent process is running.
+- **Developer search:** combine words with AND, phrases, OR, exclusions and typed
+  agent/project/file/tool/branch/date/error/host filters. Browse sessions or matching
+  messages, inspect highlighted excerpts and jump to the exact transcript event.
+  Legacy search remains available.
+- **Projects, files and Git:** follow reported path references to their source
+  events. Inspect local Git explicitly to distinguish reported read/write intent
+  from observed worktree changes and verified commits, without attributing agent
+  authorship or contacting remotes.
+- **Portable project ZIPs:** preview a scoped project selection, export Markdown
+  and JSON with a versioned manifest and checksums, and cancel without a partial
+  destination. Redaction starts on; tool bodies, absolute paths, recorded Git and
+  statistics require explicit inclusion. Archives are reading copies, not backups.
+- **Keyboard navigation:** find commands, sessions and workspaces from the command
+  palette; use platform-specific shortcuts with focus restoration and input guards.
+- **Headless CLI and MCP:** query indexed sessions, search, projects and files,
+  follow recorded changes, index locally and export projects without a webview.
+  The seven-tool MCP server is read-only stdio, requires an explicit project
+  allowlist and returns metadata by default. Safe conversation text requires a
+  separate owner opt-in; raw tool bodies and reasoning are excluded.
+
+### Improved
+
+- Share history services across desktop and headless interfaces. Coordinate
+  writers, maintenance, source imports and watcher leadership across processes.
+- Migrate v0.4 libraries transactionally while retaining session IDs, annotations,
+  native resume, existing exports, backups, continuation and encrypted sync.
+- Bound new read/search/export work, handle oversized events explicitly and apply
+  backpressure to MCP/output queues. Local derived indexes stay outside sync data.
+
+### Before upgrading
+
+Create a SQLite backup in **Settings → Saved data** before upgrading and keep it
+separate from the live library. The backup format remains v1. For rollback, install
+v0.4 and restore the pre-upgrade backup into a fresh data directory; keep the v0.5
+library copy until verified. Project ZIPs cannot restore a database or credentials.
+New project identities preserve recorded host/workspace distinctions; aliases and
+sibling worktrees are not silently merged. Pattern redaction cannot find every
+secret. Metadata can include titles derived from prompts and recorded paths.
+
 ## [0.4.0] - 2026-11-13
 
 ### Improved

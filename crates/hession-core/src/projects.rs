@@ -165,6 +165,7 @@ pub fn project_on_connection(
     if !scope.allows_workspace(workspace_id) {
         return Err(ProjectError::OutsideScope);
     }
+    check_project_metadata(conn, workspace_id)?;
     let mut project=conn.query_row(
         "SELECT w.id,substr(w.path,1,4097),substr(w.display_name,1,4097),
         substr(min(s.host),1,4097),count(DISTINCT coalesce(s.host,'')),count(s.id),
@@ -172,7 +173,7 @@ pub fn project_on_connection(
         sum(CASE WHEN s.id IS NOT NULL AND s.host IS NULL AND s.source_uri NOT LIKE 'hession-sync://%' THEN 1 ELSE 0 END),
         sum(CASE WHEN s.host IS NOT NULL AND s.source_uri NOT LIKE 'hession-sync://%' THEN 1 ELSE 0 END),
         sum(CASE WHEN s.source_uri LIKE 'hession-sync://%' THEN 1 ELSE 0 END)
-        FROM workspace w LEFT JOIN session s ON s.workspace_id=w.id WHERE w.id=? GROUP BY w.id",
+        FROM workspace w LEFT JOIN session s NOT INDEXED ON s.workspace_id=w.id WHERE w.id=? GROUP BY w.id",
         [workspace_id],
         |row|Ok(Project {
             workspace_id:row.get(0)?,project_key:String::new(),recorded_path:row.get(1)?,
@@ -371,11 +372,12 @@ pub fn files_on_connection(
     if filename_filter.is_some_and(|s| s.len() > MAX_PATH_BYTES || s.contains('\0')) {
         return Err(ProjectError::InvalidPath);
     }
+    check_file_metadata(conn, id, scope)?;
     let mut stmt=conn.prepare("WITH references_deduplicated AS (
         SELECT DISTINCT f.session_id,f.entry_id,f.tool_invocation_id,f.path,
         CASE WHEN f.action='read' THEN 'read' WHEN f.action IN ('write','edit','patch','delete','create','rename') THEN 'write' ELSE 'reference' END category,
         e.occurred_at occurred_at
-        FROM file_activity f JOIN session s ON s.id=f.session_id
+        FROM session s NOT INDEXED CROSS JOIN file_activity f INDEXED BY file_session_idx ON f.session_id=s.id
         LEFT JOIN entry e ON e.id=f.entry_id AND e.session_id=f.session_id
         WHERE s.workspace_id=?1 AND (?2 IS NULL OR instr(lower(f.path),lower(?2))>0))
         SELECT substr(path,1,4097),sum(category='read'),sum(category='write'),sum(category='reference'),count(DISTINCT session_id),substr(max(occurred_at),1,128)
@@ -435,7 +437,7 @@ impl Library {
                 if path.contains('\0') {
                     return Err(ProjectError::InvalidPath);
                 }
-                tx.query_row("SELECT id FROM workspace WHERE path=?", [path], |r| {
+                tx.query_row("SELECT id FROM workspace NOT INDEXED WHERE CASE WHEN octet_length(path)<=4096 THEN path END=?", [path], |r| {
                     r.get(0)
                 })
                 .optional()?
@@ -618,4 +620,61 @@ pub fn open_project_file(root: &Path, relative: &Path) -> Result<std::fs::File, 
         directory = file;
     }
     Err(ProjectError::InvalidPath)
+}
+
+const PROJECT_METADATA_BYTES: i64 = 16 * 1024 * 1024;
+const PROJECT_METADATA_CELL: i64 = 64 * 1024;
+fn metadata_limit() -> ProjectError {
+    ProjectError::Service(ServiceError::ResponseTooLarge)
+}
+/// Called only after workspace authorization. Size before native source strings,
+/// host-distinct aggregation, path allocation or portable project-key hashing.
+fn check_project_metadata(conn: &Connection, id: i64) -> Result<(), ProjectError> {
+    let workspace:Option<(i64,i64)>=conn.query_row("SELECT coalesce(octet_length(path),0),coalesce(octet_length(display_name),0) FROM workspace WHERE id=?",[id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let (path, name) = workspace.ok_or(ProjectError::OutsideScope)?;
+    if path > MAX_PATH_BYTES as i64 {
+        return Err(ProjectError::InvalidPath);
+    }
+    if name > PROJECT_METADATA_CELL {
+        return Err(metadata_limit());
+    }
+    let sql="WITH approved AS MATERIALIZED(SELECT id FROM session NOT INDEXED WHERE workspace_id=?1 LIMIT 131073)
+        SELECT coalesce(max(octet_length(s.host)),0),coalesce(max(max(coalesce(octet_length(s.started_at),0),coalesce(octet_length(s.last_event_at),0),coalesce(octet_length(s.source_uri),0))),0),
+        coalesce(sum(128+coalesce(octet_length(s.host),0)+coalesce(octet_length(s.started_at),0)+coalesce(octet_length(s.last_event_at),0)+coalesce(octet_length(s.source_uri),0)),0)
+        FROM approved a CROSS JOIN session s ON s.id=a.id";
+    let (host, cell, total): (i64, i64, i64) =
+        conn.query_row(sql, [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    if host > MAX_PATH_BYTES as i64 {
+        return Err(ProjectError::InvalidPath);
+    }
+    if cell > PROJECT_METADATA_CELL || total > PROJECT_METADATA_BYTES {
+        return Err(metadata_limit());
+    }
+    Ok(())
+}
+/// File-history metadata only, shared by the restricted reader and file-summary
+/// aggregation. No evidence, native cwd, tool/provider body or private text read.
+pub(crate) fn check_file_metadata(
+    conn: &Connection,
+    id: i64,
+    scope: &ProjectScope,
+) -> Result<(), ProjectError> {
+    if !scope.allows_workspace(id) {
+        return Err(ProjectError::OutsideScope);
+    }
+    let sql="WITH approved AS MATERIALIZED(SELECT id FROM session NOT INDEXED WHERE workspace_id=?1 LIMIT 131073)
+        SELECT coalesce(max(octet_length(f.path)),0),coalesce(max(max(coalesce(octet_length(f.action),0),coalesce(octet_length(e.occurred_at),0))),0),
+        coalesce(sum(128+coalesce(octet_length(f.path),0)+coalesce(octet_length(f.action),0)+coalesce(octet_length(e.occurred_at),0)),0),(SELECT count(*) FROM approved)
+        FROM approved a CROSS JOIN file_activity f INDEXED BY file_session_idx ON f.session_id=a.id
+        LEFT JOIN entry e ON e.id=f.entry_id AND e.session_id=f.session_id";
+    let (path, cell, total, sessions): (i64, i64, i64, i64) = conn.query_row(sql, [id], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    })?;
+    if path > MAX_PATH_BYTES as i64 {
+        return Err(ProjectError::InvalidPath);
+    }
+    if cell > PROJECT_METADATA_CELL || total > PROJECT_METADATA_BYTES || sessions > 131072 {
+        return Err(metadata_limit());
+    }
+    Ok(())
 }

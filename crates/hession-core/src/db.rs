@@ -182,10 +182,13 @@ pub fn configure_bulk_writer(conn: &Connection) -> Result<()> {
 /// Data directory: `$<PREFIX>_DATA_DIR` or `~/.<slug>` (see `crate::brand`).
 pub fn data_dir() -> PathBuf {
     let leaf = format!(".{}", crate::brand::SLUG);
-    if let Ok(dir) = std::env::var(crate::brand::env_var("DATA_DIR")) {
-        let trimmed = dir.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
+    if let Some(dir) = std::env::var_os(crate::brand::env_var("DATA_DIR")) {
+        // Preserve an explicit non-UTF8 override so opening fails clearly instead
+        // of silently selecting the user's default library.
+        match dir.to_str() {
+            Some(value) if !value.trim().is_empty() => return PathBuf::from(value.trim()),
+            None => return PathBuf::from(dir),
+            _ => (),
         }
     }
     if let Ok(home) = std::env::var("HOME") {
@@ -248,16 +251,14 @@ fn process_write_lock_for(
     conn: &Connection,
     timeout: Duration,
 ) -> Result<Option<crate::locking::LibraryLock>> {
-    conn.path()
-        .filter(|path| !path.is_empty())
-        .map(|path| {
-            crate::locking::LibraryLock::acquire(
-                Path::new(path),
-                crate::locking::LockKind::Write,
-                timeout,
-            )
-        })
-        .transpose()
+    let path = conn.path().ok_or_else(|| DbError::Message(
+        "Cannot resolve the library filename as UTF-8; reopen it through a UTF-8 path before writing".into(),
+    ))?;
+    if path.is_empty() {
+        return Ok(None);
+    }
+    crate::locking::LibraryLock::acquire(Path::new(path), crate::locking::LockKind::Write, timeout)
+        .map(Some)
         .map_err(DbError::Io)
 }
 
@@ -278,6 +279,9 @@ fn configured_connection(path: &Path) -> Result<Connection> {
 /// do not acquire the process write lock; initialization takes it before the
 /// process-local cache mutex so independent writers cannot race migrations.
 pub fn open_db(path: &Path) -> Result<Connection> {
+    if path.to_str().is_none() {
+        return Err(DbError::Message("Library paths must be valid UTF-8".into()));
+    }
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         ensure_dir_permissions(parent)?;
     }
@@ -701,6 +705,9 @@ pub fn schema_version(conn: &Connection) -> Result<i64> {
 
 /// Read commands must never create a database or silently migrate user data.
 pub fn open_read_only(path: &Path) -> Result<Connection> {
+    if path.to_str().is_none() {
+        return Err(DbError::Message("Library paths must be valid UTF-8".into()));
+    }
     let conn = Connection::open_with_flags(
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,

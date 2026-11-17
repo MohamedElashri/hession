@@ -294,6 +294,8 @@ fn destination(database: &Path, path: &Path) -> Result<PathBuf, ExportError> {
     }
     Ok(result)
 }
+const METADATA_LIMIT_MARKER: &str = "HESSION_EXPORT_METADATA_LIMIT";
+
 fn open(
     library: &Library,
     cancel: &ExportCancellation,
@@ -302,6 +304,20 @@ fn open(
     limits.validate()?;
     cancel.check()?;
     let mut conn = db::open_read_only(library.path())?;
+    // Only a numeric/zero-argument error branch reaches this function. CASE
+    // must measure a direct column before SQLite can load its text payload.
+    conn.create_scalar_function(
+        "_hession_export_metadata_limit_v1",
+        0,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8
+            | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
+        |_| {
+            Err::<i64, _>(rusqlite::Error::UserFunctionError(Box::new(
+                io::Error::other(METADATA_LIMIT_MARKER),
+            )))
+        },
+    )?;
+    conn.query_row("SELECT CASE WHEN coalesce(octet_length(identity),0)<=4096 AND typeof(revision)='integer' THEN 1 ELSE _hession_export_metadata_limit_v1() END FROM library_revision WHERE id=1",[],|r|r.get::<_,i64>(0))?;
     let deadline = Instant::now() + Duration::from_millis(limits.timeout_ms);
     let interrupt = cancel.clone();
     conn.progress_handler(
@@ -316,6 +332,11 @@ fn normalize_error<T>(
 ) -> Result<T, ExportError> {
     match result {
         Err(_) if cancel.is_cancelled() => Err(ExportError::Cancelled),
+        Err(ExportError::Sql(rusqlite::Error::SqliteFailure(_, Some(message))))
+            if message.contains(METADATA_LIMIT_MARKER) =>
+        {
+            Err(ExportError::Limit("metadata bytes"))
+        }
         Err(ExportError::Sql(rusqlite::Error::SqliteFailure(code, _)))
             if code.code == rusqlite::ErrorCode::OperationInterrupted =>
         {
