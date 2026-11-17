@@ -33,10 +33,41 @@ pub struct AppState {
     pub db_path: Mutex<PathBuf>,
 }
 
+fn show_main_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    #[cfg(target_os = "macos")]
+    let _ = app.show();
+    if let Some(window) = app.get_webview_window("main") {
+        #[cfg(target_os = "linux")]
+        {
+            // Tao can drop focus while its cached minimized state awaits a GTK
+            // event. Present on the UI thread to restore and activate together.
+            let main = window.clone();
+            let _ = window.run_on_main_thread(move || {
+                use gtk::prelude::GtkWindowExt;
+                if let Ok(window) = main.gtk_window() {
+                    window.present_with_time(gtk::gdk::ffi::GDK_CURRENT_TIME as u32);
+                }
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }
+}
+
 pub fn run() {
     let db_path = db::db_path();
     let db_path_for_setup = db_path.clone();
     tauri::Builder::default()
+        // CLI dispatch happens in main before this builder. Only desktop launches
+        // share an instance, including launches from a different app version.
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(commands::ExportState::default())
@@ -143,6 +174,12 @@ pub fn run() {
             data_management::import_saved_data,
             data_management::delete_saved_data,
         ])
-        .run(tauri::generate_context!())
-        .unwrap_or_else(|error| panic!("error while running {}: {error}", brand::NAME));
+        .build(tauri::generate_context!())
+        .unwrap_or_else(|error| panic!("error while running {}: {error}", brand::NAME))
+        .run(|_app, _event| {
+            #[cfg(target_os = "macos")]
+            if matches!(_event, tauri::RunEvent::Reopen { .. }) {
+                show_main_window(_app);
+            }
+        });
 }

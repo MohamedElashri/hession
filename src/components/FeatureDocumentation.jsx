@@ -1,16 +1,36 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import syncGuide from '../../docs/private-sync.md?raw';
+import userGuide from '../../docs/user-guide.md?raw';
 import hostingGuide from '../../docs/self-hosting.md?raw';
-import continuationGuide from '../../docs/continuation.md?raw';
-import securityGuide from '../../docs/sync-security.md?raw';
+import protocolGuide from '../../docs/sync-protocol.md?raw';
+
+// Settings and the repository share one source for each topic. Promote its
+// heading for the focused help page without including unrelated guide sections.
+function section(heading) {
+  const start = userGuide.indexOf(`## ${heading}\n`);
+  if (start < 0) throw new Error(`Missing help section: ${heading}`);
+  const end = userGuide.indexOf('\n## ', start + 1);
+  return userGuide.slice(start, end < 0 ? undefined : end).replace(/^#(#+) /gm, '$1 ');
+}
 
 const guides = {
-  sync: syncGuide, hosting: hostingGuide, continuation: continuationGuide, security: securityGuide,
+  sync: section('Private device sync'), hosting: hostingGuide,
+  continuation: section('Cross-harness continuation'), security: section('Security and privacy'),
+  terminal: section('Terminal commands and read-only MCP'), protocol: protocolGuide,
 };
-const paths = { 'private-sync.md': 'sync', 'self-hosting.md': 'hosting', 'continuation.md': 'continuation', 'sync-security.md': 'security' };
+const paths = {
+  'self-hosting.md': 'hosting', 'sync-protocol.md': 'protocol',
+  '#private-device-sync': 'sync', '#cross-harness-continuation': 'continuation',
+  '#security-and-privacy': 'security', '#mcp-server-permissions': 'terminal',
+  '#terminal-commands-and-read-only-mcp': 'terminal',
+};
 const plugins = [remarkGfm];
+
+function helpPage(href = '') {
+  return paths[href.replace(/^user-guide\.md(?=#)/, '')]
+    || paths[href.split('#')[0]];
+}
 
 export default function FeatureDocumentation({ topic, onClose }) {
   const [page, setPage] = useState(topic);
@@ -23,8 +43,8 @@ export default function FeatureDocumentation({ topic, onClose }) {
       </>}
     </div>
     <div className="markdown-body feature-documentation"><ReactMarkdown remarkPlugins={plugins} components={{
-      a: ({ href, children }) => paths[href]
-        ? <a href={`#guide-${paths[href]}`} onClick={event => { event.preventDefault(); setPage(paths[href]); }}>{children}</a>
+      a: ({ href, children }) => helpPage(href)
+        ? <a href={`#guide-${helpPage(href)}`} onClick={event => { event.preventDefault(); setPage(helpPage(href)); }}>{children}</a>
         : <span title={href}>{children}</span>,
     }}>{guides[page]}</ReactMarkdown></div>
   </section>;

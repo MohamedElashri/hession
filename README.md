@@ -31,8 +31,7 @@ sync, continuation, and saved data. Update through **Settings → About → Chec
 updates → Download and install → Restart Hession**.
 In-app downloads are signature-verified. Linux system packages may request
 administrator authorization. Your library is kept when updating or uninstalling.
-Installer options: `--appimage`, `--version v0.5.0`, `--force`, `--uninstall`,
-`--help`; pass them after `sh -s --`.
+Run the installer with `sh -s -- --help` for package, upgrade, and uninstall options.
 
 AppImages use [host graphics libraries](https://github.com/AppImageCommunity/pkg2appimage/blob/master/excludelist), including for terminal commands.
 On minimal Debian/Ubuntu systems, install them first:
@@ -57,8 +56,10 @@ Supported histories: Claude Code, Codex, OpenCode, Cline, Pi, Command Code,
 Muse, Hermes Agent, and Antigravity. Stars, tags, Markdown/JSON export, token
 and cost analytics, appearance options, and terminal preferences are included.
 
-## New in 0.5.0
+## Features
 
+- Readable conversations distinguish **You**, **Agent**, and **Tool activity**,
+  with separate command/output panels, syntax highlighting, wrapping, and full-text copy.
 - Automatic local indexing with pause, recovery and health controls; **Live**
   follows recorded events while preserving your reading position.
 - Developer search supports AND, OR, phrases, exclusions and typed filters, with
@@ -72,15 +73,14 @@ and cost analytics, appearance options, and terminal preferences are included.
 
 ## Optional features
 
-Both features are **optional and disabled by default**, independently on each device.
+Both are disabled by default and independent on each device:
 
-| Feature | Enable and use |
-| --- | --- |
-| [Private device sync](docs/private-sync.md) | **Settings → Private sync**: connect to your self-hosted relay, select upload workspaces, preview, save the recovery key, and enable. Choose **Sync now** for each transfer. |
-| [Cross-harness continuation](docs/continuation.md) | **Settings → Continuation**: enable, open a session, then choose **Continue in…**. Review context and a matching local checkout before starting a new Claude Code or Codex session. |
-
-Sync transfers history, stars, and tags, not project files or native agent stores.
-Continuation starts a new session with context; it does not move a running agent.
+- [Private device sync](docs/user-guide.md#private-device-sync): select histories,
+  preview, and transfer through your own encrypted relay. Repository files and
+  native agent stores stay on their original machines.
+- [Cross-harness continuation](docs/user-guide.md#cross-harness-continuation):
+  review context and a local checkout, then start a new Claude Code or Codex
+  session. Enable it in **Settings → Continuation**.
 
 ## Privacy and your data
 
@@ -92,13 +92,13 @@ from models.dev and update checks/downloads from GitHub are user-initiated.
 Private sync encrypts selected history before sending it to your relay.
 Continuation prepares context locally; the destination harness may send that
 context to its normal model provider. Local libraries, handoff files, and ordinary
-backups and project ZIPs contain plaintext. Review archive previews before sharing. See [security and limits](docs/sync-security.md).
+backups and project ZIPs contain plaintext. Review archive previews before sharing. See [security and limits](docs/user-guide.md#security-and-privacy).
 
 ## Guides
 
-- [User guide](docs/user-guide.md): everyday use, [terminal/MCP](docs/user-guide.md#terminal-commands-and-read-only-mcp), supported stores, backups, fixes.
-- [Private sync](docs/private-sync.md) · [Self-hosting](docs/self-hosting.md).
-- [Continuation](docs/continuation.md) · [What's changed](CHANGELOG.md).
-- [Development](docs/development.md) · [Sync protocol](docs/sync-protocol.md).
+- [User guide](docs/user-guide.md): histories, search, terminal/MCP, sync, continuation, privacy, and backups.
+- [Relay hosting](docs/self-hosting.md): deployment, access, and recovery.
+- [Development](docs/development.md): architecture, checks, and releases.
+- [Sync protocol](docs/sync-protocol.md) · [Changelog](CHANGELOG.md).
 
 MIT licensed; see [LICENSE](LICENSE).

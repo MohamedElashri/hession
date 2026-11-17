@@ -16,6 +16,10 @@
 - Add local syntax highlighting for commands, code, JSON arguments, diffs and
   fenced Markdown. Choose a language or plain text per tool panel. Highlighting
   runs in a bounded background worker; large blocks remain readable as plain text.
+- Restore and focus the existing desktop window when Hession is launched again;
+  keep explicit CLI, indexing, and MCP commands independent and headless.
+- Consolidate setup and privacy help into the user guide, shorten development
+  documentation, and describe current README features without release labels.
 
 ## [0.5.0] - 2026-11-17
 

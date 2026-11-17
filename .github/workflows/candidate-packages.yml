@@ -43,7 +43,7 @@ jobs:
         if: matrix.os == 'linux'
         run: |
           make deps
-          sudo apt-get install -y --no-install-recommends patchelf xvfb xauth xdg-utils rpm cpio
+          sudo apt-get install -y --no-install-recommends patchelf xvfb xauth xdg-utils rpm cpio openbox
       - run: npm ci
       - name: Read candidate version
         run: node -p '"CANDIDATE_VERSION=" + require("./package.json").version' >> "$GITHUB_ENV"
@@ -76,13 +76,8 @@ jobs:
           bundle="$PWD/target/${{ matrix.target }}/release/bundle"
           sudo dpkg -i "$bundle"/deb/*.deb
           test "$(env -u DISPLAY -u WAYLAND_DISPLAY hession --version)" = "hession $CANDIDATE_VERSION"
-          scratch=$(mktemp -d)
-          status=0
-          HESSION_DATA_DIR="$scratch/library" CODEX_HOME="$scratch/codex" WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 \
-            dbus-run-session -- xvfb-run -a timeout --signal=TERM 10s /usr/bin/hession > "$RUNNER_TEMP/gui-smoke.log" 2>&1 || status=$?
-          cat "$RUNNER_TEMP/gui-smoke.log"
-          test "$status" -eq 124
-          test -s "$scratch/library/sessions.sqlite"
+          HESSION_NATIVE_SMOKE_ISOLATED=1 dbus-run-session --config-file=.github/scripts/native-session-bus.conf -- xvfb-run -a \
+            python3 .github/scripts/native-instance-smoke.py /usr/bin/hession "$RUNNER_TEMP/instance"
           sudo dpkg -i "$bundle"/deb/*.deb
           sudo dpkg -r hession
           test ! -e /usr/bin/hession
@@ -140,6 +135,7 @@ jobs:
           kill "$gui"
           wait "$gui" || true
           cat "$RUNNER_TEMP/gui-smoke.log"
+          HESSION_NATIVE_SMOKE_ISOLATED=1 python3 .github/scripts/native-instance-smoke.py "$cli" "$RUNNER_TEMP/instance"
           sudo ditto "$mount/Hession.app" /Applications/Hession.app
           sh /Applications/Hession.app/Contents/Resources/install-cli.sh "$cli" "$RUNNER_TEMP/bin/hession"
           "$RUNNER_TEMP/bin/hession" --help
@@ -168,6 +164,7 @@ jobs:
             ${{ runner.temp }}/gui-smoke.log
             ${{ runner.temp }}/native-gui.png
             ${{ runner.temp }}/native-import.json
+            ${{ runner.temp }}/instance/
           if-no-files-found: warn
           retention-days: 7
       - name: Remove disposable private updater key

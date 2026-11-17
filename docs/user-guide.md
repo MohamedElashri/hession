@@ -2,6 +2,11 @@
 
 For installation, see [Install](../README.md#install).
 
+[Search](#find-and-read-sessions) · [Keyboard](#keyboard-navigation) ·
+[Private sync](#private-device-sync) · [Continuation](#cross-harness-continuation) ·
+[Privacy](#security-and-privacy) · [CLI/MCP](#terminal-commands-and-read-only-mcp) ·
+[Troubleshooting](#troubleshooting)
+
 ## Import histories
 
 **Refresh histories** imports new and changed local/SSH sessions. It also runs at
@@ -208,23 +213,171 @@ portable reading format and cannot replace a SQLite backup for restoration.
 | --- | --- |
 | **Resume** | Reopens the original session in its own CLI and folder, locally or over SSH. Use **Copy command** if you prefer your terminal. |
 | **VS Code** | Opens the recorded local folder or an SSH workspace through Remote-SSH. Install the `code` shell command and, for remote folders, the extension. |
-| **Continue in…** | Starts a new Claude Code or Codex session from reviewed context. Enable **Settings → Continuation** first; see [Continuation](continuation.md). |
+| **Continue in…** | Starts a new Claude Code or Codex session from reviewed context. Enable **Settings → Continuation** first; see [Continuation](#cross-harness-continuation). |
 
 The destination CLI must be installed and signed in. Cline editor-extension
 histories resume through **Cline → History** in the editor. Synced library
 copies use **Continue in…**; they are not native harness sessions.
 
-## Sync between devices — optional
+## Private device sync
 
-**Settings → Private sync** connects to your self-hosted relay. Select upload
-workspaces, preview, save your recovery key, and explicitly enable sync. Empty
-selection means download-only. Transfers run only when you choose **Sync now**.
-Each other device joins with an invitation and recovery key, verifies the
-fingerprint, and enables separately. Local/SSH refresh and continuation are independent.
+Sync is **optional, manual, and off by default on each device**. It copies
+selected histories through your own encrypted relay. Local/SSH refresh and
+continuation work independently; no project files or native agent stores move.
 
-See [Private sync](private-sync.md) for setup, pause, recovery, and limitations,
-and [Self-hosting](self-hosting.md) for Docker and server backups. Sync does not
-copy repository files or install history into agent stores.
+### Setup
+
+Use an HTTPS relay ([Self-hosting](self-hosting.md)) and an unlocked macOS
+Keychain or Linux Secret Service. Setup stops if secure storage is unavailable;
+there is no plaintext credential fallback. Loopback HTTP is only for local tests.
+
+On the first device:
+
+1. Open **Settings → Private sync → Create library**. Enter the relay address,
+   device name, and setup token. **Test connection** sends no history.
+2. Select upload workspaces and **Preview selected histories**. Empty selection
+   means download-only; SSH workspaces are separate choices. Existing indexed
+   history is included. Estimates exclude protocol overhead.
+3. **Create encrypted library**, save the recovery key separately from the relay,
+   and confirm **I have saved my recovery key**. The setup token is not retained.
+4. Choose **Enable device sync**, then **Sync now**. Setup/enablement alone
+   never transfer history; choose **Sync now** for each transfer.
+
+On another device:
+
+1. On a trusted enabled device, choose **Pair another device**. The invitation
+   is single-use and expires after ten minutes.
+2. Choose **Join library** on the other device. Enter the same relay, device
+   name, invitation, and recovery key through a trusted channel.
+3. Select upload workspaces, preview, then **Connect this device**.
+4. Compare fingerprints with the trusted device, even for an empty library;
+   confirm the match, enable, then sync.
+
+The invitation grants relay access; the recovery key decrypts history and never
+reaches the relay. Downloaded histories appear only in Hession; use the separate
+**Continue in…** opt-in to start work from them.
+
+### Scope and controls
+
+| Included, encrypted | Omitted |
+| --- | --- |
+| Selected user/assistant text, titles, paths, timestamps, recorded Git/model hints, stars, tags, tool names/status/exit codes | Project files, uncommitted changes, tool inputs/results, reasoning, system/developer messages, attachments, credentials, terminal/feature preferences |
+
+Known secret patterns are redacted; arbitrary secrets in visible text may remain.
+Review scope and [Security](#security-and-privacy). Conflicting offline/concurrent
+versions, including stars/tags, are retained as separate branches.
+
+- **Stop** preserves completed work; an in-flight request may finish. Retry after
+  interruption or outage.
+- **Disable device sync** pauses transfers and allows scope changes. Preview
+  before re-enabling. Excluded unsent uploads are canceled; relay history remains.
+- **Disconnect relay** requires sync disabled and stopped. It removes local
+  relay settings/credentials, keeping indexed history and server registration.
+- Finish sync before refresh, backup/restore, deletion, or update restart;
+  these maintenance operations cannot run together.
+
+### Recovery
+
+| Situation | Action |
+| --- | --- |
+| Need a key copy | **Show recovery key** with the OS credential store unlocked. Save it separately from server backups. |
+| Setup interrupted | Setup stays disabled with its key securely saved. Save that key before disconnecting; if the relay initialized, join using an administrator-created invitation and the saved key. |
+| All devices lost | Use the administrator token to create an invitation, then join with the saved recovery key. Losing every key copy makes recovery impossible. |
+| Older relay backup restored | Disable sync; choose **Repair after restoring a relay backup → Replay after relay restore**; preview, enable, sync. Surviving devices republish selected history. Records missing everywhere cannot be recovered. |
+| Device/key compromised | Revoke server access ([server management](self-hosting.md)). Previously downloaded data remains readable; a compromised key requires a new library/key and trusted-device enrollment. |
+
+There is no background sync, remote deletion, key rotation, or automatic
+field-by-field merging. Local deletion does not erase relay history and history
+can return on a later sync. See [server limits](self-hosting.md).
+
+## Cross-harness continuation
+
+Continuation is **optional and off by default**. It starts a new Claude Code or
+Codex session from reviewed context. **Resume** reopens the original session;
+a handoff never moves or stops a running agent or rewrites native history.
+
+### Start a handoff
+
+1. Install/sign in to the destination `claude` or `codex` CLI and have the
+   matching checkout locally. Hession does not clone/copy project files.
+2. Refresh histories, enable **Settings → Continuation**, and choose a terminal
+   under **Settings → Terminal**.
+3. Open a session, choose **Continue in…**, and select the destination and
+   workspace. SSH/synced sources require an explicit local folder.
+4. Add an optional note. Tool inputs/results are excluded by default; include
+   them only if needed and review them for secrets.
+5. **Refresh preview** after edits. Check repository warnings, omissions, and
+   **Review exact handoff package**, then choose the destination's Continue button.
+6. The destination may ask permission to read the context file. Follow its own
+   permission flow; a terminal launch does not prove the harness read the package.
+
+Preparation is local and needs no extra model API key. After launch the harness
+may send context to its configured model provider. Historical tools are reference
+material and are never replayed. See [Security](#security-and-privacy).
+
+### Context and workspace checks
+
+The package includes the latest transferable request, recent visible conversation,
+notes, source/session details, and recorded/current workspace context. Optional
+tool context includes up to 12 recent calls; missing results are marked incomplete.
+Reasoning, system/developer messages, permission state, attachments, raw harness
+data, pending tools, and processes are omitted. Unsafe combined assistant text
+is omitted rather than guessed apart.
+
+| Content | Maximum |
+| --- | --- |
+| Whole package / note | 80,000 / 8,000 characters |
+| Recent text events | 120, up to 6,000 characters each |
+| Optional tool input / result | 3,000 / 4,000 characters per call |
+
+The latest user request is retained subject to the overall cap; preview reports
+shortened content. Check folder, branch, commit, and dirty files: matching folder
+names do not establish repository identity. History, option, Git, or dirty-submodule
+changes invalidate review. Git inspection shares a five-second deadline across
+the checkout and up to 31 dirty submodules, with 256,000 bytes per response;
+incomplete inspection blocks launch. Non-Git folders show an identity warning.
+These checks do not lock your checkout; avoid simultaneous edits.
+
+### Cleanup
+
+Packages are private **plaintext** under `~/.hession/handoffs/` or the configured
+data directory, excluded from portable backups. Packages older than seven days
+are removed on the next launch. Use **Saved handoff packages → Delete saved
+packages** or the cleanup button in Continuation settings after the agent reads
+them. Disabling continuation blocks new handoffs; it leaves saved packages and
+already launched agents alone. Native transcript conversion is unavailable.
+
+## Security and privacy
+
+Private sync and continuation are separate opt-ins, disabled by default. There
+is no Hession account or telemetry. Restoring a portable backup imports neither
+sync credentials nor feature enablement.
+
+| Location/action | Privacy boundary |
+| --- | --- |
+| Library, native history, handoffs, ordinary backups, project ZIPs | Plaintext on your device; protect them like project files. |
+| Private relay | Selected histories are encrypted locally with XChaCha20-Poly1305 and random keys/nonces. HTTPS protects transport and device credentials. |
+| Relay administrator | Sees membership, addresses, record sizes/timing; can withhold/lose records. Cannot decrypt without the library key. |
+| Continuation / MCP client | The destination/client may send returned context to its normal model provider. |
+
+Sync keys/device tokens stay in Keychain or Secret Service; there is no plaintext
+fallback. Keep the recovery key separately from server backups. Anyone with the
+key and encrypted records can decrypt them; loss of every key copy is permanent.
+Disable, disconnect, deletion, and access revocation do not erase downloaded data
+or rotate retained keys. A compromised key needs a new library and trusted-device
+enrollment. A compromised endpoint can read its local plaintext and keys in use.
+
+The protocol has **not had an independent security audit**. It authenticates
+ciphertext/metadata, but cannot guarantee detection of server rollback, withholding,
+or forked views. Remote deletion, rotation, and global rollback detection are
+absent. Keep independent backups. Pattern redaction cannot identify every secret.
+
+Downloaded histories are untrusted data. Native Resume is unavailable for those
+copies; continuation needs separate enablement, review, and launch. MCP requires
+owner-chosen scope and separate transcript permission; see [MCP server permissions](#mcp-server-permissions).
+Portable backups omit sync queues/partial downloads; manually copying the live
+database includes private local state. See the [Sync protocol](sync-protocol.md)
+and [dependency security](development.md#dependency-security) for implementation boundaries.
 
 ## Preferences and analytics
 
@@ -266,8 +419,11 @@ must be rebuilt. Releases predating the updater need one manual update first.
 
 ## Terminal commands and read-only MCP
 
-Running `hession` without arguments opens the desktop. Explicit commands run
-without a webview. Linux packages install `hession` on `PATH`; the AppImage
+Running `hession` without arguments opens the desktop, or restores and focuses
+the existing window. Explicit commands run independently without a webview, even
+while the desktop is open. On Linux, desktop reuse requires the same working
+session D-Bus connection. After upgrading from a build without this behavior,
+close the old app once before launching the updated one. Linux packages install `hession` on `PATH`; the AppImage
 installer forwards command arguments through its launcher.
 AppImage terminal commands also require the host graphics libraries listed in
 [Install](../README.md#install), even when no display is available.
@@ -400,5 +556,5 @@ backups contain private prompts and code; protect them as you would your project
 | Agent CLI not found | Check its login-shell `PATH` locally or on the host; sign in there. |
 | Terminal fails | Choose an installed terminal or correct the custom executable/arguments. |
 | VS Code fails | Install its `code` command and Remote-SSH support. |
-| Sync or continuation blocked | Read the warning and the relevant [sync](private-sync.md) or [continuation](continuation.md) guide. |
+| Sync or continuation blocked | Read the warning and the relevant [sync](#private-device-sync) or [continuation](#cross-harness-continuation) guide. |
 | Costs look wrong | Adjust **Analytics → Pricing matrix** and price overrides. |
