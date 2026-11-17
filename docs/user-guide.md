@@ -161,6 +161,34 @@ return a bound or availability error rather than silently claiming a complete
 result; an incomplete tracked-path scan is explicitly marked. Partial clones
 are unavailable for object inspection to prevent lazy network fetches.
 
+## Portable project ZIP archives
+
+Project ZIP export prepares a preview of the exact project and developer-search
+selection, including session counts, an approximate uncompressed size, detected
+redaction patterns, options and the intended destination. Review the preview
+before saving. A library change requires a new preview. Choose a new filename:
+project archives never replace an existing file, including a native agent log.
+
+Markdown and JSON transcripts share portable session and snapshot references
+with `activity/files.json` and the versioned `manifest.json`. File references
+remain reported evidence; exporting does not verify agent authorship or copy a
+repository tree. Optional Git metadata is recorded session context only. Export
+never runs Git, refreshes SSH mirrors, downloads prices or contacts a remote.
+Optional statistics use the cached values captured during preview.
+
+Tool inputs and outputs, absolute machine paths, Git metadata and statistics
+are off by default; secret-pattern redaction is on. Private reasoning,
+system/developer messages, raw event payloads, attachments, source URIs and
+repository remote credentials are always excluded. Absolute metadata fields
+are omitted by default; freeform transcript paths are masked conservatively.
+Pattern redaction cannot find every secret or encoded path. Inspect the archive
+before sharing; ZIP compression does not encrypt it.
+
+Cancellation before publication removes the temporary archive and leaves the
+destination absent. If saving wins the finalization race, the complete archive
+is kept and cancellation reports that it is already saved. The archive is a
+portable reading format and cannot replace a SQLite backup for restoration.
+
 ## Resume or continue a task
 
 | Action | Result |
