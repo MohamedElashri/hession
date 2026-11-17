@@ -332,6 +332,99 @@ Publish the first version containing the updater before testing checks against
 GitHub. Older versions still need the existing installer once; in-app updates
 work from the new version onward.
 
+### Shared developer search
+
+`hession_core::search` provides the typed parser and read-only service for desktop,
+CLI, MCP and export adapters. `Library::search` opens an existing library without
+migration and enforces a three-second SQLite execution budget. Adapters that own
+an existing read transaction can use `search_snapshot` to share its snapshot with
+other bounded reads; those callers own the SQL interrupt/cancellation budget. The query and independent `SearchFilters` apply together.
+The desktop selects this service through `developer_search` with Developer
+search; Legacy search retains the older commands and sorting behavior. The IPC
+adapter admits at most two blocking searches and returns a retryable busy error
+instead of building an unbounded queue. Result `position` is the row count before
+the selected entry, so transcript jumps remain correct when ordinals have gaps.
+Stars and bounded tags accompany scoped result metadata.
+
+The grammar uses implicit AND and uppercase `OR` with AND binding more tightly.
+A leading `-` excludes a term. Quotes enclose whole phrases or field values, with
+`\"` and `\\` escapes; other backslashes remain literal. Supported fields are
+`agent:`, `project:`, `file:`, `tool:`, `branch:`, `after:`, `before:`,
+`has:errors` and `host:`. Dates are valid `YYYY-MM-DD` UTC calendar dates;
+`after:` includes that date and `before:` excludes that date. `host:@local`
+selects local sessions. `has:errors` means a recorded failed tool status or
+nonzero exit code, not an inferred unsuccessful session. Fields use literal
+ASCII-case-insensitive substrings, except exact host matching and date comparison.
+Parenthesized Boolean groups and regexes are unsupported. Syntax errors include
+UTF-8 byte offsets. A bare `foo::bar`, `C++`, URI or path retains its punctuation;
+unknown field names report an error. Quote literal leading parentheses.
+
+Session search permits AND terms in different entries of a session. Message
+search requires its text terms in the same entry, with session metadata filters
+applied alongside them. Metadata-only session matches can have no entry ID.
+Word/phrase search uses safely quoted FTS5 expressions; punctuation uses literal
+matching without SQL wildcard interpretation. Ranking sorts the sum of best
+BM25 ranks first, with small deterministic phrase/title/exact-path boosts,
+then activity time, session ID and entry ordinal/ID. These scores are ordering
+values, not probabilities. Scoped desktop BM25 uses library-wide index
+statistics; out-of-scope entries can affect numeric rank but never expand the
+allowed IDs or excerpts. Restricted MetadataOnly/Conversation policies do not
+use those global FTS statistics. Snippets are bounded plain text; highlight spans
+use Unicode scalar offsets. A UI must render them as text, never HTML.
+
+The immutable `SearchScope::workspaces` allowlist is always enforced in SQL before
+content is fetched, outside every query OR. An empty allowlist denies all;
+unrestricted access requires explicitly constructing `SearchScope::all()`.
+Never deserialize or construct an MCP scope from a per-call request. The
+service caps queries at 4096 bytes/64 terms, pages at 100 results, scope at 512
+workspace IDs and encoded responses at 1 MiB. Cursor tokens are bound to query,
+filters, mode, visibility, page size, scope and library identity/revision. Any
+library mutation expires a cursor; restart the search instead of silently
+skipping/duplicating results. `countLowerBound` reports only observed rows plus
+one when a later row exists; it is not an expensive full count.
+
+`MetadataOnly` is the default visibility: only indexed metadata is searched and
+no transcript excerpts are returned. `Conversation` matches and excerpts only
+explicit `content_part.kind=text` attached to user/assistant entries whose kind
+is in the existing continuation allowlist (`VISIBLE_CONVERSATION_KINDS`). A
+reasoning event with an assistant role and a text part is still excluded. Thinking,
+system, developer and tool parts, and legacy combined `entry.search_text`
+without safe explicit text parts, are excluded from matching as well as results.
+Unknown Antigravity MODEL event kinds remain excluded; known `USER_INPUT`
+records are supported. There is no legacy transcript fallback. This restriction is reported in
+`visibilityNotice`. `AllIndexedText` is the explicit desktop policy and uses the
+complete FTS index. Conversation search scans the allowed text parts using a
+streaming Unicode-normalized matcher; its performance differs from FTS search.
+MCP adapters must fix visibility from server startup permissions and reject any
+request to elevate it. A query must never grant its own content permission.
+
+The opt-in synthetic benchmark creates 10,000 sessions and 50,000 entries in a
+temporary database and measures all three visibility policies. It reports 100
+warm top-20 searches and the first connection separately. The latter is not an
+OS-cold-cache claim; no global cache dropping is attempted:
+
+```sh
+CARGO_BUILD_JOBS=4 cargo test --locked --release -p hession-core --test search benchmark_10k -- --ignored --nocapture
+```
+
+Reference run (2026-11-17): optimized Rust build on Linux x86_64 kernel
+7.0.0-42, AMD Ryzen 7 7735H, 61,008 MiB RAM, NVMe/ext4 temporary storage.
+The database was 19,734,528 bytes. The one-minute host load average was 18.48
+at the start and 15.40 at the end on sixteen logical CPUs. Each policy used the same four queries
+(`compiler regression`, `"regression needle"`, `src/module-42.rs`,
+`agent:codex compiler`), twenty warmup searches and one hundred measured
+searches, with a new read-only connection per request. Results are local
+measurements, not a guarantee for every library or machine.
+
+| Visibility | Warm median | Warm p95 | First connection |
+| --- | ---: | ---: | ---: |
+| All indexed text | 240.89 ms | 379.93 ms | 347.31 ms |
+| Conversation | 197.45 ms | 398.14 ms | 351.45 ms |
+| Metadata only | 36.69 ms | 64.72 ms | 50.15 ms |
+
+The 250 ms warm p95 target was not met in this run. These measurements
+include the recorded host load and do not establish quiet-host performance.
+
 ## Background indexing storage and bounds
 
 Application schema 3 adds local-only `index_full_source`, `index_source_session`,
