@@ -384,6 +384,7 @@ pub(super) fn import(
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::time::{Duration, Instant};
 
     fn fixture() -> (tempfile::TempDir, PathBuf, Connection, ImportPricing) {
         let dir = tempfile::tempdir().unwrap();
@@ -397,16 +398,30 @@ mod tests {
         family: &str,
         pricing: &mut ImportPricing,
     ) -> Result<usize, String> {
-        import(
-            conn,
-            family,
-            &format!("{family}://{}", file.display()),
-            file,
-            family,
-            "/synthetic",
-            false,
-            pricing,
-        )
+        // The write-priority gate is process-wide, including other tests' private
+        // libraries. Large sync fixtures can legitimately occupy it past a single
+        // background-write deadline on a busy host. These tests check import
+        // reconciliation; dedicated gate tests cover timeout/rejection behavior.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let result = import(
+                conn,
+                family,
+                &format!("{family}://{}", file.display()),
+                file,
+                family,
+                "/synthetic",
+                false,
+                pricing,
+            );
+            if matches!(&result, Err(error) if error.contains("Library write queue is busy"))
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(25));
+                continue;
+            }
+            return result;
+        }
     }
     fn append(file: &Path, value: Value) {
         writeln!(
