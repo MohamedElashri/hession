@@ -6,10 +6,16 @@ usage() {
     'Creates a non-overwriting symbolic link. Default destination: ~/.local/bin/<executable-name>.'
 }
 case "${1:-}" in -h|--help) usage; exit 0 ;; esac
-[ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  usage >&2
+  exit 2
+fi
 cli_source=$1
 case "$cli_source" in /*) ;; *) printf '%s\n' 'Use an absolute executable path.' >&2; exit 2 ;; esac
-[ -f "$cli_source" ] && [ -x "$cli_source" ] || { printf '%s\n' 'Bundle executable is missing or not executable.' >&2; exit 2; }
+if [ ! -f "$cli_source" ] || [ ! -x "$cli_source" ]; then
+  printf '%s\n' 'Bundle executable is missing or not executable.' >&2
+  exit 2
+fi
 if [ "$#" -eq 2 ]; then
   cli_destination=$2
 else
