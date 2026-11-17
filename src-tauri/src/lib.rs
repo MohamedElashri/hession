@@ -17,6 +17,7 @@ pub mod importer;
 mod library_revision;
 mod paths;
 pub mod pricing;
+pub mod project_activity;
 pub mod remote;
 pub mod resume;
 pub mod sync;
@@ -78,6 +79,12 @@ pub fn run() {
             device_sync::disconnect_device_sync,
             device_sync::export_device_sync_recovery_key,
             device_sync::reset_device_sync_checkpoint,
+            project_activity::project_catalog,
+            project_activity::project_files,
+            project_activity::project_activity,
+            project_activity::file_history,
+            project_activity::recorded_git,
+            project_activity::inspect_git,
             commands::ping,
             commands::get_health,
             commands::search_sessions,

@@ -108,3 +108,23 @@ test.each(['success', 'failure'])('a sync %s preserves the selected session and 
   expect(screen.getByRole('heading', { name: 'Selected session' })).toBeTruthy();
   expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 2 of 2' })).toBeTruthy();
 });
+
+test('file evidence opens its source session and true transcript page despite gapped ordinals', async () => {
+  const user = userEvent.setup(); const original = api.getMockImplementation();
+  const project = { workspace_id: 1, recorded_path: '/work', display_name: 'work', session_count: 2, local_session_count: 2, synced_session_count: 0 };
+  api.mockImplementation(async (command, args) => {
+    if (command === 'project_catalog') return { projects: [project], has_more: false, next_offset: null };
+    if (command === 'project_files') return { files: [], has_more: false, next_offset: null };
+    if (command === 'recorded_git') return { contexts: [], entry_positions: {}, has_more: false, next_offset: null };
+    if (command === 'project_activity') return { evidence: [{ id: 1, reported_path: 'src/a.rs', category: 'reported_write_intent', source: { session_id: 2, entry_id: 777, entry_ordinal: 9999 }, agent_family: 'codex' }], entry_positions: { 777: 750 }, has_more: false, next_offset: null };
+    return original(command, args);
+  });
+  render(boot.tree);
+  await user.click(screen.getByRole('button', { name: 'Files and Git' }));
+  expect(new URL(window.location.href).searchParams.get('view')).toBe('projects');
+  await user.click(await screen.findByRole('button', { name: 'Open session 2, event 9999' }));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('get_session', { id: '2', limit: '500', page: '2' }));
+  await screen.findByRole('heading', { name: 'Selected session' });
+  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 2 of 2' })).toBeTruthy();
+  expect(new URL(window.location.href).searchParams.get('session')).toBe('2');
+}, 15000);
