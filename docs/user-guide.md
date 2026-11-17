@@ -8,6 +8,22 @@ For installation, see [Install](../README.md#install).
 startup unless disabled under **Settings → History refresh**. Its menu offers a per-agent refresh
 and **Full rescan**. Stopping keeps completed imports; original files are unchanged.
 
+Hession also indexes **local** changes automatically while its desktop window is
+open. Pause or resume it in the sidebar or **Settings → History refresh**. This
+preference is saved on this computer; an existing startup-refresh opt-out also
+disables automatic indexing until you explicitly resume it. Settings shows the
+source roots, unavailable stores, last successful import, and recent errors.
+Stores for agents you have not installed can be absent. No operating-system
+daemon is installed. SSH mirrors and private device transfers keep their separate
+explicit refresh/sync actions.
+
+Claude Code and Codex append complete JSONL lines without rebuilding earlier
+entries. Incomplete final lines wait for completion; malformed complete lines
+preserve the previous import and report an error. Replaced or rewritten files and
+other adapters use a safe rebuild. Deleted saved histories stay excluded from
+automatic imports; **Refresh histories** or **Full rescan** can import native
+sources again. Removing saved history never deletes native agent files.
+
 To add a remote machine, open **Settings → Remote hosts** (or **+** beside **Hosts**), select an SSH suggestion
 or enter an alias or `user@host`, then **Test** and refresh. Both machines need
 `rsync`; this computer needs `ssh` and a login that works without prompts:
@@ -49,6 +65,40 @@ history stays available while a host is offline or removes its original files.
   use Legacy search; developer queries support selected-session or whole-library
   exports until shared project export selection is available.
 
+## Keyboard navigation
+
+Open **Commands** in the sidebar or press **Cmd+K** on macOS / **Ctrl+K** on Linux.
+The palette finds commands, indexed sessions, and workspaces. Session search is
+debounced and returns up to 12 sessions; workspace matches are limited to 12.
+Use ↑/↓, Home/End and Enter to choose a result. Escape closes the palette and
+restores your previous focus. Unavailable commands explain what is needed.
+Choose **Keyboard shortcuts** in the sidebar, palette, or press **?** for the
+current reference, including platform-specific modifier labels.
+
+| Key | Action |
+| --- | --- |
+| Cmd/Ctrl+K | Open command palette |
+| / | Focus global session search |
+| Cmd/Ctrl+F | Search the complete selected session |
+| Cmd/Ctrl+B | Show/hide navigation |
+| Cmd/Ctrl+, | Open Settings |
+| Cmd/Ctrl+Shift+L | Focus the session list |
+| Cmd/Ctrl+Shift+T | Focus the transcript for scrolling |
+| j/k or ↓/↑ | Move focus in the session list; Enter opens the focused session |
+| Home/End | Focus the first/last session while in the list |
+| ? | Show keyboard shortcuts |
+| Escape | Dismiss a menu or dialog when its operation permits |
+
+Tab reaches the sidebar, session list, transcript, and their controls. In the
+sidebar, ↑/↓ and Home/End move between navigation buttons. Once the transcript
+is focused, use arrows, Page Up/Down, and Home/End to scroll. Palette commands
+also change transcript pages, open export, show analytics, or prepare Resume.
+Resume and continuation still require their usual review before launching.
+Letter shortcuts are inactive in text fields, editors, selection controls, and
+dialogs. Cmd/Ctrl+K, Cmd/Ctrl+F, and the focus shortcuts remain available while
+typing outside dialogs.
+Shortcuts ignore input composition and held-key repeats. Motion preferences
+apply to keyboard navigation too.
 ## Project and file evidence
 
 Choose **Files and Git** in the sidebar, filter the recorded workspaces, and

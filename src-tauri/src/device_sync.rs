@@ -837,12 +837,19 @@ fn identity(
     Ok((portable, None, None))
 }
 
-fn capture(path: &Path, config: &Config, key: &LibraryKey) -> Result<(), String> {
+fn capture(
+    path: &Path,
+    config: &Config,
+    key: &LibraryKey,
+    expected_epoch: i64,
+) -> Result<(), String> {
     let conn = db::open_db(path).map_err(|e| e.to_string())?;
     let ids = workspace_sessions(&conn, &config.scope)?;
     for id in ids {
         check_cancel(path)?;
+        hession_core::indexing::check_epoch(&conn, expected_epoch)?;
         let _guard = db::background_write(&conn).map_err(|e| e.to_string())?;
+        hession_core::indexing::check_epoch(&conn, expected_epoch)?;
         let tx = sql(conn.unchecked_transaction())?;
         let value = content(&tx, id)?;
         let digest = content_digest(&value)?;
@@ -1166,11 +1173,13 @@ fn pull(
     key: &LibraryKey,
     secrets: &Secrets,
     http: &Client,
+    expected_epoch: i64,
 ) -> Result<(), String> {
     set_phase("Downloading");
     let conn = db::open_db(path).map_err(|e| e.to_string())?;
     loop {
         check_cancel(path)?;
+        hession_core::indexing::check_epoch(&conn, expected_epoch)?;
         let cursor: i64 = sql(conn
             .query_row(
                 "SELECT cursor FROM replication_checkpoint WHERE vault_id=?",
@@ -1192,10 +1201,12 @@ fn pull(
             return Err("Relay returned an invalid change feed".into());
         }
         let _guard = db::background_write(&conn).map_err(|e| e.to_string())?;
+        hession_core::indexing::check_epoch(&conn, expected_epoch)?;
         let tx = sql(conn.unchecked_transaction())?;
         let mut previous = cursor;
         for record in &feed.records {
             check_cancel(path)?;
+            hession_core::indexing::check_epoch(&conn, expected_epoch)?;
             if record.sequence != previous.saturating_add(1) || record.sequence > feed.cursor {
                 return Err("Relay returned out-of-order records".into());
             }
@@ -1260,17 +1271,20 @@ fn push(
     key: &LibraryKey,
     secrets: &Secrets,
     http: &Client,
+    expected_epoch: i64,
 ) -> Result<(), String> {
     set_phase("Uploading");
     let conn = db::open_db(path).map_err(|e| e.to_string())?;
     {
         let _guard = db::background_write(&conn).map_err(|e| e.to_string())?;
+        hession_core::indexing::check_epoch(&conn, expected_epoch)?;
         let tx = sql(conn.unchecked_transaction())?;
         prune_outbox(&tx, config)?;
         sql(tx.commit())?;
     }
     loop {
         check_cancel(path)?;
+        hession_core::indexing::check_epoch(&conn, expected_epoch)?;
         // One bounded record per request keeps memory and HTTP bodies predictable.
         let row:Option<(String,String)>=sql(conn.query_row("SELECT record_id,record_json FROM replication_outbox WHERE vault_id=? ORDER BY rowid LIMIT 1",[&config.vault_id],|r|Ok((r.get(0)?,r.get(1)?))).optional())?;
         let Some((id, encoded)) = row else {
@@ -1291,11 +1305,14 @@ fn push(
                 &plaintext,
             )?;
             let _guard = db::background_write(&conn).map_err(|e| e.to_string())?;
+            hession_core::indexing::check_epoch(&conn, expected_epoch)?;
             let tx = sql(conn.unchecked_transaction())?;
             sql(tx.execute("UPDATE replication_outbox SET record_id=?,record_json=? WHERE record_id=? AND vault_id=?",params![replacement.id,serde_json::to_string(&replacement).map_err(|_|"Could not rewrap queued record")?,id,config.vault_id]))?;
             sql(tx.commit())?;
             record = replacement;
         }
+        check_cancel(path)?;
+        hession_core::indexing::check_epoch(&conn, expected_epoch)?;
         let reply: Value = response(
             http.post(format!("{}/v1/records", config.relay_url))
                 .bearer_auth(&secrets.device_token)
@@ -1306,6 +1323,7 @@ fn push(
             return Err("Relay did not acknowledge the upload; it remains queued".into());
         }
         let _guard = db::background_write(&conn).map_err(|e| e.to_string())?;
+        hession_core::indexing::check_epoch(&conn, expected_epoch)?;
         sql(conn.execute(
             "DELETE FROM replication_outbox WHERE record_id=? AND vault_id=?",
             params![record.id, config.vault_id],
@@ -1325,13 +1343,24 @@ fn transfer(path: &Path, config: &Config, secrets: &Secrets) -> Result<(), Strin
     }
     let http = client()?;
     let conn = db::open_db(path).map_err(|e| e.to_string())?;
+    let expected_epoch = hession_core::indexing::epoch(&conn).map_err(|e| e.to_string())?;
+    // Serialize explicit network transfers independently of short library writes.
+    // No library write lock is retained across an HTTP request.
+    let _transfer = hession_core::locking::LibraryLock::acquire_source(
+        path,
+        "hession-private-sync-transfer",
+        Duration::ZERO,
+    )
+    .map_err(|_| "Another process is syncing this library; wait for it to finish")?;
     {
         let _guard = db::background_write(&conn).map_err(|e| e.to_string())?;
+        hession_core::indexing::check_epoch(&conn, expected_epoch)?;
         init_schema(&conn)?;
     }
     // Authenticate the key before preparing uploads, but do not apply remote
     // changes until local offline edits have become immutable revisions.
     check_cancel(path)?;
+    hession_core::indexing::check_epoch(&conn, expected_epoch)?;
     let probe: Feed = response(
         http.get(format!("{}/v1/records", config.relay_url))
             .query(&[("after", 0), ("limit", 1)])
@@ -1351,10 +1380,10 @@ fn transfer(path: &Path, config: &Config, secrets: &Secrets) -> Result<(), Strin
         )?);
     }
     set_phase("Preparing uploads");
-    capture(path, config, &key)?;
-    pull(path, config, &key, secrets, &http)?;
-    push(path, config, &key, secrets, &http)?;
-    pull(path, config, &key, secrets, &http)
+    capture(path, config, &key, expected_epoch)?;
+    pull(path, config, &key, secrets, &http, expected_epoch)?;
+    push(path, config, &key, secrets, &http, expected_epoch)?;
+    pull(path, config, &key, secrets, &http, expected_epoch)
 }
 
 fn run(path: &Path) -> Result<Value, String> {
@@ -1988,7 +2017,15 @@ mod tests {
             let conn = db::open_db(&path).unwrap();
             init_schema(&conn).unwrap();
             assert!(
-                pull(&path, &config, &key, &secrets, &client().unwrap()).is_err(),
+                pull(
+                    &path,
+                    &config,
+                    &key,
+                    &secrets,
+                    &client().unwrap(),
+                    hession_core::indexing::epoch(&db::open_db(&path).unwrap()).unwrap()
+                )
+                .is_err(),
                 "accepted malicious page {index}"
             );
             for table in [
@@ -2330,6 +2367,49 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_epoch_stops_prepared_transfer_before_requeue_or_network() {
+        let _test = TEST_NETWORK_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+        fixture(&path, "native");
+        let conn = db::open_db(&path).unwrap();
+        init_schema(&conn).unwrap();
+        let key = LibraryKey::generate();
+        let (config, secrets) = config_for(
+            &path,
+            "https://unreachable.invalid",
+            Enrollment {
+                vault_id: "vault".into(),
+                device_id: "device".into(),
+                device_token: "unused".into(),
+            },
+            &key,
+        );
+        STOP.store(false, Ordering::Release);
+        let old = hession_core::indexing::epoch(&conn).unwrap();
+        hession_core::indexing::maintenance(&conn).unwrap();
+        assert!(capture(&path, &config, &key, old)
+            .unwrap_err()
+            .contains("Saved history changed"));
+        assert!(
+            pull(&path, &config, &key, &secrets, &client().unwrap(), old)
+                .unwrap_err()
+                .contains("Saved history changed")
+        );
+        assert!(
+            push(&path, &config, &key, &secrets, &client().unwrap(), old)
+                .unwrap_err()
+                .contains("Saved history changed")
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM replication_outbox", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
     fn real_relay_converges_preserves_offline_branches_and_rejects_wrong_key() {
         let _test = TEST_NETWORK_LOCK.lock().unwrap();
         // One test owns global progress/cancel flags; no OS credential store is
@@ -2499,7 +2579,13 @@ mod tests {
         // partial transfer without showing an incomplete transcript.
         let large = "Large transcript checkpoint. ".repeat(45_000);
         append(&conn_a, id_a, 6, "assistant", &large);
-        capture(&path_a, &config_a, &key).unwrap();
+        capture(
+            &path_a,
+            &config_a,
+            &key,
+            hession_core::indexing::epoch(&db::open_db(&path_a).unwrap()).unwrap(),
+        )
+        .unwrap();
         let pending: i64 = conn_a
             .query_row("SELECT COUNT(*) FROM replication_outbox", [], |r| r.get(0))
             .unwrap();
@@ -2579,7 +2665,13 @@ mod tests {
             "user",
             "Queued work survived device re-pairing.",
         );
-        capture(&path_a, &config_a, &key).unwrap();
+        capture(
+            &path_a,
+            &config_a,
+            &key,
+            hession_core::indexing::epoch(&db::open_db(&path_a).unwrap()).unwrap(),
+        )
+        .unwrap();
         let invitation: Value = response(
             http.post(format!("{}/v1/invitations", server.url))
                 .bearer_auth(&secrets_a.device_token)
@@ -2610,7 +2702,13 @@ mod tests {
             "user",
             "Withheld while workspace is excluded.",
         );
-        capture(&path_a, &repaired_config, &key).unwrap();
+        capture(
+            &path_a,
+            &repaired_config,
+            &key,
+            hession_core::indexing::epoch(&db::open_db(&path_a).unwrap()).unwrap(),
+        )
+        .unwrap();
         let queued: String = conn_a
             .query_row(
                 "SELECT record_json FROM replication_outbox ORDER BY rowid LIMIT 1",

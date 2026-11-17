@@ -359,6 +359,7 @@ fn prepare_backup_contents(conn: &Connection, ids: &[i64]) -> Result<(), String>
         sql(conn.execute("INSERT INTO entry_fts(entry_fts) VALUES ('rebuild')", []))?;
     }
     prune(conn)?;
+    sql(hession_core::indexing::clear_local_state(conn))?;
     sql(conn.pragma_update(None, "application_id", BACKUP_ID))?;
     sql(conn.pragma_update(None, "user_version", BACKUP_VERSION))?;
     Ok(())
@@ -672,6 +673,7 @@ pub async fn import_saved_data(
         select_ids(&source, &ids)?;
         let (plan, import_token) = import_plan(&tx, &source, &ids)?;
         verify_token(&import_token, &expected_token)?;
+        sql(hession_core::indexing::maintenance(&tx))?;
         let mut inserted = 0;
         let mut replaced = 0;
         let mut skipped = 0;
@@ -765,6 +767,11 @@ pub async fn delete_saved_data(
         let tx = sql(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         let ids = selection(&tx, &filters)?;
         verify_token(&token(&tx, &ids)?, &expected_token)?;
+        sql(hession_core::indexing::maintenance(&tx))?;
+        for id in &ids {
+            let source: String = sql(tx.query_row("SELECT source_uri FROM session WHERE id=?", [id], |r|r.get(0)))?;
+            sql(hession_core::indexing::exclude(&tx, &source))?;
+        }
         select_ids(&tx, &ids)?;
         if reset_database {
             if !filters.is_empty() { return Err("Clear all filters before resetting the database.".into()); }

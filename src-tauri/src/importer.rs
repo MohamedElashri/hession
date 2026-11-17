@@ -20,6 +20,8 @@ use serde_json::Value;
 mod cline;
 #[path = "import_formats.rs"]
 mod formats;
+#[path = "import_incremental.rs"]
+mod incremental;
 use formats::{ContentPart, RecordContext, ToolCall, ToolResult};
 
 pub(crate) fn cline_resume_environment(file: &Path) -> Vec<(String, String)> {
@@ -32,8 +34,26 @@ pub const HOST_ERROR_PREFIX: &str = "host ";
 const MAX_ERRORS: usize = 25;
 /// Cap on files collected during directory walks (robustness guard).
 const MAX_FILES: usize = 100_000;
+const MAX_LEGACY_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_DECODED_BYTES: usize = 128 * 1024 * 1024;
+const MAX_RECORDS: usize = 100_000;
+const FULL_SOURCE_VERSION: &str = "full-source-v1";
 /// Cooperative cancellation checked between import batches.
 static STOP: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    static LOCAL_STOP: std::cell::RefCell<Option<Arc<AtomicBool>>> = const {std::cell::RefCell::new(None)};
+}
+
+pub(crate) fn with_cancellation<T>(token: Arc<AtomicBool>, task: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Arc<AtomicBool>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LOCAL_STOP.with(|cell| *cell.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(LOCAL_STOP.with(|cell| cell.replace(Some(token))));
+    task()
+}
 
 /// Ask a running sync to stop at the next cancellation check.
 pub fn request_stop() {
@@ -46,7 +66,12 @@ pub fn reset_stop() {
 }
 
 fn stop_requested() -> bool {
-    STOP.load(Ordering::SeqCst)
+    LOCAL_STOP.with(|cell| {
+        cell.borrow().as_ref().map_or_else(
+            || STOP.load(Ordering::SeqCst),
+            |token| token.load(Ordering::SeqCst),
+        )
+    })
 }
 
 /// Cancellation check for long-running helpers outside this module.
@@ -293,23 +318,38 @@ pub fn get_available_agents() -> Vec<AvailableAgent> {
 }
 
 fn walk_jsonl(dir: &Path, acc: &mut Vec<PathBuf>) {
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        if acc.len() >= MAX_FILES || stop_requested() {
+    let mut stack = vec![(dir.to_path_buf(), 0)];
+    let mut visited = 0;
+    let mut examined = 0;
+    while let Some((current, depth)) = stack.pop() {
+        visited += 1;
+        if visited > 4096 || acc.len() >= MAX_FILES || stop_requested() {
             return;
+        }
+        if depth > 0 && fs::symlink_metadata(&current).is_ok_and(|m| m.file_type().is_symlink()) {
+            continue;
         }
         let entries = match fs::read_dir(&current) {
             Ok(e) => e,
             Err(_) => continue,
         };
-        for entry in entries.flatten() {
+        for entry in entries.take(100_000).flatten() {
+            examined += 1;
+            if examined > 100_000 {
+                return;
+            }
             if stop_requested() {
                 return;
             }
             let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() && depth < 24 && stack.len() < 4096 {
+                stack.push((path, depth + 1));
+            } else if (kind.is_file() || kind.is_symlink() && path.is_file())
+                && path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+            {
                 acc.push(path);
                 if acc.len() >= MAX_FILES {
                     return;
@@ -331,8 +371,12 @@ fn sort_by_mtime_desc(paths: &mut [PathBuf]) {
 
 /// All candidate files for one family.
 pub fn discover_source_files(family: &str) -> Vec<PathBuf> {
+    discover_from_sources(&all_sources(), family)
+}
+
+fn discover_from_sources(sources: &[Source], family: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    for src in all_sources().iter().filter(|s| s.family == family) {
+    for src in sources.iter().filter(|s| s.family == family) {
         match src.kind {
             SourceKind::Cline => cline::discover(&src.root, &mut out),
             SourceKind::Jsonl => walk_jsonl(&src.root.join(src.sub), &mut out),
@@ -384,15 +428,217 @@ pub fn discover_source_files(family: &str) -> Vec<PathBuf> {
     out
 }
 
+/// Environment overrides and known stores captured once per observer lifetime.
+/// No remote mirror discovery/SSH operation is part of automatic observation.
+pub(crate) struct LocalCatalog(Vec<Source>);
+
+impl LocalCatalog {
+    #[cfg(test)]
+    pub(crate) fn fixture(root: PathBuf) -> Self {
+        Self(vec![Source {
+            family: "codex",
+            product: "Codex",
+            root,
+            sub: "sessions",
+            kind: SourceKind::Jsonl,
+        }])
+    }
+    pub(crate) fn capture(family: Option<&str>) -> Self {
+        Self(local_sources_filtered(family))
+    }
+    pub(crate) fn roots(&self) -> Vec<PathBuf> {
+        let mut roots: Vec<_> = self.0.iter().map(|s| s.root.join(s.sub)).collect();
+        roots.sort();
+        roots.dedup();
+        roots
+    }
+    pub(crate) fn files(&self) -> Vec<(String, PathBuf)> {
+        let mut families: Vec<_> = self.0.iter().map(|s| s.family).collect();
+        families.sort();
+        families.dedup();
+        families
+            .into_iter()
+            .flat_map(|family| {
+                discover_from_sources(&self.0, family)
+                    .into_iter()
+                    .map(move |path| (family.into(), path))
+            })
+            .take(MAX_FILES)
+            .collect()
+    }
+    pub(crate) fn import(
+        &self,
+        conn: &mut Connection,
+        family: &str,
+        path: &Path,
+        epoch: i64,
+    ) -> Result<usize, String> {
+        self.import_config(conn, family, path, epoch, true, false)
+    }
+    pub(crate) fn import_with_policy(
+        &self,
+        conn: &mut Connection,
+        family: &str,
+        path: &Path,
+        epoch: i64,
+        automatic: bool,
+    ) -> Result<usize, String> {
+        self.import_config(conn, family, path, epoch, automatic, true)
+    }
+    fn import_config(
+        &self,
+        conn: &mut Connection,
+        family: &str,
+        path: &Path,
+        epoch: i64,
+        automatic: bool,
+        validate_contents: bool,
+    ) -> Result<usize, String> {
+        let mut pricing = ImportPricing::new();
+        pricing.automatic = automatic;
+        pricing.validate_contents = validate_contents;
+        pricing.epoch = Some(epoch);
+        let uri = native_source_uri(family, path)?;
+        // WAL changes do not reliably alter the primary database's stat.
+        import_file_with_conn(conn, &uri, false, None, &mut pricing)
+    }
+
+    /// Local-only CLI entry point. Capture the maintenance epoch before discovery
+    /// so a concurrent restore/delete cannot replay already prepared histories.
+    #[allow(dead_code)] // Root's separate CLI integration consumes this service.
+    pub(crate) fn manual_pass(&self, conn: &mut Connection) -> SyncSummary {
+        let mut summary = SyncSummary::default();
+        let epoch = match hession_core::indexing::epoch(conn) {
+            Ok(epoch) => epoch,
+            Err(error) => {
+                push_error(&mut summary, "index", error.to_string());
+                return summary;
+            }
+        };
+        let files = self.files();
+        summary.files_total = files.len();
+        if let Err(error) = hession_core::indexing::check_epoch(conn, epoch) {
+            push_error(&mut summary, "index", error);
+            return summary;
+        }
+        for (family, path) in files {
+            if stop_requested() {
+                summary.cancelled = true;
+                break;
+            }
+            match self.import_with_policy(conn, &family, &path, epoch, false) {
+                Ok(0) => summary.skipped += 1,
+                Ok(count) => summary.records += count,
+                Err(error) if stop_requested() => {
+                    summary.cancelled = true;
+                    let _ = error;
+                    break;
+                }
+                Err(error) => push_error(&mut summary, &path.to_string_lossy(), error),
+            }
+            summary.files_done += 1;
+        }
+        summary
+    }
+
+    pub(crate) fn fingerprint(&self, family: &str, path: &Path) -> Result<String, String> {
+        let mut stamp = Vec::new();
+        for candidate in source_paths(family, path) {
+            match fs::metadata(&candidate) {
+                Ok(metadata) => stamp.push(Some(hession_core::jsonl::Fingerprint::of(&metadata))),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && candidate != path => {
+                    stamp.push(None)
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        serde_json::to_string(&stamp).map_err(|e| e.to_string())
+    }
+}
+
+pub(crate) fn source_paths(family: &str, file: &Path) -> Vec<PathBuf> {
+    let database_paths = |database: &Path| {
+        let suffix = |suffix: &str| {
+            let mut name = database.as_os_str().to_owned();
+            name.push(suffix);
+            PathBuf::from(name)
+        };
+        vec![database.into(), suffix("-wal"), suffix("-journal")]
+    };
+    if family == "cline" {
+        let mut paths = cline::companions(file);
+        paths.retain(|path| path != file);
+        paths.insert(0, file.into());
+        paths
+    } else if is_database_file(file) {
+        database_paths(file)
+    } else if family == "antigravity" {
+        let mut paths = vec![file.into()];
+        if let Some(database) = formats::antigravity_summary(file) {
+            paths.extend(database_paths(&database));
+        }
+        paths
+    } else {
+        vec![file.into()]
+    }
+}
+
+fn native_source_uri(family: &str, path: &Path) -> Result<String, String> {
+    let path=path.to_str().ok_or("Native source path is not valid UTF-8; rename that history file or containing directory to a UTF-8 name before indexing it")?;
+    Ok(format!("{family}://{path}"))
+}
+
+fn charge_value(value: &Value, remaining: &mut usize) -> Result<(), String> {
+    let mut charge = |bytes| {
+        *remaining = remaining
+            .checked_sub(bytes)
+            .ok_or("Decoded source exceeds 128 MiB budget; previous history was preserved")?;
+        Ok::<_, String>(())
+    };
+    charge(128)?;
+    match value {
+        Value::String(text) => charge(text.len())?,
+        Value::Array(values) => {
+            for value in values {
+                charge_value(value, remaining)?;
+            }
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                *remaining = remaining
+                    .checked_sub(key.len())
+                    .ok_or("Decoded source exceeds 128 MiB budget")?;
+                charge_value(value, remaining)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 // JSONL parsing + minimal normalization
 
 /// Read a stable, complete JSONL snapshot. Never silently discard bad records.
 pub fn parse_jsonl_file(path: &Path) -> Result<Vec<Value>, String> {
-    let file = fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
     let before = file.metadata().map_err(|e| format!("stat source: {e}"))?;
+    if !before.is_file() {
+        return Err("Source is not a regular file".into());
+    }
+    if before.len() > MAX_LEGACY_BYTES {
+        return Err(
+            "Legacy JSONL exceeds 128 MiB read budget; previous history was preserved".into(),
+        );
+    }
     let mut reader = BufReader::new((&file).take(before.len()));
     let mut records = Vec::new();
-    let mut line = String::new();
+    let mut line = Vec::new();
+    let mut remaining = MAX_DECODED_BYTES;
     let mut bytes = 0u64;
     let mut line_number = 0;
     loop {
@@ -400,18 +646,24 @@ pub fn parse_jsonl_file(path: &Path) -> Result<Vec<Value>, String> {
             return Err("Import stopped".to_string());
         }
         line.clear();
-        let n = reader
-            .read_line(&mut line)
+        let n = (&mut reader)
+            .take(hession_core::jsonl::MAX_LINE_BYTES as u64 + 1)
+            .read_until(b'\n', &mut line)
             .map_err(|e| format!("read {}: {e}", path.display()))?;
         if n == 0 {
             break;
         }
         bytes += n as u64;
         line_number += 1;
-        if line.trim().is_empty() {
+        if line.len() > hession_core::jsonl::MAX_LINE_BYTES {
+            return Err(format!(
+                "Source line {line_number} exceeds 8 MiB; previous history was preserved"
+            ));
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let value: Value = serde_json::from_str(&line)
+        let value: Value = serde_json::from_slice(&line)
             .map_err(|e| format!("{} line {line_number}: {e}", path.display()))?;
         if !value.is_object() {
             return Err(format!(
@@ -419,15 +671,21 @@ pub fn parse_jsonl_file(path: &Path) -> Result<Vec<Value>, String> {
                 path.display()
             ));
         }
+        charge_value(&value, &mut remaining)?;
+        if records.len() >= MAX_RECORDS {
+            return Err(
+                "Legacy source exceeds 100000 records; previous history was preserved".into(),
+            );
+        }
         records.push(value);
     }
     let after = file.metadata().map_err(|e| format!("stat source: {e}"))?;
     let current = fs::metadata(path).map_err(|e| format!("stat source path: {e}"))?;
     if bytes != before.len()
-        || before.len() != after.len()
-        || before.modified().ok() != after.modified().ok()
-        || before.len() != current.len()
-        || before.modified().ok() != current.modified().ok()
+        || hession_core::jsonl::Fingerprint::of(&before)
+            != hession_core::jsonl::Fingerprint::of(&after)
+        || hession_core::jsonl::Fingerprint::of(&before)
+            != hession_core::jsonl::Fingerprint::of(&current)
     {
         return Err(format!(
             "{} changed while reading; retry sync",
@@ -849,9 +1107,8 @@ pub fn normalize_record(
 
 // sync_state / sync_checkpoint helpers
 
-/// Incremental sync is driven by file size + modification time only: a source
-/// whose current size and mtime still match the last successful import is
-/// skipped without being read. No content hashes, no parser versions.
+/// Compatibility fingerprint for full-reimport adapters. Verified Claude and
+/// Codex JSONL use the separate durable, prefix-validated append checkpoint.
 struct FileState {
     size: i64,
     mtime: f64,
@@ -964,6 +1221,50 @@ fn split_source_uri(source_uri: &str) -> Result<(&str, PathBuf), String> {
 struct ImportPricing {
     state: Arc<Mutex<crate::pricing::PricingState>>,
     revision: Option<u64>,
+    automatic: bool,
+    epoch: Option<i64>,
+    source_uri: Option<String>,
+    prepared_full: Option<PreparedSource>,
+    validate_contents: bool,
+    source_generation: Option<i64>,
+}
+
+struct PreparedSource {
+    uri: String,
+    capability: String,
+    paths: Vec<PathBuf>,
+    snapshot: hession_core::source::SourceSnapshot,
+}
+impl PreparedSource {
+    fn save(&self, conn: &Connection) -> Result<(), String> {
+        if stop_requested() {
+            return Err("Import stopped".into());
+        }
+        self.snapshot.validate(&self.paths)?;
+        hession_core::indexing::save_full_source(conn, &self.uri, &self.capability, &self.snapshot)
+            .map_err(|e| e.to_string())
+    }
+}
+fn persist_full_source(
+    conn: &mut Connection,
+    pricing: &ImportPricing,
+    prepared: &PreparedSource,
+) -> Result<(), String> {
+    let _writer = crate::db::background_write(conn).map_err(|e| e.to_string())?;
+    if let Some(epoch) = pricing.epoch {
+        hession_core::indexing::check_epoch(conn, epoch)?;
+    }
+    if let Some(generation) = pricing.source_generation {
+        hession_core::indexing::check_source_generation(conn, &prepared.uri, generation)?;
+    }
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    prepared.save(&tx)?;
+    if stop_requested() {
+        return Err("Import stopped".into());
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 
 impl ImportPricing {
@@ -971,6 +1272,12 @@ impl ImportPricing {
         Self {
             state: Arc::new(Mutex::new(crate::pricing::PricingState::new())),
             revision: None,
+            automatic: false,
+            epoch: None,
+            source_uri: None,
+            prepared_full: None,
+            validate_contents: true,
+            source_generation: None,
         }
     }
 
@@ -999,6 +1306,12 @@ fn commit_batch(
     sessions: Vec<formats::SessionData>,
 ) -> Result<Vec<usize>, String> {
     let _writer = crate::db::background_write(conn).map_err(|e| e.to_string())?;
+    if let Some(epoch) = pricing.epoch {
+        hession_core::indexing::check_epoch(conn, epoch)?;
+    }
+    if let (Some(uri), Some(generation)) = (&pricing.source_uri, pricing.source_generation) {
+        hession_core::indexing::check_source_generation(conn, uri, generation)?;
+    }
     if stop_requested() {
         return Err("Import stopped".into());
     }
@@ -1008,6 +1321,16 @@ fn commit_batch(
         .map_err(|e| e.to_string())?;
     let mut counts = Vec::with_capacity(sessions.len());
     for data in sessions {
+        if pricing.automatic
+            && hession_core::indexing::excluded(&tx, &data.uri).map_err(|e| e.to_string())?
+        {
+            counts.push(0);
+            continue;
+        }
+        if !pricing.automatic {
+            hession_core::indexing::include(&tx, &data.uri).map_err(|e| e.to_string())?;
+        }
+        let uri = data.uri.clone();
         counts.push(commit_session(
             &tx,
             family,
@@ -1016,12 +1339,28 @@ fn commit_batch(
             data,
             &pricing.state,
         )?);
+        if let Some(source_uri) = &pricing.source_uri {
+            let id = tx
+                .query_row("SELECT id FROM session WHERE source_uri=?", [&uri], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .map_err(|e| e.to_string())?;
+            hession_core::indexing::map_source_session(&tx, source_uri, id)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    if let Some(prepared) = &pricing.prepared_full {
+        prepared.save(&tx)?;
     }
     if stop_requested() {
         return Err("Import stopped".into());
     }
     tx.commit()
         .map_err(|e| format!("commit import batch: {e}"))?;
+    if let Some(uri) = &pricing.source_uri {
+        pricing.source_generation =
+            Some(hession_core::indexing::source_generation(conn, uri).map_err(|e| e.to_string())?);
+    }
     crate::analytics::shared_state().clear_cache();
     Ok(counts)
 }
@@ -1034,6 +1373,20 @@ fn import_file_with_conn(
     pricing: &mut ImportPricing,
 ) -> Result<usize, String> {
     let (family, file) = split_source_uri(source_uri)?;
+    if stop_requested() {
+        return Err("Import stopped".into());
+    }
+    pricing.prepared_full = None;
+    pricing.source_generation = None;
+    pricing.source_uri = Some(source_uri.into());
+    if pricing.epoch.is_none() {
+        pricing.epoch = Some(hession_core::indexing::epoch(conn).map_err(|e| e.to_string())?);
+    }
+    if pricing.automatic
+        && hession_core::indexing::excluded(conn, source_uri).map_err(|e| e.to_string())?
+    {
+        return Ok(0);
+    }
     // Decisions made before parsing must not race another import of the same
     // source. This lock never touches the original harness store.
     let _source_lock = conn
@@ -1054,7 +1407,110 @@ fn import_file_with_conn(
         .map(|s| (s.product.to_string(), s.root.to_string_lossy().to_string()))
         .ok_or_else(|| format!("unknown family: {family}"))?;
 
-    if file.extension().and_then(|e| e.to_str()) == Some("db") {
+    // An explicit import re-admits deleted native histories, even if an old
+    // append cursor or full-source cache otherwise appears unchanged.
+    let force = force
+        || (!pricing.automatic
+            && hession_core::indexing::excluded(conn, source_uri).map_err(|e| e.to_string())?);
+
+    if matches!(family, "claude" | "codex") {
+        return incremental::import(
+            conn,
+            family,
+            source_uri,
+            &file,
+            &product,
+            &agent_root,
+            force,
+            pricing,
+        );
+    }
+    let paths = source_paths(family, &file);
+    let capability = format!("{family}:{FULL_SOURCE_VERSION}");
+    let previous = hession_core::indexing::full_source(conn, source_uri, &capability)
+        .map_err(|e| e.to_string())?;
+    if previous.is_none() {
+        let _writer = crate::db::background_write(conn).map_err(|e| e.to_string())?;
+        if let Some(epoch) = pricing.epoch {
+            hession_core::indexing::check_epoch(conn, epoch)?;
+        }
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        hession_core::indexing::ensure_source_generation(&tx, source_uri)
+            .map_err(|e| e.to_string())?;
+        let ids = if is_database_file(&file) {
+            let mut statement=tx.prepare("SELECT id FROM session WHERE source_uri=?1 OR (source_uri>=?2 AND source_uri<?3) LIMIT 100001").map_err(|e|e.to_string())?;
+            let values = statement
+                .query_map(
+                    params![
+                        source_uri,
+                        format!("{source_uri}#"),
+                        format!("{source_uri}$")
+                    ],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map_err(|e| e.to_string())?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| e.to_string())?;
+            values
+        } else {
+            tx.query_row(
+                "SELECT id FROM session WHERE source_uri=?",
+                [source_uri],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .collect()
+        };
+        if ids.len() > MAX_RECORDS {
+            return Err("Source exceeds 100000 session mapping limit".into());
+        }
+        for id in ids {
+            hession_core::indexing::map_source_session(&tx, source_uri, id)
+                .map_err(|e| e.to_string())?;
+        }
+        if stop_requested() {
+            return Err("Import stopped".into());
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    pricing.source_generation = Some(
+        hession_core::indexing::source_generation(conn, source_uri).map_err(|e| e.to_string())?,
+    );
+    let metadata = hession_core::source::metadata(&paths)?;
+    if !force
+        && !pricing.validate_contents
+        && previous.as_ref().is_some_and(|old| {
+            old.files
+                .iter()
+                .map(|f| f.metadata.clone())
+                .collect::<Vec<_>>()
+                == metadata
+        })
+    {
+        return Ok(0);
+    }
+    let prepared = PreparedSource {
+        uri: source_uri.into(),
+        capability,
+        snapshot: hession_core::source::SourceSnapshot::capture(&paths, &stop_requested)?,
+        paths,
+    };
+    if !force
+        && previous
+            .as_ref()
+            .is_some_and(|old| old.same_contents(&prepared.snapshot))
+    {
+        if previous.as_ref() == Some(&prepared.snapshot) {
+            return Ok(0);
+        }
+        persist_full_source(conn, pricing, &prepared)?;
+        return Ok(0);
+    }
+    if is_database_file(&file) {
         let source = formats::DbSource {
             uri: source_uri,
             family,
@@ -1062,21 +1518,18 @@ fn import_file_with_conn(
             product: &product,
             root: &agent_root,
         };
-        return formats::import_database(conn, source, force, on_session, pricing);
+        // A database update may rewrite an old row without changing its count
+        // or session timestamp. The shared fingerprint already handled quiet
+        // sources; changed stores use a consistent source-scoped rebuild.
+        let count = formats::import_database(conn, source, true, on_session, pricing)?;
+        persist_full_source(conn, pricing, &prepared)?;
+        return Ok(count);
     }
     if family == "cline" {
         let (size, mtime) = cline::fingerprint(&file)?;
-        if !force
-            && get_file_state(conn, source_uri)
-                .map_err(|e| e.to_string())?
-                .is_some_and(|st| st.size == size && st.mtime == mtime && st.has_metrics)
-        {
-            return Ok(0);
-        }
         let data = cline::session_data(source_uri, &file, size, mtime)?;
-        if cline::fingerprint(&file)? != (size, mtime) {
-            return Err("Cline source changed while reading; retry sync".into());
-        }
+        prepared.snapshot.validate(&prepared.paths)?;
+        pricing.prepared_full = Some(prepared);
         return Ok(
             commit_batch(conn, family, &product, &agent_root, pricing, vec![data])?
                 .into_iter()
@@ -1089,18 +1542,8 @@ fn import_file_with_conn(
     }
     let size = stat.len() as i64;
     let mtime = source_mtime(&stat);
-    if !force {
-        if let Some(st) = get_file_state(conn, source_uri).map_err(|e| e.to_string())? {
-            if st.size == size && st.mtime == mtime && st.has_metrics {
-                return Ok(0);
-            }
-        }
-    }
     let values = parse_jsonl_file(&file)?;
-    let after = fs::metadata(&file).map_err(|e| format!("stat source: {e}"))?;
-    if after.len() != stat.len() || after.modified().ok() != stat.modified().ok() {
-        return Err("Source changed while reading; retry sync".to_string());
-    }
+    prepared.snapshot.validate(&prepared.paths)?;
     if values.is_empty() {
         let imported: bool = conn
             .query_row(
@@ -1112,9 +1555,11 @@ fn import_file_with_conn(
         if imported {
             return Err("Source contains no records; previous import preserved".to_string());
         }
+        persist_full_source(conn, pricing, &prepared)?;
         return Ok(0);
     }
     let data = formats::session_data(family, source_uri, &file, values, size, mtime)?;
+    pricing.prepared_full = Some(prepared);
     Ok(
         commit_batch(conn, family, &product, &agent_root, pricing, vec![data])?
             .into_iter()
@@ -1130,24 +1575,35 @@ fn source_mtime(stat: &fs::Metadata) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// All derived rows and the checkpoint commit together, preserving session IDs
-/// (and therefore bookmarks/tags) during a reimport. A source whose size and
-/// mtime changed is always rebuilt in full: no content hashing, no
-/// prefix-append shortcut.
-fn commit_session(
+fn insert_record(
+    conn: &Connection,
+    session_id: i64,
+    ordinal: i64,
+    record: &NormalizedRecord,
+) -> Result<(), String> {
+    conn.prepare_cached(
+            "INSERT INTO entry(session_id,ordinal,external_entry_id,parent_entry_id,turn_id,occurred_at,kind,role,search_text,payload_json)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        ).map_err(|e| e.to_string())?.execute(params![session_id,ordinal,record.external_id,record.parent,record.turn_id,record.occurred_at,
+                record.kind,record.role,record.body,record.payload.to_string()],
+        ).map_err(|e| format!("insert entry: {e}"))?;
+    let entry_id = conn.last_insert_rowid();
+    formats::insert_details(conn, session_id, entry_id, record)?;
+    Ok(())
+}
+
+fn upsert_session(
     conn: &Connection,
     family: &str,
     product: &str,
     agent_root: &str,
-    data: formats::SessionData,
-    pricing: &Arc<Mutex<crate::pricing::PricingState>>,
-) -> Result<usize, String> {
-    if stop_requested() {
-        return Err("Import stopped".to_string());
-    }
+    data: &formats::SessionData,
+    resolved_metadata: Option<&Value>,
+) -> Result<i64, String> {
+    let metadata = resolved_metadata.unwrap_or(&data.metadata);
     let agent_id = crate::db::get_or_create_agent(conn, family, product, Some(agent_root))
         .map_err(|e| e.to_string())?;
-    let cwd = first_str(&data.metadata, &["cwd", "directory", "git_repo_root"])
+    let cwd = first_str(metadata, &["cwd", "directory", "git_repo_root"])
         .or_else(|| data.records.iter().find_map(|r| r.context.cwd.clone()));
     // Remote sessions record host paths; qualify their workspace as
     // `host:/path` so identical paths on different machines stay distinct.
@@ -1163,7 +1619,7 @@ fn commit_session(
         }
         (None, _) => None,
     };
-    let title = first_str(&data.metadata, &["title"]).or_else(|| {
+    let title = first_str(metadata, &["title"]).or_else(|| {
         data.records
             .iter()
             .filter(|r| r.role.as_deref() == Some("user"))
@@ -1186,26 +1642,22 @@ fn commit_session(
             })
             .map(|s| s.chars().take(130).collect::<String>())
     });
-    let start =
-        first_iso(&data.metadata, &["started_at", "time_created", "timestamp"]).or_else(|| {
-            data.records
-                .iter()
-                .filter_map(|r| r.occurred_at.clone())
-                .min()
-        });
-    let end = first_iso(
-        &data.metadata,
-        &["last_activity_at", "ended_at", "time_updated"],
-    )
-    .or_else(|| {
+    let start = first_iso(metadata, &["started_at", "time_created", "timestamp"]).or_else(|| {
         data.records
             .iter()
             .filter_map(|r| r.occurred_at.clone())
-            .max()
-    })
-    .or_else(|| start.clone());
-    let external =
-        first_str(&data.metadata, &["id", "session_id", "sessionId"]).unwrap_or(data.fallback_id);
+            .min()
+    });
+    let end = first_iso(metadata, &["last_activity_at", "ended_at", "time_updated"])
+        .or_else(|| {
+            data.records
+                .iter()
+                .filter_map(|r| r.occurred_at.clone())
+                .max()
+        })
+        .or_else(|| start.clone());
+    let external = first_str(metadata, &["id", "session_id", "sessionId"])
+        .unwrap_or_else(|| data.fallback_id.clone());
     conn.execute(
         "INSERT INTO session(agent_id,workspace_id,external_id,source_uri,source_format,cwd,title,started_at,last_event_at,
           source_size,source_mtime,raw_metadata_json,token_usage_json,metrics_json,host)
@@ -1225,6 +1677,24 @@ fn commit_session(
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
+    Ok(session_id)
+}
+
+/// All derived rows and the checkpoint commit together, preserving session IDs
+/// (and therefore bookmarks/tags) during a reimport. Full-source adapters rebuild
+/// only after their durable identity/content fingerprint changed or invalidated.
+fn commit_session(
+    conn: &Connection,
+    family: &str,
+    product: &str,
+    agent_root: &str,
+    data: formats::SessionData,
+    pricing: &Arc<Mutex<crate::pricing::PricingState>>,
+) -> Result<usize, String> {
+    if stop_requested() {
+        return Err("Import stopped".to_string());
+    }
+    let session_id = upsert_session(conn, family, product, agent_root, &data, None)?;
     for table in [
         "file_activity",
         "tool_invocation",
@@ -1240,14 +1710,7 @@ fn commit_session(
         if stop_requested() {
             return Err("Import stopped".to_string());
         }
-        conn.prepare_cached(
-            "INSERT INTO entry(session_id,ordinal,external_entry_id,parent_entry_id,turn_id,occurred_at,kind,role,search_text,payload_json)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-        ).map_err(|e| e.to_string())?.execute(params![session_id,ordinal as i64,record.external_id,record.parent,record.turn_id,record.occurred_at,
-                record.kind,record.role,record.body,record.payload.to_string()],
-        ).map_err(|e| format!("insert entry: {e}"))?;
-        let entry_id = conn.last_insert_rowid();
-        formats::insert_details(conn, session_id, entry_id, record)?;
+        insert_record(conn, session_id, ordinal as i64, record)?;
     }
     // Results can precede calls in a log; correlate after all calls are inserted.
     for record in &data.records {
@@ -1299,6 +1762,21 @@ pub fn sync_all_with_progress(
     let mut summary = SyncSummary::default();
     let db_path = crate::db::db_path();
     let force = mode == "full";
+    let mut conn = match crate::db::open_db(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            push_error(&mut summary, "sync", e.to_string());
+            return summary;
+        }
+    };
+    let mut pricing = ImportPricing::new();
+    pricing.epoch = match hession_core::indexing::epoch(&conn) {
+        Ok(epoch) => Some(epoch),
+        Err(e) => {
+            push_error(&mut summary, "sync", e.to_string());
+            return summary;
+        }
+    };
 
     let mut families: Vec<String> = match agent_filter {
         Some(f) if !f.is_empty() => vec![f.to_string()],
@@ -1355,25 +1833,30 @@ pub fn sync_all_with_progress(
     summary.files_total = units.iter().sum();
     progress(0, summary.files_total, 0);
 
-    let mut conn = match crate::db::open_db(&db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            push_error(&mut summary, "sync", e.to_string());
-            return summary;
-        }
-    };
     if let Err(error) = crate::db::configure_bulk_writer(&conn) {
         push_error(&mut summary, "sync", error.to_string());
         return summary;
     }
-    let mut pricing = ImportPricing::new();
     let mut failed: HashSet<String> = HashSet::new();
     for (index, (fam, path)) in files.iter().enumerate() {
         if stop_requested() {
             summary.cancelled = true;
             break;
         }
-        let uri = format!("{}://{}", fam, path.display());
+        let uri = match native_source_uri(fam, path) {
+            Ok(uri) => uri,
+            Err(error) => {
+                failed.insert(fam.clone());
+                push_error(&mut summary, fam, error);
+                top_up_units(
+                    &mut summary,
+                    units.get(index).copied().unwrap_or(1),
+                    0,
+                    progress,
+                );
+                continue;
+            }
+        };
         if is_database_file(path) {
             // Progress counts committed batches; the current batch rolls back
             // on a source error or cancellation, and checkpoints do not advance.
@@ -1517,6 +2000,10 @@ fn sort_by_mtime_desc_vec(files: &mut [(String, PathBuf)]) {
         )
     });
 }
+
+#[cfg(test)]
+#[path = "import_hardening_tests.rs"]
+mod hardening_tests;
 
 #[cfg(test)]
 mod concurrency_tests {

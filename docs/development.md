@@ -6,6 +6,41 @@ It supports Linux and macOS.
 
 ## Setup
 
+Local observation uses pinned `notify` 8.2.0 with platform-native notifications,
+nonrecursive registrations over bounded known store directories, a 256-slot
+callback queue, and a 512-source debounce map. Debounce is 400 ms with a one-second
+maximum delay under continuous writes. Missing roots, native errors, or queue
+gaps recover through bounded reconciliation; metadata polling runs every 15
+seconds and complete-prefix JSONL audits every ten minutes. Directory discovery
+does not follow symlinks found below a configured root and caps depth at 24,
+directories at 4,096, and discovered source files at 100,000. A configured root
+can itself be a directory symlink. Unsupported/unreadable areas are reported as
+potentially stale rather than described as continuously live.
+
+Application schema 2 adds local-only `index_*` tables. They are excluded from the
+history/sync allowlists, contain no portable sync protocol changes, and are
+emptied in portable SQLite backups. Maintenance increments a transactionally
+checked epoch. Automatic imports respect hashed source exclusions after deletion;
+explicit imports can clear those exclusions. Close v0.4 before using the same
+library with v0.5; old binaries do not participate in these locks/checkpoints.
+
+Claude/Codex append preparation stages one bounded normalized record at a time
+in a private temporary SQLite file (4 GiB staged-text cap, 8 MiB per native line,
+16 MiB session metadata cap). Native files are never locked or written. Every
+append verifies SHA256 over the entire committed prefix, then verifies the
+snapshot prefix again before committing; normalization work covers new records,
+but validation I/O remains proportional to existing source bytes. Usage and late
+tool-result reconciliation, analytics, FTS, and the checkpoint share one main
+transaction. Other adapters retain source-scoped rebuilds; SQLite discovery
+includes WAL fingerprints and uses the existing read-only source snapshots.
+
+`session_delta` returns at most 100 entries and 1 MiB from a read-only WAL
+snapshot. Its durable change cursor includes library identity, maintenance epoch,
+session ID and sequence. Updates to older tool results are included. Rebuilds,
+deletions, or retention gaps return `reset: true` with a bounded tail. The change
+log retains 10,000 references and no transcript bodies. Desktop invalidation
+events carry only revision and capped session IDs; clients coalesce refreshes.
+
 You need Node.js 20.19+ or 22.12+, Rust stable ≥ 1.90, and Tauri's system
 libraries:
 
@@ -389,3 +424,65 @@ measurements, not a guarantee for every library or machine.
 
 The 250 ms warm p95 target was not met in this run. These measurements
 include the recorded host load and do not establish quiet-host performance.
+## Background indexing storage and bounds
+
+Application schema 3 adds local-only `index_full_source`, `index_source_session`,
+and hashed `index_source_generation` state, plus an index on
+`index_checkpoint(session_id)`. The ordered migration is transactional and keeps
+portable-backup `user_version` unchanged. These derived tables are outside the
+history/settings revision lists and the encrypted-sync content model. Backup
+preparation and reset clear them through `indexing::clear_local_state`; deleting
+the last mapped session removes its plain source URI. Only a hashed generation
+remains to reject already prepared imports.
+
+Claude/Codex use their verified append reader. Other adapters use full-source
+fingerprints with parser capability version, device/inode, size, nanosecond
+mtime/ctime, and SHA-256 of the primary file and relevant companions. SQLite WAL
+and rollback journals participate, as do Cline manifests/shared metadata and
+Antigravity's optional summaries database.
+Routine quiet polling can skip identical metadata. Startup, native dirty/gap
+events, and ten-minute reconciliation audits compare content even if metadata
+is identical. An unchanged hash avoids normalization/FTS rebuilding; changed
+metadata with identical content updates derived state only. When native events
+are unavailable, a rewrite hidden by coarse metadata is detected by the next
+content audit, not guaranteed by the fifteen-second metadata poll.
+
+Source preparation holds only the library's per-source lock, never an advisory
+lock on a native history. Before each commit, the library writer guard checks
+both the pass's maintenance epoch and the source generation captured before
+preparation. Generation invalidation runs on normalized source-row mutations,
+even when a cache was already invalid. A job advances its expected generation
+only after its own batch commits. A late source-cache save cannot clear another
+writer's invalidation. Legacy JSONL/Cline history and its source cache commit in
+one transaction; SQLite imports preserve completed batches, but publish the
+source cache only after the complete read snapshot succeeds and its source
+identity/generation are revalidated. Parse errors, cancellation and maintenance
+leave unsuccessful checkpoints unadvanced.
+
+Full-source hashing reads at most sixteen regular files and 512 MiB in 256 KiB
+blocks. Legacy JSONL accepts valid final records without a newline, limits each
+line to 8 MiB, the file to 128 MiB and records to 100,000, and applies a
+conservative 128 MiB decoded-value budget. Cline JSON reads use the same file and
+decoded-value caps. Source SQLite queries cap rows at 100,000, cells at 8 MiB,
+and decoded values at 128 MiB, reject oversized blobs before expanding them,
+and use a thirty-second cooperative SQL deadline. Limit errors are explicit;
+original stores and previously committed library histories are kept. Unsupported
+non-UTF-8 native source paths are rejected rather than converted into colliding
+lossy keys; ordinary Unicode names remain supported.
+
+Regular-file JSON readers pin a nonblocking file descriptor and verify its
+identity against the path. SQLite still opens its existing read-only source by
+path after metadata checks; identity checks reject ordinary replacement during
+preparation, but a malicious local filesystem actor can race that check and open
+(for example, by replacing the path with a FIFO). This is not a filesystem
+security boundary. Eliminating that race requires a verified private DB/WAL
+snapshot or a dedicated SQLite VFS.
+
+Watcher callback failures discard the failed native backend, retain degraded
+health, reconcile by polling, and retry native registration every thirty seconds.
+Health becomes active again only after watches are restored and reconciliation
+succeeds. `pendingSources` reports remaining discovered checks, rather than the
+number of imports already attempted. The local-only `LocalCatalog::manual_pass`
+captures a maintenance epoch before discovery and uses manual inclusion policy;
+continuous observation retains deletion exclusions. Neither path refreshes SSH
+mirrors or starts device sync.

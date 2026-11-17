@@ -18,7 +18,12 @@ import ExportSelect from './components/ExportSelect.jsx';
 import SyncMenu from './components/SyncMenu.jsx';
 import BrandMark from './components/BrandMark.jsx';
 import SettingsButton from './components/SettingsButton.jsx';
+import CommandPalette from './components/CommandPalette.jsx';
+import ShortcutHelp from './components/ShortcutHelp.jsx';
+import { createCommandRegistry, createNavigationCommands, focusAfterRender, isMacPlatform, keyboardEventContext, moveRegionFocus, SESSION_ITEM_SELECTOR, shortcutLabel } from './commands.js';
 import useAppearance from './useAppearance.js';
+import useIndexing from './useIndexing.js';
+import IndexingControl from './components/IndexingControl.jsx';
 import { Conversation, PromptIndex } from './components/Conversation.jsx';
 import { readNavigation, writeNavigation } from './navigation.js';
 import DateFilter from './components/DateFilter.jsx';
@@ -94,6 +99,7 @@ function App(){
     setAutoSync(next);
   };
   const [mobileNav,setMobileNav]=useState(false);
+  const [sidebarHidden,setSidebarHidden]=useState(false),[paletteOpen,setPaletteOpen]=useState(false),[shortcutsOpen,setShortcutsOpen]=useState(false);
   const [resumeOpen,setResumeOpen]=useState(false),[resumeBusy,setResumeBusy]=useState(false),[resumeInfo,setResumeInfo]=useState(null),[resumeError,setResumeError]=useState(''),[resumeCopied,setResumeCopied]=useState(false),[resumeTerminals,setResumeTerminals]=useState([]),[resumeTerminal,setResumeTerminal]=useState('');
   const resumeDialogRef=useRef(null);
   const [loading,setLoading]=useState(true),[detailLoading,setDetailLoading]=useState(false),[notice,setNotice]=useState('');
@@ -300,6 +306,8 @@ function App(){
   // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching shows a loading state
   useEffect(()=>{loadDetail();},[loadDetail]);
   useEffect(()=>{let cancelled=false;api('get_sync_status').then(data=>{if(!cancelled){if(!syncLaunchPending.current)setSync(data);setSyncStatusReady(true);}}).catch(()=>{});return()=>{cancelled=true;};},[]);
+  const indexedChange=()=>{setReportRevision(value=>value+1);loadMeta({silent:true});loadSessions({silent:true});loadDetail({silent:true});};
+  const indexing=useIndexing({ready:libraryReady&&syncStatusReady,onChanged:indexedChange});
   useEffect(()=>{
     if(!sync.running)return;
     let active=true,busy=false,lastRefresh=0,lastMeta=0;
@@ -525,17 +533,77 @@ function App(){
   ].filter(Boolean);
   const navCount=n=><span className="nav-count">{Number(n||0).toLocaleString()}</span>;
 
-  return <div className="app-shell">
+  const sessionUnavailable=()=>view!=='sessions'||!detail||isDetailLoading?'Open a loaded session first.':null;
+  const keyboardContext=useMemo(()=>({mac:isMacPlatform(),view}),[view]);
+  // Feature views add definitions here: the palette, shortcut dispatch and help
+  // consume this same registry. Disabled predicates return a visible reason.
+  /* eslint-disable react-hooks/refs -- registry builders store navigation callbacks; they never invoke them during render. */
+  const commandRegistry=createCommandRegistry([
+    {id:'palette.open',title:'Open command palette',shortcuts:['Mod+k'],allowInInput:true,run:()=>setPaletteOpen(true)},
+    {id:'search.global',title:'Search all sessions',shortcuts:['/'],run:()=>{setView('sessions');focusAfterRender('[aria-label="Search sessions"]');}},
+    {id:'search.session',title:'Search this session',shortcuts:['Mod+f'],allowInInput:true,disabled:sessionUnavailable,run:()=>focusAfterRender('[aria-label="Search this session"]')},
+    {id:'sidebar.toggle',title:'Toggle sidebar',shortcuts:['Mod+b'],run:()=>{
+      if(window.matchMedia('(max-width: 1100px)').matches){setSidebarHidden(false);setMobileNav(value=>!value);}
+      else{setSidebarHidden(value=>!value);setMobileNav(false);focusAfterRender(sidebarHidden?'.nav-primary button':'.main-panel');}
+    }},
+    {id:'shortcuts.help',title:'Keyboard shortcuts',shortcuts:['?'],run:()=>setShortcutsOpen(true)},
+    {id:'ui.dismiss',title:'Dismiss menu or navigation',scope:'Open menus/navigation',shortcuts:['Escape'],hidden:true,
+      when:()=>sortOpen||syncMenuOpen||mobileNav,run:()=>{setSortOpen(false);setSyncMenuOpen(false);setMobileNav(false);}},
+    ...createNavigationCommands([
+      {id:'view.sessions',title:'Show sessions',open:showSessions},
+      {id:'view.analytics',title:'Show analytics',open:()=>setView('analytics')},
+    ]),
+    {id:'settings.open',title:'Open settings',shortcuts:['Mod+,'],run:()=>setSettingsOpen(true)},
+    {id:'focus.sidebar',title:'Focus sidebar',run:()=>{setSidebarHidden(false);setMobileNav(true);focusAfterRender('.nav-primary button');}},
+    {id:'focus.sessions',title:'Focus session list',shortcuts:['Mod+Shift+l'],allowInInput:true,run:()=>{setView('sessions');focusAfterRender('[data-session-list] [aria-current="true"]','[data-session-list] [data-session-navigation]','.session-list .session-card','.session-list');}},
+    {id:'focus.transcript',title:'Focus transcript',shortcuts:['Mod+Shift+t'],allowInInput:true,disabled:sessionUnavailable,run:()=>focusAfterRender('.transcript-scroll')},
+    ...[['j','Next session',1],['k','Previous session',-1],['ArrowDown','Next session',1],['ArrowUp','Previous session',-1],['Home','First session','first'],['End','Last session','last']].map(([key,title,direction])=>({
+      id:`list.move.${key}`,title,scope:'Session list',shortcuts:[key],hidden:true,when:context=>!!context.sessionList,
+      run:context=>moveRegionFocus(context.sessionList,SESSION_ITEM_SELECTOR,direction),
+    })),
+    {id:'list.open',title:'Open focused session',scope:'Session list',shortcuts:['Enter'],hidden:true,when:context=>context.onSessionCard,run:context=>context.target.click()},
+    {id:'transcript.previous',title:'Previous transcript page',disabled:()=>sessionUnavailable()||(detailSafePage<=1?'Already on the first page.':null),run:()=>gotoDetailPage(detailSafePage-1)},
+    {id:'transcript.next',title:'Next transcript page',disabled:()=>sessionUnavailable()||(detailSafePage>=detailTotalPages?'Already on the last page.':null),run:()=>gotoDetailPage(detailSafePage+1)},
+    {id:'session.star',title:detail?.session.starred?'Unstar selected session':'Star selected session',disabled:()=>sessionUnavailable()||(starPending.has(detail?.session.id)?'Saving bookmark…':null),run:()=>toggleSessionStar(detail.session)},
+    {id:'export.open',title:'Export sessions',disabled:()=>exportBusy?'An export is already running.':null,run:()=>setExportOpen(true)},
+    {id:'session.resume',title:'Resume selected session',disabled:sessionUnavailable,run:openResume},
+    {id:'session.editor',title:'Open workspace in VS Code',disabled:sessionUnavailable,run:openInEditor},
+    {id:'session.continue',title:'Continue in another harness',disabled:()=>sessionUnavailable()||(!optionalFeatures.continuationEnabled?'Enable continuation in Settings first.':null),run:()=>setContinuationOpen(true)},
+    {id:'history.refresh',title:'Refresh histories',disabled:()=>sync.running||syncStarting?'History refresh is already running.':null,run:()=>startSync()},
+  ]);
+  /* eslint-enable react-hooks/refs */
+  useEffect(()=>{
+    const onKeyDown=event=>{
+      const modalOpen=paletteOpen||shortcutsOpen||settingsOpen||exportOpen||resumeOpen||continuationOpen;
+      commandRegistry.handleKeyDown(event,keyboardEventContext(event,{...keyboardContext,modalOpen}));
+    };
+    window.addEventListener('keydown',onKeyDown);
+    return()=>window.removeEventListener('keydown',onKeyDown);
+  },[commandRegistry,keyboardContext,paletteOpen,shortcutsOpen,settingsOpen,exportOpen,resumeOpen,continuationOpen,sortOpen,syncMenuOpen,mobileNav]);
+  const runPaletteAction=action=>{setPaletteOpen(false);requestAnimationFrame(action);};
+  const navigateSidebar=event=>{
+    if(!event.target.matches('.nav-item')||event.altKey||event.metaKey||event.ctrlKey||event.isComposing)return;
+    const direction={ArrowDown:1,ArrowUp:-1,Home:'first',End:'last'}[event.key];
+    if(direction!==undefined){event.preventDefault();moveRegionFocus(event.currentTarget,'.nav-item',direction);}
+  };
+
+  return <div className={`app-shell ${sidebarHidden?'sidebar-hidden':''}`}>
+    {paletteOpen&&<CommandPalette registry={commandRegistry} context={keyboardContext} projects={projects}
+      onClose={()=>setPaletteOpen(false)} onExecute={id=>runPaletteAction(()=>commandRegistry.execute(id,keyboardContext))}
+      onSession={id=>runPaletteAction(()=>{selectSession(id);focusAfterRender('.detail-column');})}
+      onProject={project=>runPaletteAction(()=>{showSessions();setProjectFilter(project.path);focusAfterRender('[aria-label="Search sessions"]');})}/>}
+    {shortcutsOpen&&<ShortcutHelp registry={commandRegistry} context={keyboardContext} onClose={()=>setShortcutsOpen(false)}/>}
     <Suspense fallback={<div className="export-backdrop" role="status"><span className="data-status"><LoaderCircle className="spin" size={16}/>Opening settings…</span></div>}>
       {settingsOpen&&<SettingsDialog initialTab={settingsTab} onClose={()=>setSettingsOpen(false)} onSectionChange={setSettingsTab}
         preferences={preferences} onAppearanceChange={updateAppearance} appearanceSaveError={appearanceSaveError}
-        autoSync={autoSync} onAutoSyncChange={toggleAutoSync} onRefreshHistories={()=>startSync()} syncRunning={sync.running||syncStarting}
+        autoSync={autoSync} onAutoSyncChange={toggleAutoSync} onRefreshHistories={()=>startSync()} syncRunning={sync.running||syncStarting} indexing={indexing}
         onFeaturesChanged={setOptionalFeatures} onLibraryChanged={refreshSyncedData} onManagedDataChanged={refreshManagedData}
         onRemotesChanged={()=>loadMeta({silent:true})}/>}
       {continuationOpen&&detail&&<ContinuationDialog sessionId={String(detail.session.id)} onClose={()=>setContinuationOpen(false)}/>}
     </Suspense>
     {mobileNav&&<div className="sidebar-scrim" onClick={()=>setMobileNav(false)}/>}
-    <aside className={`sidebar ${mobileNav?'sidebar-open':''}`}>
+    <aside className={`sidebar ${mobileNav?'sidebar-open':''}`} aria-label="Navigation" onKeyDown={navigateSidebar}
+      onFocusCapture={()=>{if(window.matchMedia('(max-width: 1100px)').matches)setMobileNav(true);}}>
       <div className="brand-row">
         <span className="brand-mark"><BrandMark size={18}/></span>
         <span className="brand-name">{BRAND.wordmark[0]}<span className="brand-muted">{BRAND.wordmark[1]}</span></span>
@@ -568,7 +636,10 @@ function App(){
         </section>
       </div>
       <div className="sidebar-foot">
+        <button type="button" className="nav-item" onClick={()=>setPaletteOpen(true)} aria-label="Open command palette"><Search size={15}/><span>Commands</span><kbd>{shortcutLabel('Mod+k',keyboardContext.mac)}</kbd></button>
+        <button type="button" className="nav-item" onClick={()=>setShortcutsOpen(true)}><CircleHelp size={15}/><span>Keyboard shortcuts</span><kbd>?</kbd></button>
         <div className="sync-card">
+          <IndexingControl observer={indexing}/>
           <div className="sync-card-text"><span className={`sync-dot ${sync.running?'running':''}`}/><span>{sync.running?(sync.filesTotal?`Refreshing ${sync.filesDone||0} of ${sync.filesTotal}`:'Checking sources…'):`Refreshed ${lastSyncText}`}</span></div>
           <div className="sync-action">
             <button type="button" className={`sync-button ${sync.running?'sync-stop':''}`} onClick={sync.running?stopSync:()=>startSync()} disabled={syncStarting||syncStopping||(sync.running&&sync.phase==='stopping')} title={sync.running?'Stop history refresh':'Refresh histories from local files and SSH hosts'} aria-label={sync.running?'Stop history refresh':'Refresh histories'}>{sync.running?<Square size={13}/>:<RefreshCw size={14}/>}<span>{sync.running?'Stop refresh':syncLabel==='Sync'?'Refresh histories':syncLabel}</span></button>
@@ -587,7 +658,8 @@ function App(){
       </div>
     </aside>
 
-    <main className="main-panel">
+    <main className="main-panel" tabIndex={-1}>
+      {sidebarHidden&&<button type="button" className="sidebar-reopen text-button" onClick={()=>{setSidebarHidden(false);setMobileNav(true);}} aria-label="Show navigation"><Menu size={16}/>Show navigation</button>}
       {view === 'projects' ? (
         <Suspense fallback={<div className="detail-loading" role="status">Opening file evidence…</div>}><ProjectsView onSelectSession={openSessionSource} onOpenNav={()=>setMobileNav(true)} refreshKey={reportRevision}/></Suspense>
       ) : view === 'analytics' ? (
@@ -632,10 +704,10 @@ function App(){
                 <div className="sort-anchor" ref={sortAnchorRef}><button className="text-button" onClick={()=>setSortOpen(!sortOpen)} aria-expanded={sortOpen} aria-label="Sort sessions">{{recent:'Most recent',oldest:'Oldest',longest:'Longest',messages:'Most messages'}[sortOrder]}<ChevronDown size={13}/></button>{sortOpen&&<div className="sort-menu">{[{value:'recent',label:'Most recent'},{value:'oldest',label:'Oldest'},{value:'longest',label:'Longest'},{value:'messages',label:'Most messages'}].map(opt=><button key={opt.value} className={`sort-menu-item ${sortOrder===opt.value?'sort-menu-active':''}`} onClick={()=>{setSortOrder(opt.value);setSortOpen(false);}}><span>{opt.label}</span>{sortOrder===opt.value&&<Check size={13}/>}</button>)}</div>}</div>
                 <button type="button" className="icon-button" title="Export sessions" aria-label="Export sessions" onClick={()=>setExportOpen(true)}><Download size={15}/></button>
               </div>
-              <div className="session-list">
+              <div className="session-list" data-session-list tabIndex={0} role="region" aria-label="Session list">
                 {loading&&<div className="session-loading" role="status" aria-live="polite">{[0,1,2,3].map(item=><div className="session-skeleton" key={item}><span className="skeleton-line skeleton-agent"/><span className="skeleton-line skeleton-title"/><span className="skeleton-line skeleton-meta"/></div>)}</div>}
-                {/* eslint-disable-next-line react-hooks/refs -- selectSession reads a ref when clicked, not during render */}
-                {!loading&&groups.map(g=><div className="date-group" key={g.label}><div className="date-label">{g.label}</div>{g.items.map(s=><div key={s.id} className="session-card-wrap"><button type="button" className={`session-card ${String(selected)===String(s.id)?'session-selected':''}`} aria-current={String(selected)===String(s.id)?'true':undefined} onClick={()=>selectSession(s.id)}>
+                {/* eslint-disable-next-line react-hooks/refs -- selectSession reads navigation state only when the button is clicked. */}
+                {!loading&&groups.map(g=><div className="date-group" key={g.label}><div className="date-label">{g.label}</div>{g.items.map(s=><div key={s.id} className="session-card-wrap"><button type="button" data-session-navigation className={`session-card ${String(selected)===String(s.id)?'session-selected':''}`} aria-current={String(selected)===String(s.id)?'true':undefined} onClick={()=>selectSession(s.id)}>
                   <div className="card-top"><span className={`agent-dot ${agentColors[s.agent]||'gray'}`}/><span className="card-agent">{s.product||familyLabel(s.agent)}</span>{s.host&&<span className="host-chip" title={`Recorded on ${s.host}`}><Server size={10}/>{s.host}</span>}<span className="card-time">{parseDate(s.last_event_at||s.started_at)?.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})||'—'}</span></div>
                   <strong className="session-title">{s.title||'Untitled session'}</strong>
                   <div className="card-meta"><span title={s.project||s.cwd}><Folder size={12}/>{shortPath(s.project||s.cwd)}</span>{s.branch&&<span><GitBranch size={12}/>{s.branch}</span>}{s.tags?.map(tag=><span className="tag-chip" key={tag}>{tag}</span>)}</div>
@@ -646,7 +718,7 @@ function App(){
               </>}
             </section>
 
-            <section className="detail-column" aria-label="Session">
+            <section className="detail-column" aria-label="Session" tabIndex={-1}>
               {detail&&<SessionSearch key={detail.session.id} sessionId={detail.session.id} onOpen={openSearchEntry}/>}
               {detail&&!isDetailLoading?<>
                 <div className="detail-header">
@@ -677,7 +749,7 @@ function App(){
                     <button aria-label="Next transcript page" disabled={detailSafePage>=detailTotalPages||isDetailLoading} onClick={()=>gotoDetailPage(detailSafePage+1)}><ChevronRight size={14}/></button>
                   </nav>}
                 </div>
-                <div className={`transcript-scroll transcript-${transcriptView}`}>
+                <div className={`transcript-scroll transcript-${transcriptView}`} tabIndex={0} role="region" aria-label="Transcript">
                   {transcriptView==='conversation'&&(turns.length?<Conversation turns={turns} agentName={detail.session.product||familyLabel(detail.session.agent)} agentColor={agentColors[detail.session.agent]||'gray'}/>:<div className="transcript-empty"><div className="empty-orb"><MessageSquareText size={20}/></div><strong>No conversation on this page</strong><span>Open the full log to see this page&apos;s events.</span></div>)}
                   {transcriptView==='prompts'&&(turns.some(t=>t.prompt)?<PromptIndex turns={turns} onOpen={openTurn}/>:<div className="transcript-empty"><div className="empty-orb"><User size={20}/></div><strong>No prompts on this page</strong><span>The agent continued without a new prompt here.</span></div>)}
                   {transcriptView==='log'&&detailEntries.map(e=>{

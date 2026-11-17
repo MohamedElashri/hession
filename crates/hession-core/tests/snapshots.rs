@@ -5,13 +5,36 @@ use std::process::Command;
 // parent fixtures isolated; each case still exercises real threads/processes.
 static WRITER_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+fn open_initialization_fixture(path: &std::path::Path) -> rusqlite::Connection {
+    // A busy response is the public bounded-lock policy, not a failed schema
+    // invariant. Exercise a caller's bounded retry while the lock tests below
+    // independently require the production timeout and ownership behavior.
+    for attempt in 0..3 {
+        match db::open_db(path) {
+            Ok(conn) => return conn,
+            Err(db::DbError::Io(e))
+                if e.kind() == std::io::ErrorKind::WouldBlock && attempt < 2 => {}
+            Err(error) => panic!("initialization failed: {error}"),
+        }
+    }
+    unreachable!()
+}
+
 #[test]
 #[ignore = "subprocess helper invoked by concurrent_initialization_has_one_schema_and_identity"]
 fn child_initialize_library() {
     let path = std::path::PathBuf::from(std::env::var_os("HESSION_TEST_INIT_DATABASE").unwrap());
     let index = std::env::var("HESSION_TEST_INIT_INDEX").unwrap();
     std::fs::write(path.with_extension(format!("ready-{index}")), b"ready").unwrap();
-    let conn = db::open_db(&path).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !path.with_extension("release").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "parent did not release startup barrier"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let conn = open_initialization_fixture(&path);
     let revision = library_revision::current(&conn).unwrap();
     std::fs::write(
         path.with_extension(format!("result-{index}")),
@@ -52,7 +75,8 @@ fn concurrent_initialization_has_one_schema_and_identity() {
         std::thread::sleep(Duration::from_millis(10));
     }
     drop(lock);
-    let conn = db::open_db(&path).unwrap();
+    std::fs::write(path.with_extension("release"), b"go").unwrap();
+    let conn = open_initialization_fixture(&path);
     for child in children {
         let output = child.wait_with_output().unwrap();
         assert!(
@@ -91,8 +115,11 @@ fn writers_reject_active_read_transactions_and_schema_changes_without_leaking_lo
         .to_string()
         .contains("before starting"));
     snapshot.commit().unwrap();
-    conn.execute("UPDATE application_schema SET version=2", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE application_schema SET version=?",
+        [db::SCHEMA_VERSION + 1],
+    )
+    .unwrap();
     assert!(db::background_write(&conn)
         .unwrap_err()
         .to_string()

@@ -59,10 +59,16 @@ pub(super) fn source_roots(home: &Path) -> Vec<PathBuf> {
 }
 
 pub(super) fn discover(root: &Path, files: &mut Vec<PathBuf>) {
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        if stop_requested() || files.len() >= MAX_FILES {
+    let mut stack = vec![(root.to_path_buf(), 0)];
+    let mut visited = 0;
+    let mut examined = 0;
+    while let Some((dir, depth)) = stack.pop() {
+        visited += 1;
+        if visited > 4096 || stop_requested() || files.len() >= MAX_FILES {
             return;
+        }
+        if depth > 0 && fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_symlink()) {
+            continue;
         }
         // One canonical source per task; UI history is a fallback, not a
         // second copy of the same conversation.
@@ -76,15 +82,19 @@ pub(super) fn discover(root: &Path, files: &mut Vec<PathBuf>) {
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
-        for entry in entries.flatten() {
+        for entry in entries.take(100_000).flatten() {
+            examined += 1;
+            if examined > 100_000 {
+                return;
+            }
             if stop_requested() || files.len() >= MAX_FILES {
                 return;
             }
             let Ok(kind) = entry.file_type() else {
                 continue;
             };
-            if kind.is_dir() && stack.len() < MAX_FILES {
-                stack.push(entry.path());
+            if kind.is_dir() && depth < 24 && stack.len() < 4096 {
+                stack.push((entry.path(), depth + 1));
             } else if kind.is_file()
                 && entry
                     .file_name()
@@ -162,7 +172,7 @@ fn database(file: &Path) -> PathBuf {
     env_path("CLINE_DB_DATA_DIR", default).join("sessions.db")
 }
 
-fn companions(file: &Path) -> Vec<PathBuf> {
+pub(super) fn companions(file: &Path) -> Vec<PathBuf> {
     let dir = file.parent().unwrap_or(Path::new("."));
     if modern(file) {
         let manifest = file
@@ -212,13 +222,15 @@ fn read_json(file: &Path) -> Result<Option<Value>, String> {
     if stop_requested() {
         return Err("Import stopped".into());
     }
-    match fs::read(file) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|e| format!("Invalid Cline JSON {}: {e}", file.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("read {}: {e}", file.display())),
+    if !file.exists() {
+        return Ok(None);
     }
+    let bytes = hession_core::source::read_bounded(file, super::MAX_LEGACY_BYTES, &stop_requested)?;
+    let value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("Invalid Cline JSON {}: {e}", file.display()))?;
+    let mut budget = super::MAX_DECODED_BYTES;
+    super::charge_value(&value, &mut budget)?;
+    Ok(Some(value))
 }
 
 fn array(value: &Value) -> Result<&Vec<Value>, String> {
@@ -273,10 +285,9 @@ pub(super) fn session_data(
         }
         let db = database(file);
         if db.is_file() {
-            let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            let mut conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .map_err(|e| e.to_string())?;
-            conn.busy_timeout(std::time::Duration::from_secs(5))
-                .map_err(|e| e.to_string())?;
+            formats::configure_source(&mut conn)?;
             if let Some(row) = formats::rows(
                 &conn,
                 "SELECT * FROM sessions WHERE session_id=?",

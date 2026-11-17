@@ -14,6 +14,7 @@ pub mod device_sync;
 mod export_format;
 pub mod features;
 pub mod importer;
+pub mod indexer;
 mod library_revision;
 mod paths;
 pub mod pricing;
@@ -86,6 +87,10 @@ pub fn run() {
             project_activity::recorded_git,
             project_activity::inspect_git,
             commands::ping,
+            indexer::start_indexing,
+            indexer::indexing_status,
+            indexer::pause_indexing,
+            indexer::session_delta,
             commands::get_health,
             commands::search_sessions,
             developer_search::developer_search,
