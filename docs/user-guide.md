@@ -99,6 +99,37 @@ dialogs. Cmd/Ctrl+K, Cmd/Ctrl+F, and the focus shortcuts remain available while
 typing outside dialogs.
 Shortcuts ignore input composition and held-key repeats. Motion preferences
 apply to keyboard navigation too.
+## Project and file evidence
+
+Choose **Files and Git** in the sidebar, filter the recorded workspaces, and
+select one to browse reported paths. Filter filenames or select a path for its
+individual history. **Open session…, event…** jumps to the source event in Full
+log, including the correct page in long sessions. **Inspect local Git** runs
+only when selected; **Refresh recorded history** reloads indexed evidence.
+
+Projects retain the recorded workspace identity. A local folder, an SSH-hosted
+folder at the same path, and sibling Git worktrees remain distinct. Recorded
+history stays available when its checkout is deleted or inaccessible. Synced-only
+history does not authorize inspecting or opening a matching local folder.
+
+File activity links reported paths to their source session, event and tool. A
+reported read records a tool's target; a reported write or patch records intent.
+Even a successful tool result does not prove that the final file changed.
+Repeated references from the same event and tool count once in file summaries;
+the activity history preserves every evidence row. Suspicious or unresolved
+paths remain visible as evidence and cannot be opened through traversal or a
+symlink escape.
+
+Recorded branch and commit metadata describe the session's saved context.
+Explicit local Git inspection shows current checkout metadata separately. It
+never contacts an SSH host or a Git remote and never attributes commits to an
+agent. Verified commit changes come from available commit objects. Observed
+worktree changes compare tracked files' raw bytes with their index blobs;
+Git attribute conversions and clean filters are not applied. Untracked files,
+symlink targets and submodule working trees are not scanned. Large inspections
+return a bound or availability error rather than silently claiming a complete
+result; an incomplete tracked-path scan is explicitly marked. Partial clones
+are unavailable for object inspection to prevent lazy network fetches.
 
 ## Resume or continue a task
 

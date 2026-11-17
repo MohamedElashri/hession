@@ -424,7 +424,6 @@ measurements, not a guarantee for every library or machine.
 
 The 250 ms warm p95 target was not met in this run. These measurements
 include the recorded host load and do not establish quiet-host performance.
-
 ## Background indexing storage and bounds
 
 Application schema 3 adds local-only `index_full_source`, `index_source_session`,
