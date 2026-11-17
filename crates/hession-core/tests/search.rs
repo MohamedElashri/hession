@@ -316,7 +316,7 @@ fn bounded_excerpts_untrusted_html_unicode_and_metadata() {
     let mut c = fixture();
     let giant = format!(
         "{} tokenneedle <script>alert('x')</script> {}",
-        "x".repeat(1_100_000),
+        "x".repeat(900_000),
         "🦀".repeat(1000)
     );
     c.execute("UPDATE entry SET search_text=? WHERE id=11", [giant])
@@ -332,6 +332,15 @@ fn bounded_excerpts_untrusted_html_unicode_and_metadata() {
         .iter()
         .all(|s| s.start < s.end && s.end <= excerpt.chars().count()));
     assert_eq!(result.entry_id, Some(11));
+    c.execute(
+        "UPDATE entry SET search_text=CAST(zeroblob(1048577) AS TEXT) WHERE id=11",
+        [],
+    )
+    .unwrap();
+    assert!(matches!(
+        search::search(&mut c, &request("tokenneedle"), &SearchScope::all()),
+        Err(SearchError::InputTooLarge)
+    ));
     let mut r = request("");
     r.limit = 101;
     assert!(search::search(&mut c, &r, &SearchScope::all()).is_err());

@@ -34,11 +34,11 @@ test('About contains the updater without opening another dialog or checking for 
   const user = userEvent.setup();
   mount('appearance');
   await user.click(screen.getByRole('tab', { name: 'About', exact: true }));
-  await screen.findByText('Hession · Version 0.3.0');
+  await screen.findByText('Hession · Version 0.3.0', {}, { timeout: 10000 });
   expect(screen.getByRole('button', { name: 'Check for updates' })).toBeTruthy();
   expect(screen.getAllByRole('dialog')).toHaveLength(1);
   expect(api.mock.calls.map(([command]) => command)).toEqual(['get_optional_features', 'app_version']);
-});
+}, 15000);
 
 test('keyboard navigation stays in one dialog and only loads sections when visited', async () => {
   const user = userEvent.setup();

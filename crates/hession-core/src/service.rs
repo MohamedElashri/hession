@@ -128,7 +128,7 @@ fn check_page_budget(conn: &Connection, id: i64, page: Page) -> Result<(), Servi
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| ServiceError::Query(e.to_string()))?;
         let sizes = columns.iter().map(|name| {
-            format!("coalesce(length(CAST(\"{}\" AS BLOB)),0)", name.replace('"', "\"\""))
+            format!("coalesce(octet_length(\"{}\"),0)", name.replace('"', "\"\""))
         }).collect::<Vec<_>>().join("+");
         let sql = format!("WITH selected AS (SELECT id FROM entry WHERE session_id=?1 ORDER BY ordinal LIMIT ?2 OFFSET ?3)
             SELECT coalesce(sum(256+{sizes}),0) FROM \"{table}\" WHERE {predicate}");

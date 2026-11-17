@@ -637,6 +637,46 @@ pub async fn session_delta(
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+pub async fn recent_local_sessions(
+    state: tauri::State<'_, crate::AppState>,
+    agent: Option<String>,
+    project: Option<String>,
+    since: Option<String>,
+    limit: Option<u32>,
+    offset: Option<u64>,
+) -> Result<serde_json::Value, String> {
+    let path = state.db_path.lock().map_err(|e| e.to_string())?.clone();
+    let request = hession_core::live::RecentRequest {
+        agent: agent.unwrap_or_default(),
+        project: project.unwrap_or_default(),
+        since: since.unwrap_or_default(),
+        limit: limit.unwrap_or(50),
+        offset: offset.unwrap_or(0),
+        unhealthy: indexing_status().may_be_stale,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        hession_core::service::Library::new(path)
+            .recent_local_sessions(&request)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn observed_library_revision(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<LibraryRevision, String> {
+    let path = state.db_path.lock().map_err(|e| e.to_string())?.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db::open_read_only(&path).map_err(|e| e.to_string())?;
+        library_revision::current(&conn).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

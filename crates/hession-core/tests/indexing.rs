@@ -34,7 +34,9 @@ fn durable_delta_follows_gapped_entries_and_updates_earlier_tool_results() {
         .unwrap();
     assert_eq!(delta["reset"], false);
     assert_eq!(delta["entries"][0]["id"], first);
+    assert_eq!(delta["entries"][0]["position"], 0);
     assert_eq!(delta["entries"][1]["id"], second);
+    assert_eq!(delta["entries"][1]["position"], 1);
     conn.execute("UPDATE tool_invocation SET result_text='late result',status='completed' WHERE call_id='late'",[]).unwrap();
     let late = library.session_delta(1, Some(cursor(&delta)), 10).unwrap();
     assert_eq!(late["entries"].as_array().unwrap().len(), 1);
@@ -90,10 +92,18 @@ fn delta_retention_scope_and_payload_budgets_are_explicit() {
         ["x".repeat(1024 * 1024 + 1)],
     )
     .unwrap();
-    assert!(matches!(
-        library.session_delta(1, None, 1),
-        Err(hession_core::service::ServiceError::ResponseTooLarge)
-    ));
+    let oversized = library.session_delta(1, None, 1).unwrap();
+    assert!(oversized["entries"].as_array().unwrap().is_empty());
+    assert_eq!(
+        oversized["oversizedEntries"][0]["reason"],
+        "payload_too_large"
+    );
+    assert!(library
+        .session_delta(1, Some(cursor(&oversized)), 1)
+        .unwrap()["oversizedEntries"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     assert!(library.session_delta(1, None, 101).is_err());
 }
 
