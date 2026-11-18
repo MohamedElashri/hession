@@ -49,6 +49,93 @@ fn ids(conn: &mut Connection, q: &str) -> Vec<i64> {
         .collect()
 }
 #[test]
+fn stale_and_malformed_cursors_fail_before_scanning_oversized_history() {
+    let mut c = fixture();
+    let mut r = request("alpha");
+    r.limit = 1;
+    r.cursor = search::search(&mut c, &r, &SearchScope::all())
+        .unwrap()
+        .next_cursor;
+    assert!(r.cursor.is_some());
+    c.execute(
+        "UPDATE entry SET search_text=CAST(zeroblob(2097152) AS TEXT) WHERE id=11",
+        [],
+    )
+    .unwrap();
+    assert!(matches!(
+        search::search(&mut c, &r, &SearchScope::all()),
+        Err(SearchError::StaleCursor)
+    ));
+    r.cursor = Some("{".into());
+    assert!(matches!(
+        search::search(&mut c, &r, &SearchScope::all()),
+        Err(SearchError::InvalidCursor)
+    ));
+    r.cursor = None;
+    assert!(matches!(
+        search::search(&mut c, &r, &SearchScope::all()),
+        Err(SearchError::InputTooLarge)
+    ));
+}
+
+#[test]
+fn excluded_helpers_do_not_consume_search_budgets_or_block_primary_sessions() {
+    let mut c = fixture();
+    c.execute(
+        "UPDATE session SET is_subagent=1,title=CAST(zeroblob(2097152) AS TEXT) WHERE id=2",
+        [],
+    )
+    .unwrap();
+    c.execute(
+        "UPDATE entry SET search_text=CAST(zeroblob(2097152) AS TEXT) WHERE session_id=2",
+        [],
+    )
+    .unwrap();
+    let mut r = request("alpha");
+    r.filters.exclude_subagents = true;
+    let result = search::search(&mut c, &r, &SearchScope::all()).unwrap();
+    assert_eq!(result.results.len(), 1);
+    assert_eq!(result.results[0].session_id, 1);
+    assert!(
+        search::search(&mut c, &r, &SearchScope::workspaces([2]).unwrap())
+            .unwrap()
+            .results
+            .is_empty()
+    );
+    r.filters.exclude_subagents = false;
+    assert!(matches!(
+        search::search(&mut c, &r, &SearchScope::all()),
+        Err(SearchError::InputTooLarge)
+    ));
+}
+
+#[test]
+fn background_filter_applies_to_sessions_messages_and_or_queries_within_scope() {
+    let mut c = fixture();
+    c.execute("UPDATE session SET is_subagent=1 WHERE id=2", [])
+        .unwrap();
+    for mode in [SearchMode::Sessions, SearchMode::Messages] {
+        let mut r = request("alpha OR agent:claude");
+        r.mode = mode;
+        r.filters.exclude_subagents = true;
+        let results = search::search(&mut c, &r, &SearchScope::all())
+            .unwrap()
+            .results;
+        assert!(!results.is_empty());
+        assert!(results.iter().all(|r| r.session_id == 1));
+        r.filters.exclude_subagents = false;
+        let results = search::search(&mut c, &r, &SearchScope::all())
+            .unwrap()
+            .results;
+        assert!(results.iter().any(|r| r.session_id == 2));
+        let results = search::search(&mut c, &r, &SearchScope::workspaces([1]).unwrap())
+            .unwrap()
+            .results;
+        assert!(results.iter().all(|r| r.session_id == 1));
+    }
+}
+
+#[test]
 fn typed_grammar_positions_and_limits() {
     let parsed = query::parse("alpha beta OR -agent:\"Claude Code\" file:/work/a.rs").unwrap();
     assert_eq!(parsed.alternatives.len(), 2);

@@ -3,12 +3,158 @@
 use super::*;
 use hession_core::{indexing, jsonl};
 use serde_json::{json, Map};
+use std::io::{self, Write};
 
-const PARSER_VERSION: u32 = 1;
+// Old summaries lack durable entry metrics (and could contain a fork's parent
+// identity). Rebuild once; session IDs, bookmarks and tags survive the rebuild.
+const PARSER_VERSION: u32 = 3;
 const MAX_STAGE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_SUMMARY_BYTES: usize = 16 * 1024 * 1024;
+const SUMMARY_LIMIT: &str = "Source metadata exceeds the 16 MiB limit; previous history preserved";
+
+fn json_bytes(value: &impl Serialize) -> Result<usize, String> {
+    struct Counter(usize);
+    impl Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
+                .filter(|n| *n <= MAX_SUMMARY_BYTES)
+                .ok_or_else(|| io::Error::other(SUMMARY_LIMIT))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, value).map_err(|_| SUMMARY_LIMIT.to_string())?;
+    Ok(counter.0)
+}
+
+/// Exact compact-JSON sizes, caching only fields that remain unchanged between
+/// ordinary events. Large recorded metadata must not be serialized per event.
+struct SummaryBudget {
+    metadata: usize,
+    cwd: usize,
+    title: usize,
+}
+impl SummaryBudget {
+    fn new(summary: &Summary) -> Result<Self, String> {
+        let budget = Self {
+            metadata: json_bytes(&summary.metadata)?,
+            cwd: json_bytes(&summary.cwd)?,
+            title: json_bytes(&summary.title)?,
+        };
+        budget.check(summary)?;
+        Ok(budget)
+    }
+    fn check(&self, summary: &Summary) -> Result<usize, String> {
+        let size = b"{\"entry_metrics\":,\"metadata\":,\"cwd\":,\"title\":,\"start\":,\"end\":}"
+            .len()
+            + self.metadata
+            + self.cwd
+            + self.title
+            + json_bytes(&summary.entry_metrics)?
+            + json_bytes(&summary.start)?
+            + json_bytes(&summary.end)?;
+        if size > MAX_SUMMARY_BYTES {
+            Err(SUMMARY_LIMIT.into())
+        } else {
+            Ok(size)
+        }
+    }
+    fn observe(
+        &mut self,
+        summary: &mut Summary,
+        family: &str,
+        metadata: &Value,
+        record: &NormalizedRecord,
+    ) -> Result<usize, String> {
+        let cwd_missing = summary.cwd.is_none();
+        let title_missing = summary.title.is_none();
+        summary.observe(family, metadata, record)?;
+        if metadata.as_object().is_some_and(|m| !m.is_empty()) {
+            self.metadata = json_bytes(&summary.metadata)?;
+        }
+        if cwd_missing && summary.cwd.is_some() {
+            self.cwd = json_bytes(&summary.cwd)?;
+        }
+        if title_missing && summary.title.is_some() {
+            self.title = json_bytes(&summary.title)?;
+        }
+        self.check(summary)
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct EntryMetrics {
+    total_turns: i64,
+    user_turns: i64,
+    assistant_turns: i64,
+    user_chars: i64,
+    assistant_chars: i64,
+    tool_chars: i64,
+}
+impl EntryMetrics {
+    fn observe(&mut self, record: &NormalizedRecord) -> Result<(), String> {
+        fn add(total: &mut i64, value: i64) -> Result<(), String> {
+            *total = total
+                .checked_add(value)
+                .ok_or("Session metrics exceed the supported count")?;
+            Ok(())
+        }
+        // Match SQLite length(TEXT): Unicode scalar values, stopping at NUL.
+        let length = record
+            .body
+            .split('\0')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .count() as i64;
+        add(&mut self.total_turns, 1)?;
+        match record.role.as_deref() {
+            Some("user") => {
+                add(&mut self.user_turns, 1)?;
+                add(&mut self.user_chars, length)?;
+            }
+            Some("assistant") => {
+                add(&mut self.assistant_turns, 1)?;
+                add(&mut self.assistant_chars, length)?;
+            }
+            _ => add(&mut self.tool_chars, length)?,
+        }
+        Ok(())
+    }
+    fn valid(&self, records: u64) -> bool {
+        u64::try_from(self.total_turns).ok() == Some(records)
+            && [
+                self.user_turns,
+                self.assistant_turns,
+                self.user_chars,
+                self.assistant_chars,
+                self.tool_chars,
+            ]
+            .iter()
+            .all(|n| *n >= 0)
+            && self
+                .user_turns
+                .checked_add(self.assistant_turns)
+                .is_some_and(|n| n <= self.total_turns)
+    }
+    fn resolved(&self, conn: &Connection, id: i64) -> Result<Value, String> {
+        let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        let (count, errors) =
+            hession_core::sessions::tool_counts(conn, id).map_err(|e| e.to_string())?;
+        value["tool_count"] = json!(count);
+        value["tool_error_count"] = json!(errors);
+        Ok(value)
+    }
+}
 
 #[derive(Default, Serialize, Deserialize)]
 struct Summary {
+    entry_metrics: EntryMetrics,
     metadata: Map<String, Value>,
     cwd: Option<String>,
     title: Option<String>,
@@ -17,9 +163,15 @@ struct Summary {
 }
 
 impl Summary {
-    fn observe(&mut self, metadata: &Value, record: &NormalizedRecord) {
+    fn observe(
+        &mut self,
+        family: &str,
+        metadata: &Value,
+        record: &NormalizedRecord,
+    ) -> Result<(), String> {
+        self.entry_metrics.observe(record)?;
         if let Some(map) = metadata.as_object() {
-            self.metadata.extend(map.clone());
+            formats::merge_session_metadata(family, &mut self.metadata, map);
         }
         if self.cwd.is_none() {
             self.cwd = record.context.cwd.clone();
@@ -41,6 +193,7 @@ impl Summary {
                 self.end = Some(time.clone());
             }
         }
+        Ok(())
     }
 
     fn resolved(&self) -> Value {
@@ -132,6 +285,22 @@ pub(super) fn import(
     let mut cursor = previous
         .as_ref()
         .and_then(|(_, cursor, _)| serde_json::from_str::<jsonl::Cursor>(cursor).ok());
+    let previous_summary = previous
+        .as_ref()
+        .and_then(|(_, _, summary)| serde_json::from_str::<Summary>(summary).ok())
+        .and_then(|summary| {
+            SummaryBudget::new(&summary)
+                .ok()
+                .map(|budget| (summary, budget))
+        });
+    if let Some(saved) = &cursor {
+        if previous_summary
+            .as_ref()
+            .is_none_or(|(summary, _)| !summary.entry_metrics.valid(saved.records))
+        {
+            cursor = None;
+        }
+    }
     if let (Some(cursor_value), Some((session, _, _))) = (&cursor, &previous) {
         let (count, max): (i64, i64) = conn
             .query_row(
@@ -164,11 +333,12 @@ pub(super) fn import(
     } else {
         0
     };
-    let mut summary = if append {
-        serde_json::from_str::<Summary>(&previous.as_ref().ok_or("Missing append checkpoint")?.2)
-            .map_err(|_| "Invalid indexing summary; run a full rescan")?
+    let (mut summary, mut summary_budget) = if append {
+        previous_summary.ok_or("Missing append summary")?
     } else {
-        Summary::default()
+        let summary = Summary::default();
+        let budget = SummaryBudget::new(&summary)?;
+        (summary, budget)
     };
     // tempfile creates private unpredictable paths and unlinks on every normal
     // error/cancellation. No transcript staging is placed in the native store.
@@ -178,22 +348,14 @@ pub(super) fn import(
     stage.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=FILE;
         PRAGMA cache_size=-2048;
         CREATE TABLE record(ordinal INTEGER PRIMARY KEY,json TEXT NOT NULL,usage_key TEXT,usage_json TEXT);
+        CREATE TABLE affected_call(call_id TEXT PRIMARY KEY) WITHOUT ROWID;
         BEGIN;").map_err(|e|e.to_string())?;
     let mut count = 0usize;
     let mut bytes = 0u64;
     while let Some(value) = reader.next_record().map_err(|e| e.to_string())? {
         let data = formats::session_data(family, source_uri, file, vec![value.clone()], 0, 0.0)?;
         let record = data.records.first().ok_or("Expected a normalized record")?;
-        summary.observe(&data.metadata, record);
-        if serde_json::to_vec(&summary)
-            .map_err(|e| e.to_string())?
-            .len()
-            > 16 * 1024 * 1024
-        {
-            return Err(
-                "Source metadata exceeds the 16 MiB limit; previous history preserved".into(),
-            );
-        }
+        summary_budget.observe(&mut summary, family, &data.metadata, record)?;
         let ordinal = old_count
             .checked_add(count as u64)
             .and_then(|n| i64::try_from(n).ok())
@@ -207,6 +369,26 @@ pub(super) fn import(
         };
         let text = serde_json::to_string(record).map_err(|e| e.to_string())?;
         bytes = bytes.saturating_add(text.len() as u64);
+        for call in record
+            .tools
+            .iter()
+            .filter_map(|tool| tool.call_id.as_deref())
+            .chain(
+                record
+                    .results
+                    .iter()
+                    .filter_map(|result| result.call_id.as_deref()),
+            )
+        {
+            let added = stage
+                .prepare_cached("INSERT OR IGNORE INTO affected_call VALUES(?)")
+                .map_err(|e| e.to_string())?
+                .execute([call])
+                .map_err(|e| e.to_string())?;
+            if added > 0 {
+                bytes = bytes.saturating_add(call.len() as u64);
+            }
+        }
         if bytes > MAX_STAGE_BYTES {
             return Err(
                 "Source exceeds the 4 GiB import staging limit; previous history preserved".into(),
@@ -336,26 +518,36 @@ pub(super) fn import(
         }
     }
     // Includes previously seen results whose calls arrived in this append.
-    let mut result_stmt = tx
-        .prepare("SELECT call_id,result_json,occurred_at FROM index_result WHERE session_id=?")
+    let mut result_stmt = stage
+        .prepare("SELECT call_id FROM affected_call ORDER BY call_id")
         .map_err(|e| e.to_string())?;
-    let mut results = result_stmt.query([id]).map_err(|e| e.to_string())?;
+    let mut results = result_stmt.query([]).map_err(|e| e.to_string())?;
     while let Some(row) = results.next().map_err(|e| e.to_string())? {
         if stop_requested() {
             return Err("Import stopped".into());
         }
-        let result: ToolResult =
-            serde_json::from_str(&row.get::<_, String>(1).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-        tx.execute("UPDATE tool_invocation SET result_text=?1,status=?2,exit_code=?3,ended_at=?4,
+        let call: String = row.get(0).map_err(|e| e.to_string())?;
+        let recorded: Option<(String, Option<String>)> = tx
+            .prepare_cached(
+                "SELECT result_json,occurred_at FROM index_result WHERE session_id=? AND call_id=?",
+            )
+            .map_err(|e| e.to_string())?
+            .query_row(params![id, call], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some((result, occurred_at)) = recorded else {
+            continue;
+        };
+        let result: ToolResult = serde_json::from_str(&result).map_err(|e| e.to_string())?;
+        tx.prepare_cached("UPDATE tool_invocation SET result_text=?1,status=?2,exit_code=?3,ended_at=?4,
             duration_ms=CASE WHEN started_at IS NOT NULL AND ?4 IS NOT NULL THEN MAX(0,ROUND((julianday(?4)-julianday(started_at))*86400000)) ELSE duration_ms END
-            WHERE session_id=?5 AND call_id=?6 AND (result_text IS NOT ?1 OR status IS NOT ?2 OR exit_code IS NOT ?3 OR ended_at IS NOT ?4)",
-            params![result.text,result.status,result.exit_code,row.get::<_,Option<String>>(2).map_err(|e|e.to_string())?,id,row.get::<_,String>(0).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
+            WHERE session_id=?5 AND call_id=?6 AND (result_text IS NOT ?1 OR status IS NOT ?2 OR exit_code IS NOT ?3 OR ended_at IS NOT ?4)")
+            .map_err(|e|e.to_string())?.execute(params![result.text,result.status,result.exit_code,occurred_at,id,call]).map_err(|e|e.to_string())?;
     }
     drop(results);
     drop(result_stmt);
     let usage = total_usage(&tx, id)?;
-    let metrics = formats::session_metrics(&tx, id)?;
+    let metrics = summary.entry_metrics.resolved(&tx, id)?;
     tx.execute(
         "UPDATE session SET token_usage_json=?,metrics_json=? WHERE id=?",
         params![usage.map(|u| u.to_string()), metrics.to_string(), id],
@@ -385,6 +577,112 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::time::{Duration, Instant};
+
+    fn summary_record() -> NormalizedRecord {
+        normalize_record("codex", &json!({
+            "type":"response_item", "timestamp":"2026-11-18T10:00:00Z",
+            "payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello 🌍\n\"quoted\"\u{0} tail"}]}
+        }), 0).unwrap()
+    }
+
+    #[test]
+    fn summary_budget_matches_serialized_bytes_and_enforces_exact_limit() {
+        let mut summary = Summary::default();
+        let mut budget = SummaryBudget::new(&summary).unwrap();
+        assert_eq!(
+            budget.check(&summary).unwrap(),
+            serde_json::to_vec(&summary).unwrap().len()
+        );
+        let mut record = summary_record();
+        record.context.cwd = Some("/workspace/日本語/\"quoted\"".into());
+        for metadata in [
+            json!({"id":"child","instructions":"\\\n\"🌍\u{0}"}),
+            json!({}),
+            json!({"model":"test","nested":{"line":"\t\r\n"}}),
+        ] {
+            let size = budget
+                .observe(&mut summary, "codex", &metadata, &record)
+                .unwrap();
+            assert_eq!(size, serde_json::to_vec(&summary).unwrap().len());
+            record.context.cwd = Some("/ignored/after-first-value".into());
+            record.occurred_at = Some("2026-11-18T09:00:00Z".into());
+        }
+        summary.metadata.clear();
+        summary.metadata.insert("padding".into(), json!(""));
+        let base = serde_json::to_vec(&summary).unwrap().len();
+        summary.metadata.insert(
+            "padding".into(),
+            json!("x".repeat(MAX_SUMMARY_BYTES - base)),
+        );
+        let budget = SummaryBudget::new(&summary).unwrap();
+        assert_eq!(budget.check(&summary).unwrap(), MAX_SUMMARY_BYTES);
+        assert_eq!(
+            serde_json::to_vec(&summary).unwrap().len(),
+            MAX_SUMMARY_BYTES
+        );
+        summary.metadata.insert("extra".into(), json!(true));
+        assert!(matches!(SummaryBudget::new(&summary), Err(error) if error == SUMMARY_LIMIT));
+        assert_eq!(
+            json_bytes(&"x".repeat(MAX_SUMMARY_BYTES)).unwrap_err(),
+            SUMMARY_LIMIT
+        );
+    }
+
+    #[test]
+    #[ignore = "release-mode performance probe; synthetic metadata only"]
+    fn summary_budget_performance() {
+        let record = summary_record();
+        let mut results = Vec::new();
+        for bytes in [4096, 32768, 1048576] {
+            let mut summary = Summary::default();
+            summary
+                .metadata
+                .insert("instructions".into(), json!("x".repeat(bytes)));
+            summary.observe("codex", &Value::Null, &record).unwrap();
+            let mut budget = SummaryBudget::new(&summary).unwrap();
+            let mut before = Vec::new();
+            let mut after = Vec::new();
+            for round in 0..11 {
+                // Same summary, records, serialization format, and byte limit.
+                // Alternate order so the reference does not always run first.
+                for cached in if round % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                } {
+                    let start = Instant::now();
+                    for _ in 0..1000 {
+                        let size = if cached {
+                            budget
+                                .observe(&mut summary, "codex", &Value::Null, &record)
+                                .unwrap()
+                        } else {
+                            summary.observe("codex", &Value::Null, &record).unwrap();
+                            serde_json::to_vec(&summary).unwrap().len()
+                        };
+                        assert!(std::hint::black_box(size) <= MAX_SUMMARY_BYTES);
+                    }
+                    if round >= 3 {
+                        if cached {
+                            after.push(start.elapsed().as_secs_f64() * 1000.0)
+                        } else {
+                            before.push(start.elapsed().as_secs_f64() * 1000.0)
+                        }
+                    }
+                }
+            }
+            assert_eq!(
+                budget.check(&summary).unwrap(),
+                serde_json::to_vec(&summary).unwrap().len()
+            );
+            results.push(json!({"metadataBytes":bytes,"recordsPerSample":1000,"beforeMs":before,"afterMs":after}));
+        }
+        let report = json!({"probe":"isolated exact summary-size guard; old serializer vs cached field sizes","cases":results});
+        if let Ok(path) = std::env::var("HESSION_SUMMARY_BENCH_OUTPUT") {
+            std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        }
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    }
 
     fn fixture() -> (tempfile::TempDir, PathBuf, Connection, ImportPricing) {
         let dir = tempfile::tempdir().unwrap();
@@ -432,6 +730,152 @@ mod tests {
     }
     fn scalar(conn: &Connection, sql: &str) -> i64 {
         conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn incremental_metrics_match_full_sql_for_unicode_nul_and_late_tool_status_changes() {
+        let (dir, file, mut conn, mut pricing) = fixture();
+        fs::write(
+            &file,
+            format!(
+                "{}\n",
+                json!({"type":"session_meta","payload":{"id":"metrics"}})
+            ),
+        )
+        .unwrap();
+        run(&mut conn, &file, "codex", &mut pricing).unwrap();
+        for record in [
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"界🦀\u{0000}ignored by SQLite length"}]}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"A Unicode reply élan"}]}}),
+            json!({"type":"response_item","payload":{"type":"function_call","call_id":"late","name":"Read","arguments":"{}"}}),
+            json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"late","exit_code":2,"output":"failed 🦀"}}),
+            json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"late","exit_code":0,"output":"recovered 界"}}),
+        ] {
+            append(&file, record);
+            assert_eq!(run(&mut conn, &file, "codex", &mut pricing).unwrap(), 1);
+            let stored: String = conn
+                .query_row("SELECT metrics_json FROM session", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&stored).unwrap(),
+                formats::session_metrics(&conn, scalar(&conn, "SELECT id FROM session")).unwrap()
+            );
+            drop(conn);
+            conn = crate::db::open_db(&dir.path().join("history.sqlite")).unwrap();
+        }
+        assert_eq!(
+            scalar(
+                &conn,
+                "SELECT COUNT(*) FROM tool_invocation WHERE status='completed' AND exit_code=0"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn corrupt_summary_rebuilds_automatically_without_losing_annotations() {
+        let (_dir, file, mut conn, mut pricing) = fixture();
+        fs::write(
+            &file,
+            include_str!("../tests/fixtures/codex-concurrency.jsonl"),
+        )
+        .unwrap();
+        run(&mut conn, &file, "codex", &mut pricing).unwrap();
+        let id = scalar(&conn, "SELECT id FROM session");
+        conn.execute(
+            "INSERT INTO session_annotation(session_id,starred) VALUES(?,1)",
+            [id],
+        )
+        .unwrap();
+        for raw in ["not-json", "{}"] {
+            conn.execute("UPDATE index_checkpoint SET summary_json=?", [raw])
+                .unwrap();
+            assert_eq!(run(&mut conn, &file, "codex", &mut pricing).unwrap(), 4);
+            assert_eq!(scalar(&conn, "SELECT id FROM session"), id);
+            assert_eq!(scalar(&conn, "SELECT starred FROM session_annotation"), 1);
+            assert_eq!(scalar(&conn, "SELECT count(*) FROM entry"), 4);
+            assert_eq!(run(&mut conn, &file, "codex", &mut pricing).unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn codex_fork_keeps_own_metadata_across_inherited_headers_and_restart() {
+        let (dir, file, mut conn, mut pricing) = fixture();
+        let child = json!({"type":"session_meta","timestamp":"2026-11-17T11:00:00Z","payload":{
+            "id":"child","timestamp":"2026-11-17T11:00:00Z","cwd":"/child",
+            "source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}},
+            "forked_from_id":"parent","agent_nickname":"Ada"
+        }});
+        let parent = json!({"type":"session_meta","timestamp":"2026-11-17T10:00:00Z","payload":{
+            "id":"parent","timestamp":"2026-11-17T10:00:00Z","cwd":"/parent","source":"cli"
+        }});
+        fs::write(&file, format!("{child}\n{parent}\n")).unwrap();
+        assert_eq!(run(&mut conn, &file, "codex", &mut pricing).unwrap(), 2);
+        let session = scalar(&conn, "SELECT id FROM session");
+        let check = |conn: &Connection| {
+            let (id, start, cwd, raw): (String, String, String, String) = conn
+                .query_row(
+                    "SELECT external_id,started_at,cwd,raw_metadata_json FROM session",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(id, "child");
+            assert_eq!(start, "2026-11-17T11:00:00.000Z");
+            assert_eq!(cwd, "/child");
+            let meta: Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(meta["source"], child["payload"]["source"]);
+            assert_eq!(meta["agent_nickname"], "Ada");
+        };
+        check(&conn);
+        let data = formats::session_data(
+            "codex",
+            "test://fork",
+            &file,
+            vec![child.clone(), parent.clone()],
+            0,
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(data.metadata["id"], "child");
+        assert_eq!(data.metadata["cwd"], "/child");
+        assert_eq!(data.records.len(), 2);
+
+        conn.execute(
+            "INSERT INTO session_annotation(session_id,starred) VALUES(?,1)",
+            [session],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_tag(session_id,label) VALUES(?,'retained')",
+            [session],
+        )
+        .unwrap();
+        drop(conn);
+        append(&file, parent);
+        let mut conn = crate::db::open_db(&dir.path().join("history.sqlite")).unwrap();
+        assert_eq!(run(&mut conn, &file, "codex", &mut pricing).unwrap(), 1);
+        check(&conn);
+        assert_eq!(scalar(&conn, "SELECT id FROM session"), session);
+        assert_eq!(scalar(&conn, "SELECT COUNT(*) FROM entry"), 3);
+        assert_eq!(run(&mut conn, &file, "codex", &mut pricing).unwrap(), 0);
+
+        // Simulate a library indexed by the old parser. A quiet source must be
+        // rebuilt on upgrade, correcting metadata without losing annotations.
+        conn.execute("UPDATE session SET external_id='parent'", [])
+            .unwrap();
+        conn.execute("UPDATE index_checkpoint SET cursor_json=json_set(cursor_json,'$.parserVersion',1),invalidated=0", []).unwrap();
+        assert_eq!(run(&mut conn, &file, "codex", &mut pricing).unwrap(), 3);
+        check(&conn);
+        assert_eq!(scalar(&conn, "SELECT id FROM session"), session);
+        assert_eq!(scalar(&conn, "SELECT starred FROM session_annotation"), 1);
+        assert_eq!(
+            scalar(
+                &conn,
+                "SELECT COUNT(*) FROM session_tag WHERE label='retained'"
+            ),
+            1
+        );
     }
 
     #[test]

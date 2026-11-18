@@ -168,7 +168,15 @@ pub(super) fn execute(
     } else {
         "1".into()
     };
-    c.ctes.push(format!("scoped AS MATERIALIZED (SELECT s.id,s.workspace_id,s.title,s.host,coalesce(s.last_event_at,s.started_at) AS activity_at,a.family,a.product,w.path AS project,w.display_name FROM session s NOT INDEXED JOIN agent a ON a.id=s.agent_id LEFT JOIN workspace w ON w.id=s.workspace_id WHERE {scope_sql})"));
+    let (scan, helpers) = if r.filters.exclude_subagents {
+        (
+            "INDEXED BY session_main_activity_idx",
+            " AND s.is_subagent=0",
+        )
+    } else {
+        ("NOT INDEXED", "")
+    };
+    c.ctes.push(format!("scoped AS MATERIALIZED (SELECT s.id,s.workspace_id,s.title,s.host,coalesce(s.last_event_at,s.started_at) AS activity_at,a.family,a.product,w.path AS project,w.display_name FROM session s {scan} JOIN agent a ON a.id=s.agent_id LEFT JOIN workspace w ON w.id=s.workspace_id WHERE {scope_sql}{helpers})"));
     let alternatives = q
         .alternatives
         .iter()

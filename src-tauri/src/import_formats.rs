@@ -601,6 +601,23 @@ fn antigravity_metadata(file: &Path) -> Result<Map<String, Value>, String> {
     Ok(metadata)
 }
 
+/// Forked Codex rollouts include the parent's session_meta after their own
+/// header. Keep the owning session's metadata while retaining all raw records.
+pub(super) fn merge_session_metadata(
+    family: &str,
+    metadata: &mut Map<String, Value>,
+    incoming: &Map<String, Value>,
+) {
+    if family == "codex" {
+        if let (Some(owner), Some(id)) = (metadata.get("id"), incoming.get("id")) {
+            if owner != id {
+                return;
+            }
+        }
+    }
+    metadata.extend(incoming.clone());
+}
+
 pub(super) fn session_data(
     family: &str,
     uri: &str,
@@ -627,6 +644,7 @@ pub(super) fn session_data(
         } else {
             value
         };
+        let mut incoming = Map::new();
         // Message IDs must not overwrite the session identity.
         for key in [
             "cwd",
@@ -639,25 +657,27 @@ pub(super) fn session_data(
             "started_at",
             "ended_at",
             "last_activity_at",
+            "isSidechain",
         ] {
             if let Some(v) = meta.get(key).filter(|v| !v.is_null()) {
-                metadata.insert(key.into(), v.clone());
+                incoming.insert(key.into(), v.clone());
             }
         }
         if family == "codex" && value["type"] == "session_meta"
             || matches!(family, "pi" | "commandcode") && value["type"] == "session"
         {
             if let Some(map) = meta.as_object() {
-                metadata.extend(map.clone());
+                incoming.extend(map.clone());
             }
         } else if let Some(id) = value.get("sessionId").or_else(|| value.get("session_id")) {
-            metadata.insert("id".into(), id.clone());
+            incoming.insert("id".into(), id.clone());
         }
         if value["type"] == "ai-title" {
             if let Some(title) = value.get("aiTitle") {
-                metadata.insert("title".into(), title.clone());
+                incoming.insert("title".into(), title.clone());
             }
         }
+        merge_session_metadata(family, &mut metadata, &incoming);
         let record =
             normalize_record(family, value, i as i64).ok_or("Expected an object record")?;
         records.push(record);
@@ -825,9 +845,8 @@ pub(super) fn session_metrics(conn: &Connection, id: i64) -> Result<Value, Strin
             Ok(json!({"total_turns":row.get::<_,i64>(0)?,"user_turns":row.get::<_,i64>(1)?,"assistant_turns":row.get::<_,i64>(2)?,
                 "user_chars":row.get::<_,i64>(3)?,"assistant_chars":row.get::<_,i64>(4)?,"tool_chars":row.get::<_,i64>(5)?}))
         }).map_err(|e| e.to_string())?;
-    let (count, errors): (i64, i64) = conn.query_row(
-        "SELECT COUNT(*),COALESCE(SUM(status='error' OR (exit_code IS NOT NULL AND exit_code!=0)),0) FROM tool_invocation WHERE session_id=?",
-        [id], |row| Ok((row.get(0)?,row.get(1)?))).map_err(|e| e.to_string())?;
+    let (count, errors) =
+        hession_core::sessions::tool_counts(conn, id).map_err(|e| e.to_string())?;
     metrics["tool_count"] = json!(count);
     metrics["tool_error_count"] = json!(errors);
     Ok(metrics)

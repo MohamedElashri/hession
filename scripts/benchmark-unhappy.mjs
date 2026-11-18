@@ -23,7 +23,24 @@ for (const [scenario, tool] of [
     }
     if (run >= 3) samples.push(performance.now() - start);
   }
-  reports.push({ scenario, cards: 50, argumentCharacters: tool.arguments_json.length, medianMs: median(samples), samplesMs: samples });
+  let parses = 0; const parse = JSON.parse;
+  try { JSON.parse = (...args) => { parses++; return parse(...args); }; for (let i=0;i<50;i++) toolPresentation(tool); }
+  finally { JSON.parse = parse; }
+  reports.push({ scenario, cards: 50, argumentCharacters: tool.arguments_json.length, medianMs: median(samples), samplesMs: samples, parses });
+}
+for (const scenario of ['malformed-unique','path-unique','code-unique']) {
+  const tools = Array.from({length:50},(_,index)=>({arguments_json:scenario.startsWith('malformed') ? '{"patch":"'+'x'.repeat(1024*1024)+index
+    : JSON.stringify(scenario.startsWith('path') ? {file_path:`/synthetic/${index}.rs`,content:'x'.repeat(1024*1024)} : {code:'x'.repeat(1024*1024)+`//${index}`,language:'python'})}));
+  const samples=[];
+  for(let run=0;run<10;run++) {
+    const start=performance.now();
+    for(const tool of tools) assert(toolPresentation(tool).summary.length<=321);
+    if(run>=3)samples.push(performance.now()-start);
+  }
+  let parses=0;const parse=JSON.parse;
+  try {JSON.parse=(...args)=>{parses++;return parse(...args);};for(const tool of tools)toolPresentation(tool);}
+  finally {JSON.parse=parse;}
+  reports.push({scenario,cards:50,medianMs:median(samples),samplesMs:samples,parses});
 }
 const { parsePrompt } = await import(new URL('transcript.js', source));
 const normalPrompt = '<USER_REQUEST>Help with the parser</USER_REQUEST><environment_context>synthetic context</environment_context>';

@@ -175,7 +175,7 @@ fn migration_three_is_ordered_transactional_and_indexes_checkpoint_invalidation(
         conn.execute_batch(&format!("DROP TRIGGER \"{name}\";"))
             .unwrap();
     }
-    conn.execute_batch("DROP TABLE index_source_session;DROP TABLE index_full_source;DROP TABLE index_source_generation;DROP INDEX index_checkpoint_session;UPDATE application_schema SET version=2;").unwrap();
+    conn.execute_batch("DROP TABLE index_source_session;DROP TABLE index_full_source;DROP TABLE index_source_generation;DROP INDEX index_checkpoint_session;DROP INDEX session_main_activity_idx;DROP INDEX session_main_workspace_activity_idx;DROP INDEX session_main_agent_activity_idx;DROP INDEX session_workspace_activity_idx;DROP INDEX session_agent_activity_idx;DROP INDEX session_activity_idx;CREATE INDEX session_activity_idx ON session(COALESCE(last_event_at,started_at) DESC,id DESC);DROP INDEX context_model_session_idx;DROP INDEX context_branch_session_idx;ALTER TABLE session DROP COLUMN is_subagent;UPDATE application_schema SET version=2;").unwrap();
     conn.execute_batch("CREATE TABLE index_full_source(conflict);")
         .unwrap();
     assert!(db::init_schema(&conn).is_err());
@@ -192,7 +192,7 @@ fn migration_three_is_ordered_transactional_and_indexes_checkpoint_invalidation(
     conn.execute_batch("DROP TABLE index_full_source;").unwrap();
     db::init_schema(&conn).unwrap();
     db::init_schema(&conn).unwrap();
-    assert_eq!(db::schema_version(&conn).unwrap(), 3);
+    assert_eq!(db::schema_version(&conn).unwrap(), db::SCHEMA_VERSION);
     let plan: String = conn
         .query_row(
             "EXPLAIN QUERY PLAN SELECT source_uri FROM index_checkpoint WHERE session_id=1",

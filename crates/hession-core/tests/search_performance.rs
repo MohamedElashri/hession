@@ -87,7 +87,9 @@ fn benchmark_shared_catalog() {
                 if sample >= 3 {
                     wall.push(elapsed);
                     cpu.push(consumed);
-                    digest.update(serde_json::to_vec(&result).unwrap());
+                    // Revisions/cursors change between alternating runs; only
+                    // compare the actual ordered result rows.
+                    digest.update(serde_json::to_vec(&result.results).unwrap());
                 }
             }
             wall.sort_by(f64::total_cmp);
@@ -95,7 +97,55 @@ fn benchmark_shared_catalog() {
             cases.push(json!({"visibility":format!("{visibility:?}"),"query":query,"medianWallMs":(wall[3]+wall[4])/2.,"medianCpuMs":(cpu[3]+cpu[4])/2.,"wallSamplesMs":wall,"cpuSamplesMs":cpu,"resultSha256":format!("{:x}",digest.finalize())}));
         }
     }
-    let report = json!({"profile":"release","sessions":10000,"entries":50000,"queries":cases});
+    let mut failures = Vec::new();
+    let original = SearchRequest {
+        query: "compiler".into(),
+        limit: 1,
+        visibility: SearchVisibility::AllIndexedText,
+        ..Default::default()
+    };
+    let cursor = library
+        .search(&original, &SearchScope::all())
+        .unwrap()
+        .next_cursor
+        .unwrap();
+    let mut wrong_query = original.clone();
+    wrong_query.query = "regression".into();
+    wrong_query.cursor = Some(cursor.clone());
+    let mut malformed = original.clone();
+    malformed.cursor = Some("{".into());
+    let mut stale = original;
+    stale.cursor = Some(cursor);
+    let conn = db::open_db(&path).unwrap();
+    conn.execute("UPDATE session SET title=title||' updated' WHERE id=1", [])
+        .unwrap();
+    for (name, request) in [
+        ("malformed-cursor", malformed),
+        ("changed-query-cursor", wrong_query),
+        ("stale-cursor", stale),
+    ] {
+        let mut samples = Vec::new();
+        for sample in 0..11 {
+            let start = Instant::now();
+            let error = library.search(&request, &SearchScope::all()).unwrap_err();
+            assert!(matches!(
+                error,
+                hession_core::search::SearchError::InvalidCursor
+                    | hession_core::search::SearchError::StaleCursor
+            ));
+            if sample >= 3 {
+                samples.push(start.elapsed().as_secs_f64() * 1000.);
+            }
+        }
+        samples.sort_by(f64::total_cmp);
+        failures.push(
+            json!({"scenario":name,"medianMs":(samples[3]+samples[4])/2.,"samplesMs":samples}),
+        );
+    }
+    // Keep every invocation's starting metadata identical for alternating runs.
+    conn.execute("UPDATE session SET title='Compiler task 1' WHERE id=1", [])
+        .unwrap();
+    let report = json!({"profile":"release","sessions":10000,"entries":50000,"queries":cases,"failureCases":failures});
     let output =
         std::env::var_os("HESSION_SEARCH_BENCH_OUTPUT").expect("Set benchmark output path");
     std::fs::write(output, serde_json::to_vec_pretty(&report).unwrap()).unwrap();

@@ -4,6 +4,18 @@ use rusqlite::{types::Value as SqlValue, Connection};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+/// Count tool calls using narrow indexes instead of loading historical bodies
+/// just to evaluate an error aggregate.
+pub fn tool_counts(conn: &Connection, session_id: i64) -> rusqlite::Result<(i64, i64)> {
+    conn.query_row(
+        "SELECT (SELECT COUNT(*) FROM tool_invocation WHERE session_id=?1),
+         (SELECT COUNT(*) FROM tool_invocation WHERE session_id=?1
+          AND (status='error' OR (exit_code IS NOT NULL AND exit_code!=0)))",
+        [session_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+}
+
 pub fn get_session_metadata(conn: &Connection, session_id: i64) -> Result<Value, String> {
     let mut session = query_one(
         conn,

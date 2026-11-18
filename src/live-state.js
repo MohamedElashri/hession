@@ -47,9 +47,9 @@ export function mergeLiveEntries(previous, incoming, reset = false) {
   }
   const ordered = [...merged.values()].sort((a, b) => a.ordinal - b.ordinal || a.id - b.id);
   const retained = [];
-  let bytes = 0;
+  let bytes = 2; // JSON array brackets; subsequent rows also need a comma.
   for (let i = ordered.length - 1; i >= 0 && retained.length < MAX_LIVE_ENTRIES; i--) {
-    const size = encoder.encode(serialized.get(ordered[i]) ?? JSON.stringify(ordered[i])).byteLength;
+    const size = encoder.encode(serialized.get(ordered[i]) ?? JSON.stringify(ordered[i])).byteLength + (retained.length ? 1 : 0);
     if (bytes + size > MAX_LIVE_BYTES) break;
     retained.push(ordered[i]); bytes += size;
   }

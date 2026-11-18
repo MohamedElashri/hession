@@ -67,6 +67,30 @@ test('one Settings entry opens About and its updater inside the same window', as
     .toEqual([['app_version']]);
 }, 15000);
 
+test('subagents are hidden by default and the toolbar includes them in both search engines', async () => {
+  const user = userEvent.setup();
+  const handler = api.getMockImplementation();
+  const helper = { id: 3, title: 'Background approval review', agent: 'codex', is_subagent: 1, tags: [] };
+  api.mockImplementation(async (command, args) => {
+    if (command === 'search_sessions') return { sessions: args.includeSubagents ? [...sessions, helper] : sessions, total: args.includeSubagents ? 3 : 2 };
+    if (command === 'developer_search') return { results: [], countLowerBound: 0 };
+    return handler(command, args);
+  });
+  render(boot.tree);
+  await screen.findByRole('heading', { name: 'First session' });
+  expect(api.mock.calls).toContainEqual(['search_sessions', expect.objectContaining({ includeSubagents: false })]);
+  const toggle = screen.getByRole('button', { name: 'Show subagents' });
+  expect(toggle.getAttribute('aria-pressed')).toBe('false');
+  expect(screen.queryByText(helper.title)).toBeNull();
+  await user.click(toggle);
+  expect(await screen.findByText(helper.title)).toBeTruthy();
+  expect(screen.getByText('Subagent')).toBeTruthy();
+  await user.type(screen.getByRole('textbox', { name: 'Search sessions' }), 'approval');
+  await waitFor(() => expect(api.mock.calls).toContainEqual(['developer_search', expect.objectContaining({ request: expect.objectContaining({ filters: expect.objectContaining({ excludeSubagents: false }) }) })]));
+  await user.click(toggle);
+  await waitFor(() => expect(api.mock.calls).toContainEqual(['developer_search', expect.objectContaining({ request: expect.objectContaining({ filters: expect.objectContaining({ excludeSubagents: true }) }) })]));
+});
+
 test('history refresh preferences are saved through Settings and the last section reopens', async () => {
   const user = userEvent.setup();
   render(boot.tree);

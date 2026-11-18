@@ -175,6 +175,7 @@ fn search_sessions_inner(
 
 struct SessionQuery {
     base: String,
+    count_base: String,
     params: Vec<SqlValue>,
     order_by: &'static str,
 }
@@ -202,6 +203,10 @@ fn session_query(f: &SessionFilters) -> SessionQuery {
     let mut filters: Vec<String> = Vec::new();
     let mut params: Vec<SqlValue> = Vec::new();
 
+    if !f.include_subagents {
+        filters.push("s.is_subagent=0".into());
+    }
+
     if starred {
         filters.push(
             "EXISTS (SELECT 1 FROM session_annotation n WHERE n.session_id=s.id AND n.starred=1)"
@@ -223,11 +228,11 @@ fn session_query(f: &SessionFilters) -> SessionQuery {
         params.push(SqlValue::Text(host.to_string()));
     }
     if !agent.is_empty() {
-        filters.push("a.family = ?".to_string());
+        filters.push("s.agent_id IN (SELECT id FROM agent WHERE family=?)".to_string());
         params.push(SqlValue::Text(agent.to_string()));
     }
     if !project.is_empty() {
-        filters.push("w.path = ?".to_string());
+        filters.push("s.workspace_id=(SELECT id FROM workspace WHERE path=?)".to_string());
         params.push(SqlValue::Text(project.to_string()));
     }
     if !models.is_empty() {
@@ -287,12 +292,37 @@ fn session_query(f: &SessionFilters) -> SessionQuery {
     } else {
         format!("WHERE {}", filters.join(" AND "))
     };
+    // Sampled SQLite statistics underestimate highly skewed agent histories.
+    // Keep bounded pages on their ordering index and visit session keys first.
+    let index = match (f.include_subagents, !project.is_empty(), !agent.is_empty()) {
+        (false, true, _) => "session_main_workspace_activity_idx",
+        (false, false, true) => "session_main_agent_activity_idx",
+        (false, false, false) => "session_main_activity_idx",
+        (true, true, _) => "session_workspace_activity_idx",
+        (true, false, true) => "session_agent_activity_idx",
+        (true, false, false) => "session_activity_idx",
+    };
+    let from = format!("FROM session s INDEXED BY {index} CROSS JOIN agent a ON a.id=s.agent_id");
     let base = format!(
-        "FROM session s JOIN agent a ON a.id=s.agent_id \
+        "{from} \
          LEFT JOIN workspace w ON w.id=s.workspace_id {search_join} {where_clause}"
     );
+    // The list needs workspace labels; most counts only need session/agent
+    // keys. Avoid reading every wide session row to perform an unused join.
+    let count_workspace = if !q.trim().is_empty() {
+        "LEFT JOIN workspace w ON w.id=s.workspace_id"
+    } else {
+        ""
+    };
+    let count_from = if f.include_subagents && project.is_empty() && q.trim().is_empty() {
+        "FROM session s JOIN agent a ON a.id=s.agent_id".to_string()
+    } else {
+        from
+    };
+    let count_base = format!("{count_from} {count_workspace} {search_join} {where_clause}");
     SessionQuery {
         base,
+        count_base,
         params,
         order_by,
     }
@@ -307,10 +337,22 @@ fn search_sessions_from_conn(
 ) -> Result<Value, String> {
     let SessionQuery {
         base,
+        count_base,
         params,
         order_by,
     } = session_query(f);
-    let columns = "s.id,s.title,s.external_id,s.cwd,s.host,s.started_at,s.last_event_at,\
+    let entry_count = if f.sort == "messages" {
+        "picked.entry_count"
+    } else {
+        "(SELECT COUNT(*) FROM entry e WHERE e.session_id=s.id)"
+    };
+    let duration = if f.sort == "longest" {
+        "CAST(picked.duration_days AS REAL)"
+    } else {
+        "(julianday(COALESCE(s.last_event_at,s.started_at))-julianday(s.started_at))"
+    };
+    let columns = format!(
+        "s.id,s.title,s.external_id,s.cwd,s.host,s.is_subagent,s.started_at,s.last_event_at,\
         a.family AS agent,a.product,w.path AS project,\
         (SELECT branch FROM session_context c WHERE c.session_id=s.id AND c.branch IS NOT NULL \
          ORDER BY c.id DESC LIMIT 1) AS branch,\
@@ -319,19 +361,26 @@ fn search_sessions_from_conn(
         (SELECT substr(search_text,1,600) FROM entry e WHERE e.session_id=s.id \
          AND e.role IN ('user','assistant') AND search_text<>'' \
          ORDER BY e.ordinal DESC LIMIT 1) AS preview,\
-        (SELECT COUNT(*) FROM entry e WHERE e.session_id=s.id) AS entry_count,\
-        (julianday(COALESCE(s.last_event_at,s.started_at))-julianday(s.started_at)) AS duration_days";
+        {entry_count} AS entry_count,{duration} AS duration_days"
+    );
 
     let mut list_params = params.clone();
     list_params.push(SqlValue::Integer(limit));
     list_params.push(SqlValue::Integer(offset));
+    let sort_value=match f.sort.as_str() {
+        "messages"=>",(SELECT COUNT(*) FROM entry e WHERE e.session_id=s.id) AS entry_count",
+        "longest"=>",(julianday(COALESCE(s.last_event_at,s.started_at))-julianday(s.started_at)) AS duration_days",
+        _=>"",
+    };
     let mut sessions = query_all(
         conn,
-        &format!("SELECT {columns} {base} ORDER BY {order_by} LIMIT ? OFFSET ?"),
+        &format!("WITH picked AS MATERIALIZED (SELECT s.id{sort_value} {base} ORDER BY {order_by} LIMIT ? OFFSET ?)
+            SELECT {columns} FROM picked JOIN session s ON s.id=picked.id JOIN agent a ON a.id=s.agent_id
+            LEFT JOIN workspace w ON w.id=s.workspace_id ORDER BY {order_by}"),
         &list_params,
     )?;
     attach_annotations_batch(conn, &mut sessions, job)?;
-    let total = query_one(conn, &format!("SELECT COUNT(*) n {base}"), &params)?
+    let total = query_one(conn, &format!("SELECT COUNT(*) n {count_base}"), &params)?
         .and_then(|row| row.get("n").and_then(|v| v.as_i64()))
         .unwrap_or(0);
     Ok(json!({ "sessions": sessions, "total": total }))
@@ -358,6 +407,7 @@ pub async fn search_sessions(
     starred: Option<String>,
     tags: Option<Vec<String>>,
     host: Option<String>,
+    include_subagents: Option<bool>,
 ) -> Result<Value, String> {
     let db_path = db_path_of(&state)?;
     let list = |value: &Option<String>| {
@@ -379,6 +429,7 @@ pub async fn search_sessions(
         starred: opt_str(&starred) == "true",
         tags: tags.unwrap_or_default(),
         host: opt_str(&host).to_string(),
+        include_subagents: include_subagents.unwrap_or(false),
     };
     let (limit, offset) = (
         clamp_limit(limit.as_deref(), 20, 1, 100),
@@ -571,17 +622,17 @@ fn get_facets_inner(db_path: &Path) -> Result<Value, String> {
     let models = query_all(
         &conn,
         "SELECT DISTINCT m.model_key AS value,m.provider AS provider \
-             FROM model m JOIN session_context c ON c.model_id=m.id \
-             JOIN session s ON s.id=c.session_id \
+             FROM model m WHERE EXISTS (SELECT 1 FROM session_context c \
+             JOIN session s ON s.id=c.session_id WHERE c.model_id=m.id) \
              ORDER BY m.provider,m.model_key",
         &[],
     )?;
     let branches = query_all(
         &conn,
-        "SELECT DISTINCT c.branch AS value FROM session_context c \
-             JOIN session s ON s.id=c.session_id \
-             WHERE c.branch IS NOT NULL AND c.branch<>'' \
-             ORDER BY c.branch LIMIT 300",
+        "SELECT b.branch AS value FROM \
+             (SELECT DISTINCT branch FROM session_context WHERE branch IS NOT NULL AND branch<>'') b \
+             WHERE EXISTS (SELECT 1 FROM session_context c JOIN session s ON s.id=c.session_id WHERE c.branch=b.branch) \
+             ORDER BY b.branch LIMIT 300",
         &[],
     )?
     .into_iter()
@@ -594,9 +645,10 @@ fn get_facets_inner(db_path: &Path) -> Result<Value, String> {
     .collect::<Vec<_>>();
     let tools = query_all(
         &conn,
-        "SELECT DISTINCT t.tool_name AS value FROM tool_invocation t \
-             JOIN session s ON s.id=t.session_id \
-             ORDER BY t.tool_name LIMIT 300",
+        "SELECT names.tool_name AS value FROM \
+             (SELECT DISTINCT tool_name FROM tool_invocation) names \
+             WHERE EXISTS (SELECT 1 FROM tool_invocation t JOIN session s ON s.id=t.session_id WHERE t.tool_name=names.tool_name) \
+             ORDER BY names.tool_name LIMIT 300",
         &[],
     )?
     .into_iter()
@@ -633,18 +685,15 @@ pub async fn get_facets(state: State<'_, AppState>) -> Result<Value, String> {
 
 fn get_stats_inner(db_path: &Path) -> Result<Value, String> {
     let conn = open_db(db_path)?;
-    let count = |sql: &str| -> i64 {
-        query_one(&conn, sql, &[])
-            .ok()
-            .flatten()
-            .and_then(|row| row.get("n").and_then(|v| v.as_i64()))
-            .unwrap_or(0)
+    let count = |sql: &str| -> Result<i64, String> {
+        conn.query_row(sql, [], |row| row.get(0))
+            .map_err(|error| format!("Could not read library statistics: {error}"))
     };
     Ok(json!({
-        "sessions": count("SELECT COUNT(*) n FROM session"),
-        "entries": count("SELECT COUNT(*) n FROM entry"),
-        "agents": count("SELECT COUNT(DISTINCT agent_id) n FROM session"),
-        "files": count("SELECT COUNT(DISTINCT path) n FROM file_activity"),
+        "sessions": count("SELECT COUNT(*) n FROM session")?,
+        "entries": count("SELECT COUNT(*) n FROM entry")?,
+        "agents": count("SELECT COUNT(DISTINCT agent_id) n FROM session")?,
+        "files": count("SELECT COUNT(DISTINCT path) n FROM file_activity")?,
     }))
 }
 
@@ -1150,6 +1199,8 @@ pub async fn update_session_annotations(
 #[serde(rename_all = "camelCase")]
 pub struct SessionFilters {
     #[serde(default)]
+    include_subagents: bool,
+    #[serde(default)]
     q: String,
     #[serde(default)]
     agent: String,
@@ -1275,7 +1326,10 @@ fn export_ids(conn: &Connection, request: &ExportRequest) -> Result<Vec<i64>, St
             .session_id
             .ok_or("Select a session to export")?]);
     }
-    let defaults = SessionFilters::default();
+    let defaults = SessionFilters {
+        include_subagents: true,
+        ..Default::default()
+    };
     let filters = if request.scope == "library" {
         &defaults
     } else {
@@ -1285,6 +1339,7 @@ fn export_ids(conn: &Connection, request: &ExportRequest) -> Result<Vec<i64>, St
         base,
         params,
         order_by,
+        ..
     } = session_query(filters);
     let columns = match filters.sort.as_str() {
         "longest" => "s.id,(julianday(COALESCE(s.last_event_at,s.started_at))-julianday(s.started_at)) AS duration_days",
@@ -1523,3 +1578,7 @@ mod preview_fixtures;
 #[cfg(test)]
 #[path = "query_tests.rs"]
 mod query_tests;
+
+#[cfg(test)]
+#[path = "catalog_benchmark.rs"]
+mod catalog_benchmark;

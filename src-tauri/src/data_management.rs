@@ -411,8 +411,19 @@ fn open_backup(path: &Path, destination: &Connection) -> Result<Connection, Stri
                 |r| r.get(0),
             )
             .optional())?;
+        let source_columns = columns(&source, table)?;
+        let destination_columns = columns(destination, table)?;
+        // Classification is derived. Backups made before it was added remain
+        // importable; compute the missing value from their native metadata.
+        let legacy_session_columns = table == "session"
+            && source_columns
+                == destination_columns
+                    .iter()
+                    .filter(|column| column.as_str() != "is_subagent")
+                    .cloned()
+                    .collect::<Vec<_>>();
         if kind.as_deref() != Some("table")
-            || columns(&source, table)? != columns(destination, table)?
+            || (source_columns != destination_columns && !legacy_session_columns)
         {
             return Err(format!(
                 "The backup has an incompatible {table} table. No data was changed."
@@ -698,6 +709,14 @@ pub async fn import_saved_data(
             remap(&mut row, "agent_id", "agent", &maps)?;
             remap(&mut row, "workspace_id", "workspace", &maps)?;
             let family: String = sql(tx.query_row("SELECT family FROM agent WHERE id=?", [integer(&row, "agent_id")?], |r| r.get(0)))?;
+            if !row.contains_key("is_subagent") {
+                let metadata = match row.get("raw_metadata_json") {
+                    Some(Value::Text(raw)) => serde_json::from_str(raw).unwrap_or(Json::Null),
+                    _ => Json::Null,
+                };
+                let subagent = hession_core::session_kind::is_subagent(&family, text(&row, "source_uri")?, &metadata);
+                row.insert("is_subagent".into(), Value::Integer(i64::from(subagent)));
+            }
             changed_families.insert(family);
             // Imported checkpoints must never cause local logs to be skipped.
             sql(tx.execute("DELETE FROM sync_state WHERE source_uri=?", [text(&row, "source_uri")?]))?;
@@ -816,6 +835,32 @@ mod tests {
         .unwrap();
         conn.execute("INSERT INTO entry(id,session_id,ordinal,kind,search_text) VALUES(1,1,0,'message','Original text')",[]).unwrap();
         conn
+    }
+
+    #[test]
+    fn backups_without_derived_session_classification_remain_readable() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = library();
+        prepare_backup_contents(&source, &[1]).unwrap();
+        source
+            .execute_batch("DROP INDEX session_main_activity_idx; DROP INDEX session_main_workspace_activity_idx; DROP INDEX session_main_agent_activity_idx; DROP INDEX session_workspace_activity_idx; DROP INDEX session_agent_activity_idx; DROP INDEX session_activity_idx; CREATE INDEX session_activity_idx ON session(COALESCE(last_event_at,started_at) DESC,id DESC); ALTER TABLE session DROP COLUMN is_subagent")
+            .unwrap();
+        let path = directory.path().join("legacy.sqlite");
+        source
+            .backup(
+                rusqlite::MAIN_DB,
+                &path,
+                None::<fn(rusqlite::backup::Progress)>,
+            )
+            .unwrap();
+        let restored = open_backup(&path, &library()).unwrap();
+        assert_eq!(
+            restored
+                .query_row("SELECT title FROM session WHERE id=1", [], |r| r
+                    .get::<_, String>(0))
+                .unwrap(),
+            "Original"
+        );
     }
 
     #[test]

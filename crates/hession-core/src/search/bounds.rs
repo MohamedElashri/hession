@@ -28,7 +28,12 @@ pub(super) fn check(
         serde_json::to_string(&scope.workspace_ids()).map_err(|_| SearchError::ResponseTooLarge)?;
     // Cap this permission fence itself before constructing an unbounded ID CTE.
     // The extra row necessarily exceeds the scoped metadata overhead budget.
-    let scope_cte=format!("WITH approved AS MATERIALIZED (SELECT id FROM session NOT INDEXED WHERE ?1='null' OR workspace_id IN (SELECT value FROM json_each(?1)) LIMIT {})",MAX_SCOPED_METADATA_BYTES/SCOPED_ROW_OVERHEAD+1);
+    let (scan, helpers) = if request.filters.exclude_subagents {
+        ("INDEXED BY session_main_activity_idx", " AND is_subagent=0")
+    } else {
+        ("NOT INDEXED", "")
+    };
+    let scope_cte=format!("WITH approved AS MATERIALIZED (SELECT id FROM session {scan} WHERE (?1='null' OR workspace_id IN (SELECT value FROM json_each(?1))){helpers} LIMIT {})",MAX_SCOPED_METADATA_BYTES/SCOPED_ROW_OVERHEAD+1);
     // Approved-first loops and persistent indexes prevent SQLite from building
     // an automatic covering index containing oversized or denied TEXT before
     // octet_length/CASE can guard it. Automatic indexes remain useful on the

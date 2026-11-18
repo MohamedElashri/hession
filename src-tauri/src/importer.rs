@@ -1658,17 +1658,18 @@ fn upsert_session(
         .or_else(|| start.clone());
     let external = first_str(metadata, &["id", "session_id", "sessionId"])
         .unwrap_or_else(|| data.fallback_id.clone());
+    let is_subagent = hession_core::session_kind::is_subagent(family, &data.uri, metadata);
     conn.execute(
         "INSERT INTO session(agent_id,workspace_id,external_id,source_uri,source_format,cwd,title,started_at,last_event_at,
-          source_size,source_mtime,raw_metadata_json,token_usage_json,metrics_json,host)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL,?14)
+          source_size,source_mtime,raw_metadata_json,token_usage_json,metrics_json,host,is_subagent)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL,?14,?15)
          ON CONFLICT(source_uri) DO UPDATE SET agent_id=excluded.agent_id,workspace_id=excluded.workspace_id,host=excluded.host,
           external_id=excluded.external_id,source_format=excluded.source_format,cwd=excluded.cwd,title=excluded.title,
           started_at=excluded.started_at,last_event_at=excluded.last_event_at,source_size=excluded.source_size,
           source_mtime=excluded.source_mtime,raw_metadata_json=excluded.raw_metadata_json,
-          token_usage_json=excluded.token_usage_json,metrics_json=NULL,imported_at=CURRENT_TIMESTAMP",
+          token_usage_json=excluded.token_usage_json,is_subagent=excluded.is_subagent,metrics_json=NULL,imported_at=CURRENT_TIMESTAMP",
         params![agent_id,workspace_id,external,data.uri,data.format,cwd,title,start,end,data.size,data.mtime,
-            data.metadata.to_string(), data.usage.as_ref().map(Value::to_string), host],
+            data.metadata.to_string(), data.usage.as_ref().map(Value::to_string), host,is_subagent],
     ).map_err(|e| format!("upsert session: {e}"))?;
     let session_id: i64 = conn
         .query_row(

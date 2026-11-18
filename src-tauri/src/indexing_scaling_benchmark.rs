@@ -115,6 +115,64 @@ fn fixed_ten_append_scaling_benchmark() {
     );
 }
 
+#[test]
+#[ignore = "tool-heavy fixed-ten append benchmark; run release, serially, after builds finish"]
+fn tool_result_append_scaling_benchmark() {
+    let mut cases = Vec::new();
+    for calls in [1000, 10_000] {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("tools.jsonl");
+        let mut native = std::io::BufWriter::new(fs::File::create(&file).unwrap());
+        writeln!(native,"{}",json!({"type":"session_meta","payload":{"id":"tool-benchmark","cwd":"/synthetic/project"}})).unwrap();
+        for call in 0..calls {
+            writeln!(native,"{}",json!({"type":"response_item","payload":{"type":"function_call","name":"Read","call_id":format!("call-{call}"),"arguments":"{\"path\":\"src/main.rs\"}"}})).unwrap();
+            writeln!(native,"{}",json!({"type":"response_item","payload":{"type":"function_call_output","call_id":format!("call-{call}"),"output":"x".repeat(1024)}})).unwrap();
+        }
+        native.flush().unwrap();
+        drop(native);
+        let uri = native_source_uri("codex", &file).unwrap();
+        let mut conn = crate::db::open_db(&dir.path().join("library/history.sqlite")).unwrap();
+        crate::db::configure_bulk_writer(&conn).unwrap();
+        assert_eq!(import(&mut conn, &uri, false), 2 * calls + 1);
+        let initial_revision = library_revision::current(&conn).unwrap();
+        let mut samples = Vec::new();
+        for sample in 0..8 {
+            let mut native = fs::OpenOptions::new().append(true).open(&file).unwrap();
+            for entry in 0..10 {
+                writeln!(
+                    native,
+                    "{}",
+                    codex_message(
+                        &format!("append-{sample}-{entry}"),
+                        "A small continuation after completed tools"
+                    )
+                )
+                .unwrap();
+            }
+            native.sync_data().unwrap();
+            let start = Instant::now();
+            assert_eq!(import(&mut conn, &uri, false), 10);
+            samples.push(start.elapsed().as_secs_f64() * 1000.);
+            assert_eq!(
+                conn.query_row(
+                    "SELECT count(*) FROM tool_invocation WHERE result_text IS NOT NULL",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                calls as i64
+            );
+        }
+        assert!(library_revision::current(&conn).unwrap().revision > initial_revision.revision);
+        cases.push(json!({"historicalCalls":calls,"bytes":fs::metadata(&file).unwrap().len(),"append":percentiles(&samples),"samplesMs":samples}));
+    }
+    save_report(
+        "HESSION_TOOL_APPEND_OUTPUT",
+        "TOOL_APPEND_BENCHMARK",
+        &json!({"cases":cases}),
+    );
+}
+
 fn cpu_ticks() -> u64 {
     let stat = fs::read_to_string("/proc/self/stat")
         .expect("Linux /proc is required for idle CPU measurement");

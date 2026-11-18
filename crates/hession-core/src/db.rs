@@ -665,6 +665,18 @@ fn init_schema_unlocked(conn: &Connection) -> Result<()> {
             conn.execute("UPDATE application_schema SET version=3 WHERE id=1", [])
                 .map_err(|e| sqlite_err("record full-source schema", e))?;
         }
+        if version < 4 {
+            crate::session_kind::migrate(conn)
+                .map_err(|e| sqlite_err("classify background sessions", e))?;
+            conn.execute("UPDATE application_schema SET version=4 WHERE id=1", [])
+                .map_err(|e| sqlite_err("record session classification schema", e))?;
+        }
+        if version < 5 {
+            crate::session_kind::migrate_indexes(conn)
+                .map_err(|e| sqlite_err("index session browsing and facets", e))?;
+            conn.execute("UPDATE application_schema SET version=5 WHERE id=1", [])
+                .map_err(|e| sqlite_err("record catalog index schema", e))?;
+        }
         Ok(())
     })();
     if result.is_err() {
@@ -678,7 +690,7 @@ fn init_schema_unlocked(conn: &Connection) -> Result<()> {
 }
 
 /// Application schema version; deliberately independent of backup user_version.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 5;
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
     let present: bool = conn.query_row(

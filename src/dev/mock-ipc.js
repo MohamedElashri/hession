@@ -100,6 +100,7 @@ function search(args) {
   const models = (args.model || '').split(',').filter(Boolean);
   const tools = (args.tool || '').split(',').filter(Boolean);
   let rows = state.sessions.filter((s) => {
+    if (!args.includeSubagents && s.is_subagent) return false;
     const detail = fixtures.details[s.id];
     if (args.host === '@local' ? s.host : args.host && s.host !== args.host) return false;
     if (args.agent && s.agent !== args.agent) return false;

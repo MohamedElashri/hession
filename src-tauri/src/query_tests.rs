@@ -1,6 +1,103 @@
 use super::*;
 
 #[test]
+fn facets_preserve_distinct_values_and_exclude_orphaned_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("facets.sqlite");
+    let conn = open_db(&path).unwrap();
+    conn.execute_batch("INSERT INTO agent(id,family,product) VALUES(1,'codex','Codex');
+        INSERT INTO session(id,agent_id,source_uri) VALUES(1,1,'fixture://1');
+        INSERT INTO model(id,provider,model_key) VALUES(1,'fixture','used'),(2,'fixture','orphan');
+        INSERT INTO session_context(session_id,model_id,branch) VALUES(1,1,'main'),(1,1,'main'),(1,1,'feature');
+        INSERT INTO tool_invocation(session_id,tool_name) VALUES(1,'Read'),(1,'Read');
+        PRAGMA foreign_keys=OFF;
+        INSERT INTO session_context(session_id,model_id,branch) VALUES(999,2,'orphan');
+        INSERT INTO tool_invocation(session_id,tool_name) VALUES(999,'orphan');").unwrap();
+    let facets = get_facets_inner(&path).unwrap();
+    assert_eq!(
+        facets["models"],
+        json!([{"value":"used","provider":"fixture"}])
+    );
+    assert_eq!(facets["branches"], json!(["feature", "main"]));
+    assert_eq!(facets["tools"], json!(["Read"]));
+}
+
+#[test]
+fn statistics_fail_explicitly_instead_of_reporting_zero_for_broken_storage() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("statistics.sqlite");
+    let conn = open_db(&path).unwrap();
+    assert_eq!(get_stats_inner(&path).unwrap()["files"], 0);
+    conn.execute_batch("DROP TABLE file_activity").unwrap();
+    assert!(get_stats_inner(&path)
+        .unwrap_err()
+        .contains("file_activity"));
+}
+
+#[test]
+fn main_session_browsing_uses_partial_activity_indexes() {
+    let conn = library();
+    conn.execute_batch("ANALYZE; UPDATE sqlite_stat1 SET stat='100000 2001 1' WHERE idx='session_agent_idx'; ANALYZE sqlite_schema;").unwrap();
+    for (filters, wanted) in [
+        (SessionFilters::default(), "session_main_activity_idx"),
+        (
+            SessionFilters {
+                project: "/fixture".into(),
+                ..Default::default()
+            },
+            "session_main_workspace_activity_idx",
+        ),
+    ] {
+        let SessionQuery {
+            base,
+            params,
+            order_by,
+            ..
+        } = session_query(&filters);
+        let plan = query_all(
+            &conn,
+            &format!("EXPLAIN QUERY PLAN SELECT s.id {base} ORDER BY {order_by} LIMIT 20"),
+            &params,
+        )
+        .unwrap();
+        let plan = serde_json::to_string(&plan).unwrap();
+        assert!(plan.contains(wanted), "{plan}");
+        assert!(!plan.contains("TEMP B-TREE FOR ORDER BY"), "{plan}");
+    }
+}
+
+#[test]
+fn background_filter_preserves_distinct_sessions_and_full_library_exports() {
+    let conn = library();
+    conn.execute("UPDATE session SET is_subagent=1 WHERE id=2", [])
+        .unwrap();
+    conn.execute(
+        "UPDATE session SET title='Same prompt' WHERE id IN (1,2,3)",
+        [],
+    )
+    .unwrap();
+    let filters = SessionFilters {
+        q: "Same prompt".into(),
+        ..Default::default()
+    };
+    let result = search_sessions_from_conn(&conn, &filters, 20, 0, None).unwrap();
+    assert_eq!(result["total"], 2);
+    let filters = SessionFilters {
+        include_subagents: true,
+        ..filters
+    };
+    assert_eq!(
+        search_sessions_from_conn(&conn, &filters, 20, 0, None).unwrap()["total"],
+        3
+    );
+    let request = ExportRequest {
+        scope: "library".into(),
+        ..request("json")
+    };
+    assert_eq!(export_ids(&conn, &request).unwrap().len(), 1005);
+}
+
+#[test]
 fn global_search_includes_metadata_and_preserves_filters() {
     let conn = library();
     conn.execute(

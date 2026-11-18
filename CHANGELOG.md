@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-18
+
+### Fixed
+
+- Hide background Codex, Claude, and OpenCode sessions by default and add
+  **Show subagents** to reveal them. Keep histories and annotations intact.
+- Preserve a Codex fork's own session identity and metadata when its log also
+  contains inherited parent headers.
+- Keep hidden helpers outside visible-search size budgets, recover corrupt
+  append checkpoints automatically, report storage errors in library statistics,
+  and include JSON delimiters in the Live window's byte limit.
+
+### Improved
+
+- Load session pages and filter options using covering indexes and bounded page
+  selection. In the synthetic 100,000-session catalog, median browsing improves
+  from 192 to 2.8 ms and filter loading from 233 to 1.3 ms.
+- Append histories without rescanning old message text or tool results, and
+  avoid repeatedly serializing unchanged metadata. Adding ten events after
+  10,000 completed tool calls improves from 927 to 22 ms median.
+- Reuse bounded previews for repeated large tool arguments and skip doomed
+  parsing of incomplete JSON envelopes. Fifty repeated 1 MiB tool cards improve
+  from about 40 to 4.9 ms median, with 96–98% less retained preview memory for
+  repeated valid path/code payloads.
+- Reject malformed, mismatched, and expired search cursors before scanning
+  history. Add repeatable catalog, append, browser, and failure-path probes.
+
+Measurements use warm synthetic Linux/Chrome workloads. See the
+[performance audit](https://github.com/MohamedElashri/hession/blob/v0.5.3/docs/performance-audit.md)
+for methodology, controls, index storage costs, and remaining latency spikes.
+
 ## [0.5.2] - 2026-11-18
 
 ### Improved
@@ -200,6 +231,7 @@ Initial release for macOS (universal) and Linux.
 - Light/dark themes and bundled Geist fonts.
 - Download installer with SHA-256 verification.
 
+[0.5.3]: https://github.com/MohamedElashri/hession/compare/v0.5.2...v0.5.3
 [0.4.0]: https://github.com/MohamedElashri/hession/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/MohamedElashri/hession/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/MohamedElashri/hession/compare/v0.2.0...v0.2.1

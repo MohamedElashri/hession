@@ -58,6 +58,10 @@ history stays available while a host is offline or removes its original files.
   transcripts, titles, and workspace paths, with its existing sort choices.
   It is also available in the browser preview; developer search needs the
   desktop SQLite service. **Query syntax** beside developer results provides help.
+- Background sessions (including Codex approval reviews and Claude/OpenCode
+  subagents) are hidden from the session list and its searches by default. Turn on
+  **Show subagents** in the toolbar to include them. Their transcripts are kept;
+  full-library exports still include all sessions.
 - **Search this session** searches the complete history, including tool inputs
   and output. Open a result to jump to it in **Full log**; Escape clears results.
 - **Conversation** groups prompts, replies, and tools. Expand tool calls,
