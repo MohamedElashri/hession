@@ -582,3 +582,137 @@ fn transcript_pages_preserve_negative_gapped_ordinals_and_skip_hidden_pages() {
     }
     f.unchanged();
 }
+
+#[test]
+#[ignore = "synthetic error/cancellation latency probe; run release and serially"]
+fn benchmark_failure_paths() {
+    use hession_core::search::{SearchError, SearchRequest};
+    use std::time::Instant;
+    fn measure(cases: &mut Vec<Value>, name: &str, mut action: impl FnMut()) {
+        let mut samples = Vec::new();
+        for index in 0..10 {
+            let start = Instant::now();
+            action();
+            if index >= 3 {
+                samples.push(start.elapsed().as_secs_f64() * 1000.);
+            }
+        }
+        samples.sort_by(f64::total_cmp);
+        cases.push(serde_json::json!({"scenario":name,"medianMs":samples[3],"samplesMs":samples}));
+    }
+    let output = std::env::var_os("HESSION_FAILURE_BENCH_OUTPUT").expect("Set probe report path");
+    let f = Fixture::new();
+    let mut cases = Vec::new();
+    let target = f.target("failure.zip");
+    let cancelled = ExportCancellation::default();
+    cancelled.cancel();
+    measure(&mut cases, "pre-cancelled-prepare", || {
+        assert!(matches!(
+            project_export::prepare(&f.library(), &f.request(), &f.scope(), &target, &cancelled),
+            Err(ExportError::Cancelled)
+        ));
+        assert!(!target.exists());
+    });
+    let mut limited = f.request();
+    limited.limits.max_entries = 1;
+    measure(&mut cases, "entry-limit", || {
+        assert!(matches!(
+            project_export::prepare(
+                &f.library(),
+                &limited,
+                &f.scope(),
+                &target,
+                &ExportCancellation::default()
+            ),
+            Err(ExportError::Limit(_))
+        ));
+        assert!(!target.exists());
+    });
+    let conn = db::open_db(&f.path).unwrap();
+    conn.execute(
+        "UPDATE tool_invocation SET result_text=CAST(zeroblob(2097152) AS TEXT) WHERE id=50",
+        [],
+    )
+    .unwrap();
+    let mut bodies = f.request();
+    bodies.options.include_tool_bodies = true;
+    measure(&mut cases, "oversized-tool-body", || {
+        assert!(matches!(
+            project_export::prepare(
+                &f.library(),
+                &bodies,
+                &f.scope(),
+                &target,
+                &ExportCancellation::default()
+            ),
+            Err(ExportError::Limit(_))
+        ));
+        assert!(!target.exists());
+    });
+    // Omitted tool bodies stay unread by ordinary export preparation.
+    project_export::prepare(
+        &f.library(),
+        &f.request(),
+        &f.scope(),
+        &target,
+        &ExportCancellation::default(),
+    )
+    .unwrap();
+    measure(&mut cases, "invalid-search", || {
+        assert!(matches!(
+            f.library().search(
+                &SearchRequest {
+                    query: "\"unterminated".into(),
+                    ..Default::default()
+                },
+                &f.scope()
+            ),
+            Err(SearchError::Syntax(_))
+        ));
+    });
+    conn.execute(
+        "UPDATE session SET title=CAST(zeroblob(2097152) AS TEXT) WHERE id=10",
+        [],
+    )
+    .unwrap();
+    measure(&mut cases, "oversized-search-metadata", || {
+        assert!(matches!(
+            f.library().search(&SearchRequest::default(), &f.scope()),
+            Err(SearchError::InputTooLarge)
+        ));
+    });
+    conn.execute("UPDATE session SET title='Normal fixture' WHERE id=10", [])
+        .unwrap();
+    let plan = project_export::prepare(
+        &f.library(),
+        &f.request(),
+        &f.scope(),
+        &target,
+        &ExportCancellation::default(),
+    )
+    .unwrap();
+    measure(&mut cases, "cancel-during-write-and-cleanup", || {
+        let cancel = ExportCancellation::default();
+        assert!(matches!(
+            project_export::write(&f.library(), &plan, &f.scope(), &cancel, |progress| {
+                if matches!(progress.stage, ExportStage::Writing) {
+                    cancel.cancel();
+                }
+            }),
+            Err(ExportError::Cancelled)
+        ));
+        assert!(!target.exists());
+        no_temps(&f);
+    });
+    f.unchanged();
+    assert_eq!(
+        conn.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    fs::write(
+        output,
+        serde_json::to_vec_pretty(&serde_json::json!({"cases":cases})).unwrap(),
+    )
+    .unwrap();
+}

@@ -76,3 +76,28 @@ test('collapsed indexed commands defer argument serialization and cache it on de
   assert.equal(view.args, formatted);
   assert.equal(serialized, 1);
 });
+
+test('fallback summaries decode arguments once and retain JSON string literals', t => {
+  const parse = JSON.parse; let calls = 0;
+  t.mock.method(JSON, 'parse', (...args) => { calls++; return parse(...args); });
+  for (const [arguments_json, summary] of [
+    ['{"file_path":"/synthetic/a.rs"}', '/synthetic/a.rs'],
+    ['{"code":"print(1)","language":"python"}', 'print(1)'],
+    ['{"invalid":"unterminated', '{"invalid":"unterminated'],
+    ['"{\\"cmd\\":\\"literal JSON string\\"}"', '{"cmd":"literal JSON string"}'],
+  ]) {
+    calls = 0;
+    const view = toolPresentation({ arguments_json, status: 'failed' });
+    assert.equal(view.summary, summary); assert.equal(calls, 1);
+    assert.equal(view.outcome, 'Failed');
+    void view.args; void view.argsLanguage;
+    assert.equal(calls, 1, 'expanding arguments reuses the existing decode');
+  }
+});
+
+test('deep valid JSON remains readable when pretty-printing exceeds the JS stack', () => {
+  const raw = '['.repeat(12000) + '0' + ']'.repeat(12000);
+  const view = toolPresentation({ arguments_json: raw });
+  assert.equal(view.args, raw); assert.equal(view.argsLanguage, 'json');
+  assert.equal(view.args, raw);
+});

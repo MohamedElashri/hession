@@ -249,6 +249,21 @@ Export comparisons verify ZIP checksums and equivalent archive contents, allowin
 only generated timestamps to differ. `--samples` and `--sizes` shorten local runs.
 The optional idle probe measures one Linux watcher's CPU over 30 seconds.
 
+Use `node scripts/benchmark-unhappy.mjs [ARCHIVED_SRC_DIRECTORY]` for malformed
+arguments, repeated fallback results, duplicate highlighting, worker failures,
+and cancellation. Its timeout is scaled to 20 ms; operation counts show repeated
+work independently of timer noise. Add `--unhappy --worker-failures` to the browser
+probe to measure failed/fallback cards and eight queued blocks against a stuck
+Web Worker using the production 2.5-second timeout. A failed worker drains queued work to plain text;
+new requests can retry after a five-second cooldown. Canceled active work releases
+its worker, and replacement jobs share any pending lazy startup.
+
+The ignored `project_export` test `benchmark_failure_paths` measures export
+cancellation/cleanup, entry and field limits, invalid search, and oversized
+metadata. Set `HESSION_FAILURE_BENCH_OUTPUT` and run it in release mode with
+`--ignored --exact --nocapture --test-threads=1`. Source preservation and absence
+of partial destinations are checked; no latency threshold is imposed in CI.
+
 For public search API comparisons, build `search_performance` with `cargo test
 --release --locked -p hession-core --test search_performance --no-run`. Preserve
 that test executable for each revision (copy the probe into older revisions when

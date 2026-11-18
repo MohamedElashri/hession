@@ -78,10 +78,10 @@ const resultId = part => { const d = partData(part); return d.tool_use_id || d.c
 const firstLine = text => { const end = text.indexOf('\n'); return end < 0 ? text : text.slice(0, end); };
 
 /** One-line description of a tool call: its command, path, or first argument. */
-export function toolSummary(tool) {
+export function toolSummary(tool, { argumentsParsed = false } = {}) {
   if (tool.command_text) return firstLine(tool.command_text);
   let args = tool.arguments_json;
-  try { args = JSON.parse(args); } catch { /* plain-text input */ }
+  if (!argumentsParsed) { try { args = JSON.parse(args); } catch { /* plain-text input */ } }
   if (typeof args === 'string') return firstLine(args);
   if (args && typeof args === 'object') {
     for (const key of ['command', 'cmd', 'CommandLine', 'file_path', 'path', 'AbsolutePath', 'Path', 'pattern', 'query', 'url',

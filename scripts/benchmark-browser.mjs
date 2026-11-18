@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const { values: options } = parseArgs({ options: { ref: { type: 'string', default: 'working' }, output: { type: 'string' }, chrome: { type: 'string' }, help: { type: 'boolean' } } });
-if (options.help) { console.log('Usage: node scripts/benchmark-browser.mjs [--ref COMMIT|working] [--output REPORT.json] [--chrome EXECUTABLE]'); process.exit(0); }
+const { values: options } = parseArgs({ options: { ref: { type: 'string', default: 'working' }, output: { type: 'string' }, chrome: { type: 'string' }, unhappy: { type: 'boolean' }, 'worker-failures': { type: 'boolean' }, help: { type: 'boolean' } } });
+if (options.help) { console.log('Usage: node scripts/benchmark-browser.mjs [--ref COMMIT|working] [--output REPORT.json] [--chrome EXECUTABLE] [--unhappy] [--worker-failures]'); process.exit(0); }
 const ref = options.ref || 'working';
 const scratch = mkdtempSync(join(tmpdir(), 'hession-browser-perf-'));
 const site = join(scratch, 'site');
@@ -41,6 +41,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import ToolActivity from './src/components/ToolActivity.jsx';
+import { createSyntaxClient } from './src/syntax-client.js';
 import '@fontsource-variable/geist';
 import '@fontsource-variable/geist-mono';
 import './src/styles/base.css';
@@ -48,10 +49,13 @@ import './src/styles/app.css';
 import './src/styles/components.css';
 let root = createRoot(document.getElementById('root'));
 let cards;
-window.prepareFixture = (size, count) => {
+window.prepareFixture = (size, count, scenario = "indexed") => {
   const command = '# Synthetic recorded command\\nprintf "%s\\\\n" "' + 'x'.repeat(size) + '"';
   const args = JSON.stringify({ cmd: command, workdir: '/synthetic/project', timeout: 30 });
   cards = Array.from({length: count}, (_, index) => ({id:index, tool_name:'exec_command', command_text:command, arguments_json:args, result_text:'{"ok":true}', status:'completed'}));
+  if (scenario !== 'indexed') cards = cards.map(tool => ({ ...tool, command_text:null, status:'failed',
+    arguments_json:scenario === 'malformed' ? '{"patch":"' + 'x'.repeat(size)
+      : JSON.stringify(scenario === 'path' ? {file_path:'/synthetic/project.rs',content:'x'.repeat(size)} : {code:'x'.repeat(size),language:'python'}) }));
 };
 window.mountFixture = () => {
   const start = performance.now();
@@ -60,6 +64,17 @@ window.mountFixture = () => {
 };
 window.clearFixture = () => { flushSync(() => root.unmount()); root = createRoot(document.getElementById('root')); };
 await document.fonts.ready;
+window.runWorkerFaults = async () => {
+  let starts = 0;
+  const url = URL.createObjectURL(new Blob(['self.onmessage = () => {};'], {type:'text/javascript'}));
+  const client = createSyntaxClient(() => { starts++; return new Worker(url); });
+  const start = performance.now();
+  try {
+    const results = await Promise.all(Array.from({length:8}, (_,i) => new Promise(resolve => client.request('const item'+i+'=1;', 'js', resolve))));
+    if (!results.every(result => result === null)) throw new Error('Failure did not fall back to plain text');
+    return {blocks:8, timeoutMs:2500, workerStarts:starts, elapsedMs:performance.now()-start};
+  } finally { client.dispose(); URL.revokeObjectURL(url); }
+};
 window.benchmarkReady = true;
 `);
   await build({ root: site, configFile: join(site, 'vite.config.js'), logLevel: 'silent', build: { outDir: 'dist', sourcemap: true } });
@@ -108,8 +123,10 @@ window.benchmarkReady = true;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   const cases = [];
-  for (const [size, count] of [[1024, 200], [64 * 1024, 200], [1024 * 1024, 50]]) {
-    await evaluate('window.prepareFixture(' + size + ',' + count + ')');
+  const scenarios = options.unhappy ? [['malformed', 1024 * 1024, 50], ['path', 1024 * 1024, 50], ['code', 1024 * 1024, 50]]
+    : [['indexed', 1024, 200], ['indexed', 64 * 1024, 200], ['indexed', 1024 * 1024, 50]];
+  for (const [scenario, size, count] of scenarios) {
+    await evaluate('window.prepareFixture(' + size + ',' + count + ',' + JSON.stringify(scenario) + ')');
     await send('HeapProfiler.collectGarbage', {}, sessionId);
     const before = await send('Runtime.getHeapUsage', {}, sessionId);
     const samples = [];
@@ -125,10 +142,11 @@ window.benchmarkReady = true;
     const after = await send('Runtime.getHeapUsage', {}, sessionId);
     await evaluate('window.clearFixture()');
     samples.sort((a, b) => a - b);
-    cases.push({ argumentPayload: size, cards: count, medianCommitMs: samples[Math.floor(samples.length / 2)], p95CommitMs: samples[Math.ceil(samples.length * .95) - 1], retainedHeapBytes: after.usedSize - before.usedSize, domNodes: mounted.domNodes, samplesMs: samples });
+    cases.push({ scenario, argumentPayload: size, cards: count, medianCommitMs: samples[Math.floor(samples.length / 2)], p95CommitMs: samples[Math.ceil(samples.length * .95) - 1], retainedHeapBytes: after.usedSize - before.usedSize, domNodes: mounted.domNodes, samplesMs: samples });
   }
   assert.equal(errors.length, 0, errors.join('\n'));
-  const report = { ref, browser: await send('Browser.getVersion'), scenario: 'production component, collapsed recorded commands', cases };
+  const workerFailure = options['worker-failures'] ? await evaluate('window.runWorkerFaults()') : undefined;
+  const report = { ref, workerFailure, browser: await send('Browser.getVersion'), scenario: options.unhappy ? 'production component, collapsed failed/fallback calls' : 'production component, collapsed recorded commands', cases };
   const output = JSON.stringify(report, null, 2) + '\n';
   if (options.output) writeFileSync(resolve(options.output), output);
   process.stdout.write(output);

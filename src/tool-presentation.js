@@ -38,7 +38,7 @@ export function toolPresentation(tool) {
   const actions = { exec_command: 'Run command', shell_command: 'Run command', run_command: 'Run command', bash: 'Run command',
     read_file: 'Read file', read: 'Read file', write_file: 'Write file', edit_file: 'Edit file', apply_patch: 'Apply patch' };
   const action = command != null ? 'Run command' : code != null ? 'Run code' : Object.hasOwn(actions, shortName) ? actions[shortName] : name;
-  const rawSummary = tool.summary ?? toolSummary({ command_text: command, arguments_json: rawArgs });
+  const rawSummary = tool.summary ?? toolSummary({ command_text: command, arguments_json: parsedInput ? parsed : rawArgs }, { argumentsParsed: parsedInput });
   const summary = rawSummary.length > 320 ? `${textPreview(rawSummary, 320, Infinity)}…` : rawSummary;
   return {
     name, action, command, code, hasArguments, result, failed, completed, exit, outcome, summary,
@@ -47,7 +47,8 @@ export function toolPresentation(tool) {
     get args() {
       if (args === undefined) {
         input();
-        args = hasArguments ? (json ? JSON.stringify(parsed, null, 2) : String(parsed)) : null;
+        try { args = hasArguments ? (json ? JSON.stringify(parsed, null, 2) : String(parsed)) : null; }
+        catch { args = typeof rawArgs === 'string' ? rawArgs : String(rawArgs); }
       }
       return args;
     },

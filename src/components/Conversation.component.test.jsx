@@ -112,3 +112,14 @@ test('conversation separates speakers, preserves turn anchors and folds long too
   expect(container.querySelectorAll('.tool-activity')).toHaveLength(9);
   expect(screen.getByText('The build passed.')).toBeTruthy();
 });
+
+test('deeply nested tool input falls back to the original JSON and copies it exactly', async () => {
+  const raw = '['.repeat(12000) + '0' + ']'.repeat(12000);
+  const writeText = vi.fn().mockResolvedValue();
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  render(<ToolActivity tool={{ arguments_json: raw, status: 'failed' }} initiallyOpen/>);
+  expect(screen.getByLabelText('Arguments text').textContent).toBe(raw.slice(0, 12000));
+  fireEvent.click(screen.getByRole('button', { name: 'Copy arguments' }));
+  await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(raw));
+  expect(screen.getByText('Failed')).toBeTruthy();
+});
