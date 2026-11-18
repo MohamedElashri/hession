@@ -44,7 +44,11 @@ jobs:
 
       - name: Refresh Ubuntu package lists
         if: matrix.name == 'Ubuntu (deb)'
-        run: sudo apt-get update
+        run: |
+          # Hosted regional mirrors can stall large WebKit dependency downloads.
+          # Use Ubuntu's signed archive for this disposable validation host.
+          printf '%s\n' 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update
 
       - name: Prepare the AppImage host graphics runtime
         if: matrix.name == 'Ubuntu (AppImage)'
