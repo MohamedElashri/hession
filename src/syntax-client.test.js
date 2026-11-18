@@ -177,3 +177,17 @@ test('rejected shared startup after cancellation can recover after cooldown', as
   const recovered = new Promise(resolve => client.request('current', 'js', resolve)); await settle();
   worker.reply(['current']); assert.deepEqual(await recovered, ['current']); assert.equal(attempts, 2);
 });
+
+test('disposal suppresses deferred cached, rejected, and drained callbacks', async t => {
+  const { workers, client }=setup(t);
+  const ready=new Promise(resolve=>client.request('cached','js',resolve));await settle();workers[0].reply(['cached']);await ready;
+  let calls=0;
+  client.request('cached','js',()=>calls++);
+  client.request('not highlighted','plaintext',()=>calls++);
+  client.request('failure','js',()=>{});
+  client.request('queued','js',()=>calls++);
+  workers[0].onerror({});client.dispose();await settle();
+  assert.equal(calls,0);
+  const fresh=new Promise(resolve=>client.request('fresh','js',resolve));await settle();
+  workers[1].reply(['fresh']);assert.deepEqual(await fresh,['fresh']);
+});

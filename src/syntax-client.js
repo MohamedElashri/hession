@@ -3,7 +3,7 @@ import { canHighlight, syntaxLanguage, syntaxTreeSize } from './syntax.js';
 /** One lazy worker, a bounded queue/cache, and an enforceable timeout per block. */
 export function createSyntaxClient(startWorker, { timeout = 2500, idle = 5000, retryDelay = 5000 } = {}) {
   let worker = null, starting = null, active = null, nextId = 0, timer = null, idleTimer = null;
-  let cachedCharacters = 0, cachedNodes = 0, retryAfter = 0;
+  let cachedCharacters = 0, cachedNodes = 0, retryAfter = 0, generation = 0;
   const queue = [], cache = new Map();
   const stop = () => { worker?.terminate(); worker = null; };
   const remember = (key, text, nodes, count) => {
@@ -23,7 +23,7 @@ export function createSyntaxClient(startWorker, { timeout = 2500, idle = 5000, r
       // A blocked import or stuck worker must not charge every queued block
       // another startup/timeout. Keep source visible and retry on later demand.
       retryAfter = performance.now() + retryDelay;
-      for (const pending of queue.splice(0)) queueMicrotask(() => { if (!pending.cancelled) pending.callback(null); });
+      for (const pending of queue.splice(0)) queueMicrotask(() => { if (!pending.cancelled && pending.generation === generation) pending.callback(null); });
     }
     const count = outcome === 'complete' ? syntaxTreeSize(nodes, job.text) : 0;
     // Cache deterministic plain-text fallbacks too (invalid/over-budget trees).
@@ -65,15 +65,16 @@ export function createSyntaxClient(startWorker, { timeout = 2500, idle = 5000, r
   return {
     request(text, language, callback) {
       let cancelled = false;
+      const requested = generation;
       const cancel = () => { cancelled = true; };
-      if (!canHighlight(text, language)) { queueMicrotask(() => { if (!cancelled) callback(null); }); return cancel; }
+      if (!canHighlight(text, language)) { queueMicrotask(() => { if (!cancelled && requested === generation) callback(null); }); return cancel; }
       const key = `${syntaxLanguage(language)}\0${text}`, found = cache.get(key);
       if (found) {
         cache.delete(key); cache.set(key, found);
-        queueMicrotask(() => { if (!cancelled) callback(found.nodes); }); return cancel;
+        queueMicrotask(() => { if (!cancelled && requested === generation) callback(found.nodes); }); return cancel;
       }
-      if (performance.now() < retryAfter || queue.length >= 24) { queueMicrotask(() => { if (!cancelled) callback(null); }); return cancel; }
-      const job = { id: ++nextId, key, text, language: syntaxLanguage(language), callback, cancelled: false };
+      if (performance.now() < retryAfter || queue.length >= 24) { queueMicrotask(() => { if (!cancelled && requested === generation) callback(null); }); return cancel; }
+      const job = { id: ++nextId, key, text, language: syntaxLanguage(language), callback, cancelled: false, generation };
       queue.push(job); pump();
       return () => {
         job.cancelled = true;
@@ -82,6 +83,7 @@ export function createSyntaxClient(startWorker, { timeout = 2500, idle = 5000, r
       };
     },
     dispose() {
+      generation++;
       clearTimeout(timer); clearTimeout(idleTimer); stop();
       if (active) active.cancelled = true;
       active = null; starting = null; queue.length = 0; cache.clear(); cachedCharacters = 0; cachedNodes = 0; retryAfter = 0;

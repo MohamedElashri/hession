@@ -276,6 +276,14 @@ Compare result hashes as well as CPU/wall samples across all visibility modes.
 The ignored core test `search::performance::profile_search_stages_10k` separates
 size-preflight and SQL execution time; `HESSION_SEARCH_PROFILE_OUTPUT` saves it.
 
+`node scripts/benchmark-live.mjs [ARCHIVED_LIVE_STATE_MODULE]` compares live
+merging, serialization counts, duplicate IDs, and oversized replays. The browser
+probe's `--live` mode uses production Live components with synthetic IPC. It
+measures 300-row parent refreshes, empty/changed/replayed pages, and indexing
+startup/notification counts. Byte sizes are checked on each nonempty merge;
+serialized values are reused only within that merge. Events are revision-check
+hints, and indexing refresh callbacks are awaited to prevent overlapping work.
+
 ## Dependency security
 
 Run `npm audit` and `cargo audit` against current advisory databases before

@@ -48,3 +48,30 @@ test('collapsed live summaries never use combined text or non-conversation text 
   assert.equal(liveEntrySummary({ role: 'assistant', kind: 'message', search_text: 'combinedsecret', parts: [{ kind: 'thinking', text: 'privatesecret' }] }), 'Recorded event. Expand to inspect its content.');
   assert.equal(liveEntrySummary({ role: 'assistant', kind: 'agent_message', parts: [{ kind: 'text', text: 'Visible answer' }, { kind: 'thinking', text: 'privatesecret' }] }), 'Visible answer');
 });
+
+test('replayed IDs are counted once and their final snapshot wins', () => {
+  const original = entry(1);
+  const final = { ...entry(2), parts: [{ kind: 'text', text: 'Final output' }] };
+  const next = mergeLiveEntries([original], [entry(2), final, { ...original, tools: ['intermediate'] }, structuredClone(original)]);
+  assert.equal(next.added, 1); assert.equal(next.updated, 0);
+  assert.equal(next.entries[0], original); assert.equal(next.entries[1], final);
+  const update = mergeLiveEntries(next.entries, [entry(2), entry(2)]);
+  assert.equal(update.updated, 1); assert.equal(update.added, 0);
+  assert.throws(() => mergeLiveEntries([], [{ id: 1, ordinal: null }, entry(1)]), /Invalid/);
+});
+test('identical deltas preserve references while changes replace only the changed record', () => {
+  const previous = [entry(1), entry(2)];
+  const same = mergeLiveEntries(previous, structuredClone(previous));
+  assert.equal(same.entries, previous); assert.equal(same.updated, 0);
+  const changed = { ...entry(2), tools: [{ result_text: 'Late output' }] };
+  const next = mergeLiveEntries(previous, [structuredClone(previous[0]), changed]);
+  assert.equal(next.entries[0], previous[0]); assert.equal(next.entries[1], changed);
+  assert.equal(next.updated, 1);
+  assert.notEqual(mergeLiveEntries(previous, structuredClone(previous), true).entries, previous);
+});
+test('size checks stay fresh when callers modify previously supplied objects', () => {
+  const previous = mergeLiveEntries([], [entry(1)]).entries;
+  previous[0].parts[0].text = '界'.repeat(MAX_LIVE_BYTES);
+  const next = mergeLiveEntries(previous, [structuredClone(previous[0])]);
+  assert.deepEqual(next.entries, []); assert.equal(next.trimmed, 1);
+});

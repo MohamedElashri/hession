@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const { values: options } = parseArgs({ options: { ref: { type: 'string', default: 'working' }, output: { type: 'string' }, chrome: { type: 'string' }, unhappy: { type: 'boolean' }, 'worker-failures': { type: 'boolean' }, 'prompt-failures': { type: 'boolean' }, help: { type: 'boolean' } } });
-if (options.help) { console.log('Usage: node scripts/benchmark-browser.mjs [--ref COMMIT|working] [--output REPORT.json] [--chrome EXECUTABLE] [--unhappy] [--worker-failures] [--prompt-failures]'); process.exit(0); }
+const { values: options } = parseArgs({ options: { ref: { type: 'string', default: 'working' }, output: { type: 'string' }, chrome: { type: 'string' }, live: { type: 'boolean' }, unhappy: { type: 'boolean' }, 'worker-failures': { type: 'boolean' }, 'prompt-failures': { type: 'boolean' }, help: { type: 'boolean' } } });
+if (options.help) { console.log('Usage: node scripts/benchmark-browser.mjs [--ref COMMIT|working] [--output REPORT.json] [--chrome EXECUTABLE] [--live] [--unhappy] [--worker-failures] [--prompt-failures]'); process.exit(0); }
 const ref = options.ref || 'working';
 const scratch = mkdtempSync(join(tmpdir(), 'hession-browser-perf-'));
 const site = join(scratch, 'site');
@@ -41,6 +41,8 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import ToolActivity from './src/components/ToolActivity.jsx';
+import { LiveTail } from './src/components/LiveView.jsx';
+import useIndexing from './src/useIndexing.js';
 import { createSyntaxClient } from './src/syntax-client.js';
 import { parsePrompt } from './src/transcript.js';
 import '@fontsource-variable/geist';
@@ -87,6 +89,79 @@ window.runWorkerFaults = async () => {
     if (!results.every(result => result === null)) throw new Error('Failure did not fall back to plain text');
     return {blocks:8, timeoutMs:2500, workerStarts:starts, elapsedMs:performance.now()-start};
   } finally { client.dispose(); URL.revokeObjectURL(url); }
+};
+let liveSequence = 0, livePage = 0, liveMode = '', liveDone, liveCursor;
+const callbacks = new Map(), listeners = new Set(); let callbackId = 0;
+const liveEvent = id => ({id,ordinal:id*11,position:id-1,kind:'message',role:'assistant',occurred_at:'2026-11-18T00:00:00Z',parts:[{kind:'text',text:'Event '+id+' '+ 'x'.repeat(4096)}],tools:[]});
+let dateFormats = 0;
+const formatDate = Date.prototype.toLocaleString;
+Date.prototype.toLocaleString = function(...args) { dateFormats++; return formatDate.apply(this,args); };
+const openLive = () => {};
+function LiveFixture() {
+  const [revision, setRevision] = React.useState(0);
+  window.bumpLive = () => setRevision(value => value+1);
+  return <div data-fixture-revision={revision}><LiveTail session={{id:1,title:'Synthetic live session',agent:'codex'}} available onSelectSession={openLive}/></div>;
+}
+window.prepareLive = () => {
+  window.__TAURI_INTERNALS__ = {
+    transformCallback(callback) { const id=++callbackId; callbacks.set(id,callback); return id; },
+    async invoke(command,args) {
+      if (command === 'plugin:event|listen') { listeners.add(args.handler); return args.handler; }
+      if (command === 'plugin:event|unlisten') return;
+      if (command !== 'session_delta') throw new Error('Unexpected fixture command: '+command);
+      liveCursor = args.cursor?.seq ?? null;
+      let entries = [], reset = false, hasMore = false;
+      if (livePage < 3) {
+        entries = Array.from({length:100},(_,i)=>liveEvent(livePage*100+i+1));
+        reset = livePage===0; livePage++; hasMore=livePage<3;
+      } else if (liveMode === 'append') entries = [liveEvent(301)];
+      else if (liveMode === 'replay') entries = Array.from({length:100},()=>liveEvent(301));
+      else if (liveMode === 'duplicate-new') entries = Array.from({length:100},()=>liveEvent(302));
+      const result = {entries,reset,hasMore,deleted:false,cursor:{identity:'synthetic',epoch:1,seq:++liveSequence,sessionId:1}};
+      liveDone?.(); return result;
+    },
+  };
+  window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {unregisterListener(_event,id) {listeners.delete(id);callbacks.delete(id);}};
+  flushSync(()=>root.render(<LiveFixture/>));
+};
+window.inspectLive = () => ({rows:document.querySelectorAll('[data-live-entry]').length,error:document.querySelector('.live-error')?.textContent});
+window.refreshLiveParent = () => {
+  const before=dateFormats,start=performance.now(); flushSync(()=>window.bumpLive());
+  return {commitMs:performance.now()-start,dateFormats:dateFormats-before};
+};
+window.runLiveDelta = mode => new Promise(resolve => {
+  liveMode=mode; const before=dateFormats;
+  liveDone = () => {
+    liveDone=null;
+    requestAnimationFrame(()=>requestAnimationFrame(()=>resolve({mode,dateFormats:dateFormats-before,rows:window.inspectLive().rows,requestedCursor:liveCursor,sequence:liveSequence,pending:document.querySelector('.live-tail-controls .text-button')?.textContent})));
+  };
+  for (const id of listeners) callbacks.get(id)?.({event:'library-changed',payload:{}});
+});
+let indexMetrics, startResolvers=[];
+const indexChanged = async () => { indexMetrics.refreshes++; };
+function IndexFixture() {
+  const [ready,setReady]=React.useState(true); window.setIndexReady=setReady;
+  useIndexing({ready,onChanged:indexChanged}); return null;
+}
+window.runIndexingProbe = async () => {
+  indexMetrics={starts:0,refreshes:0,statusReads:0,revisionReads:0};startResolvers=[];
+  const invoke=window.__TAURI_INTERNALS__.invoke;
+  window.__TAURI_INTERNALS__.invoke=async (command,args) => {
+    if(command==='start_indexing'){indexMetrics.starts++;return new Promise(resolve=>startResolvers.push(resolve));}
+    if(command==='pause_indexing')return {phase:args.paused?'paused':'active'};
+    if(command==='indexing_status'){indexMetrics.statusReads++;return {phase:'active'};}
+    if(command==='observed_library_revision'){indexMetrics.revisionReads++;return {identity:'synthetic-index',revision:1};}
+    return invoke(command,args);
+  };
+  flushSync(()=>root.render(<IndexFixture/>));
+  flushSync(()=>window.setIndexReady(false));flushSync(()=>window.setIndexReady(true));
+  for(let step=0;step<5;step++){
+    for(const resolve of startResolvers.splice(0))resolve({phase:'active'});
+    await new Promise(resolve=>setTimeout(resolve,0));
+  }
+  for(let i=0;i<100;i++)for(const id of listeners)callbacks.get(id)?.({event:'library-changed',payload:{revision:{identity:'synthetic-index',revision:1}}});
+  await new Promise(resolve=>setTimeout(resolve,3300));
+  const result={...indexMetrics}; flushSync(()=>root.unmount());root=createRoot(document.getElementById('root')); return result;
 };
 window.benchmarkReady = true;
 `);
@@ -137,6 +212,33 @@ window.benchmarkReady = true;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   const cases = [];
+  if (options.live) {
+    await evaluate('window.prepareLive()');
+    let ready;
+    for (let attempt = 0; attempt < 300; attempt++) {
+      ready = await evaluate('window.inspectLive()');
+      assert(!ready.error, ready.error);
+      if (ready.rows===300) break;
+      await new Promise(resolve => setTimeout(resolve,100));
+    }
+    assert.equal(ready.rows,300);
+    await evaluate("document.querySelector('.live-tail-controls .text-button').click()");
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    const samples=[],formats=[];
+    for (let run=0;run<10;run++) {
+      const result=await evaluate('window.refreshLiveParent()');
+      if (run>=3) {samples.push(result.commitMs);formats.push(result.dateFormats);}
+      await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    }
+    samples.sort((a,b)=>a-b);
+    cases.push({scenario:'live-parent-refresh',rows:300,medianCommitMs:samples[3],samplesMs:samples,dateFormats:formats});
+    for (const mode of ['empty','append','replay','duplicate-new']) {
+      const result=await evaluate('window.runLiveDelta('+JSON.stringify(mode)+')');
+      assert.equal(result.rows,300); cases.push({scenario:'live-'+mode,...result});
+    }
+    await evaluate('window.clearFixture()');
+    cases.push({scenario:'indexing-event-and-poll',...await evaluate('window.runIndexingProbe()')});
+  } else {
   const scenarios = options.unhappy ? [['malformed', 1024 * 1024, 50], ['path', 1024 * 1024, 50], ['code', 1024 * 1024, 50]]
     : [['indexed', 1024, 200], ['indexed', 64 * 1024, 200], ['indexed', 1024 * 1024, 50]];
   for (const [scenario, size, count] of scenarios) {
@@ -158,10 +260,11 @@ window.benchmarkReady = true;
     samples.sort((a, b) => a - b);
     cases.push({ scenario, argumentPayload: size, cards: count, medianCommitMs: samples[Math.floor(samples.length / 2)], p95CommitMs: samples[Math.ceil(samples.length * .95) - 1], retainedHeapBytes: after.usedSize - before.usedSize, domNodes: mounted.domNodes, samplesMs: samples });
   }
+  }
   assert.equal(errors.length, 0, errors.join('\n'));
   const workerFailure = options['worker-failures'] ? await evaluate('window.runWorkerFaults()') : undefined;
   const promptFailure = options['prompt-failures'] ? await evaluate('window.runPromptFaults()') : undefined;
-  const report = { ref, workerFailure, promptFailure, browser: await send('Browser.getVersion'), scenario: options.unhappy ? 'production component, collapsed failed/fallback calls' : 'production component, collapsed recorded commands', cases };
+  const report = { ref, workerFailure, promptFailure, browser: await send('Browser.getVersion'), scenario: options.live ? 'production LiveTail, synthetic IPC' : options.unhappy ? 'production component, collapsed failed/fallback calls' : 'production component, collapsed recorded commands', cases };
   const output = JSON.stringify(report, null, 2) + '\n';
   if (options.output) writeFileSync(resolve(options.output), output);
   process.stdout.write(output);

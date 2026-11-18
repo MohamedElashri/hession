@@ -4,6 +4,11 @@
 
 ### Improved
 
+- Preserve unchanged Live rows and cursors without repainting the retained window;
+  count repeated event IDs once and avoid repeated serialization within a delta.
+- Share indexing startup and pause/resume work, coalesce event and revision
+  refreshes, and retain read ownership across failures and readiness changes.
+- Suppress deferred syntax callbacks after their client is disposed.
 - Defer formatting full tool arguments and detecting panel syntax until those
   panels open, reducing conversation rendering time and retained memory.
 - Seek directly to the next transcript page and reuse per-entry SQL statements
