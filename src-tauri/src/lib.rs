@@ -46,6 +46,10 @@ fn show_main_window(app: &tauri::AppHandle) {
             let _ = window.run_on_main_thread(move || {
                 use gtk::prelude::GtkWindowExt;
                 if let Ok(window) = main.gtk_window() {
+                    // An IPC activation can arrive before GTK processes the
+                    // window-manager's iconify event. Request restoration even
+                    // when GTK's cached window state still says it is visible.
+                    window.deiconify();
                     window.present_with_time(gtk::gdk::ffi::GDK_CURRENT_TIME as u32);
                 }
             });

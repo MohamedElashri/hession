@@ -205,8 +205,11 @@ def main():
         assert not (other_library / 'sessions.sqlite').exists(), 'Secondary initialized another library'
         if desktop:
             assert desktop.windows(primary.pid) == [window]
-            desktop.iconify(window)
-            second(primary)
+            # Repeat immediate minimize/relaunch to exercise activation while
+            # GTK's cached window state can still lag the window manager.
+            for _ in range(3):
+                desktop.iconify(window)
+                second(primary)
         for args in [['--version'], ['--help'], ['status', '--json'], ['sessions', 'list', '--json'], ['index', '--once', '--agent', 'codex', '--json']]:
             assert command(args, headless=True).stdout.strip()
             assert primary.poll() is None

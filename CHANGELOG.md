@@ -25,6 +25,8 @@
 
 ### Fixed
 
+- Explicitly restore minimized Linux windows before presenting them when another
+  launcher activates the existing instance.
 - Keep the visible library and reading position after transient refresh failures,
   invalidate cached transcripts after content/tool/tag changes, and handle deleted
   sessions and reused row IDs safely.
