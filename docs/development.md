@@ -221,6 +221,69 @@ close/relaunch. The candidate workflow runs `native-instance-smoke.py` against
 installed packages. On Linux it uses Openbox inside one private D-Bus/Xvfb session
 with service activation disabled; macOS uses a disposable CI login session.
 
+## Performance measurements
+
+Run benchmarks serially after compilation, with synthetic data and idle build/test
+workers. Keep the baseline and candidate binaries: rebuilding between timed runs
+changes cache/load conditions. Record CPU time alongside wall time, retain raw
+samples, and alternate baseline/candidate order on the same catalog. Warm-cache
+results do not establish cold-start or native WebKit performance.
+
+```sh
+mkdir -p target/performance
+npm run benchmark
+node scripts/benchmark-tool-presentation.mjs
+node scripts/benchmark-browser.mjs --ref BASELINE_COMMIT --output target/performance/browser-before.json
+node scripts/benchmark-browser.mjs --ref working --output target/performance/browser-after.json
+python3 scripts/benchmark-native.py --binary /absolute/path/to/hession --idle --output target/performance/native.json
+python3 scripts/benchmark-export.py --seed-binary /absolute/path/to/hession --before /absolute/path/to/baseline-cli --after /absolute/path/to/candidate-cli --output target/performance/exports.json
+```
+
+The browser probe needs Chrome (`--chrome` selects its executable). It builds the
+production tool component from tracked source in a temporary directory, uses a
+fresh browser profile, and measures collapsed-card React commits and additional
+retained heap after GC. Input strings are excluded from that heap difference.
+The native probes isolate HOME, XDG, and agent roots; they generate 1k/10k/100k
+histories, check source preservation and catalog integrity, and remove fixtures.
+Export comparisons verify ZIP checksums and equivalent archive contents, allowing
+only generated timestamps to differ. `--samples` and `--sizes` shorten local runs.
+The optional idle probe measures one Linux watcher's CPU over 30 seconds.
+
+Use `node scripts/benchmark-unhappy.mjs [ARCHIVED_SRC_DIRECTORY]` for malformed
+arguments, truncated prompt wrappers, repeated fallback results, duplicate
+highlighting, worker failures, and cancellation. Its timeout is scaled to 20 ms; operation counts show repeated
+work independently of timer noise. Add `--unhappy --worker-failures` to the browser
+probe to measure failed/fallback cards and eight queued blocks against a stuck
+Web Worker using the production 2.5-second timeout. A failed worker drains queued work to plain text;
+new requests can retry after a five-second cooldown. Canceled active work releases
+its worker, and replacement jobs share any pending lazy startup. Add
+`--prompt-failures` to measure repeated unclosed wrappers in the browser.
+
+The ignored `project_export` test `benchmark_failure_paths` measures export
+cancellation/cleanup, entry and field limits, invalid search, and oversized
+metadata. Set `HESSION_FAILURE_BENCH_OUTPUT` and run it in release mode with
+`--ignored --exact --nocapture --test-threads=1`. Source preservation and absence
+of partial destinations are checked; no latency threshold is imposed in CI.
+
+For public search API comparisons, build `search_performance` with `cargo test
+--release --locked -p hession-core --test search_performance --no-run`. Preserve
+that test executable for each revision (copy the probe into older revisions when
+needed). Set `HESSION_SEARCH_BENCH_DB` to a new synthetic catalog path, then run
+`benchmark_shared_catalog --ignored --exact --nocapture --test-threads=1` with
+`HESSION_SEARCH_BENCH_CREATE=1` once to seed it. Subsequent runs require
+`HESSION_SEARCH_BENCH_OUTPUT` and reuse that database without the create flag.
+Compare result hashes as well as CPU/wall samples across all visibility modes.
+The ignored core test `search::performance::profile_search_stages_10k` separates
+size-preflight and SQL execution time; `HESSION_SEARCH_PROFILE_OUTPUT` saves it.
+
+`node scripts/benchmark-live.mjs [ARCHIVED_LIVE_STATE_MODULE]` compares live
+merging, serialization counts, duplicate IDs, and oversized replays. The browser
+probe's `--live` mode uses production Live components with synthetic IPC. It
+measures 300-row parent refreshes, empty/changed/replayed pages, and indexing
+startup/notification counts. Byte sizes are checked on each nonempty merge;
+serialized values are reused only within that merge. Events are revision-check
+hints, and indexing refresh callbacks are awaited to prevent overlapping work.
+
 ## Dependency security
 
 Run `npm audit` and `cargo audit` against current advisory databases before

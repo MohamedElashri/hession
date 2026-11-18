@@ -40,7 +40,41 @@ const CONTEXT_LABELS = {
   ADDITIONAL_METADATA: 'Metadata',
   USER_SETTINGS_CHANGE: 'Settings change',
 };
-const BLOCK = /<([A-Za-z][\w-]*)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/g;
+// Index closers once: a truncated prompt must not rescan its entire suffix
+// for each unmatched opener. Matching remains case-sensitive and non-nested.
+function replacePromptBlocks(text, replace) {
+  const closers = new Map();
+  for (const match of text.matchAll(/<\/([A-Za-z][\w-]*)>/g)) {
+    if (!closers.has(match[1])) closers.set(match[1], { positions: [], next: 0 });
+    closers.get(match[1]).positions.push(match.index);
+  }
+  if (!closers.size) return text;
+  const head = /<([A-Za-z][\w-]*)/y, pieces = [];
+  let search = 0, previous = 0, greater = -1;
+  while ((search = text.indexOf('<', search)) >= 0) {
+    const start = search++;
+    head.lastIndex = start;
+    const open = head.exec(text);
+    if (!open) continue;
+    const tag = open[1], endings = closers.get(tag);
+    if (!endings) continue;
+    let bodyStart = head.lastIndex;
+    if (text[bodyStart] === '>') bodyStart++;
+    else if (/\s/.test(text[bodyStart] ?? '')) {
+      if (greater < bodyStart) greater = text.indexOf('>', bodyStart);
+      if (greater < 0) break;
+      bodyStart = greater + 1;
+    } else continue;
+    while (endings.next < endings.positions.length && endings.positions[endings.next] < bodyStart) endings.next++;
+    const end = endings.positions[endings.next];
+    if (end === undefined) continue;
+    const after = end + tag.length + 3;
+    pieces.push(text.slice(previous, start), replace(text.slice(start, after), tag, text.slice(bodyStart, end)));
+    previous = search = after;
+  }
+  pieces.push(text.slice(previous));
+  return pieces.join('');
+}
 
 // Injected wrappers use custom names (dashes, underscores, or capitals); plain
 // HTML such as <div> stays part of the text.
@@ -55,7 +89,7 @@ export function parsePrompt(raw) {
   const pasted = [];
   const context = [];
   const command = {};
-  const rest = String(raw ?? '').replace(BLOCK, (match, tag, body) => {
+  const rest = replacePromptBlocks(String(raw ?? ''), (match, tag, body) => {
     if (PROMPT_TAGS.has(tag)) { typed.push(body.trim()); return ''; }
     if (PASTE_TAGS.has(tag)) { pasted.push(body.trim()); return ''; }
     if (COMMAND_TAGS.has(tag)) { command[tag] = body.trim(); return ''; }
@@ -78,10 +112,10 @@ const resultId = part => { const d = partData(part); return d.tool_use_id || d.c
 const firstLine = text => { const end = text.indexOf('\n'); return end < 0 ? text : text.slice(0, end); };
 
 /** One-line description of a tool call: its command, path, or first argument. */
-export function toolSummary(tool) {
+export function toolSummary(tool, { argumentsParsed = false } = {}) {
   if (tool.command_text) return firstLine(tool.command_text);
   let args = tool.arguments_json;
-  try { args = JSON.parse(args); } catch { /* plain-text input */ }
+  if (!argumentsParsed) { try { args = JSON.parse(args); } catch { /* plain-text input */ } }
   if (typeof args === 'string') return firstLine(args);
   if (args && typeof args === 'object') {
     for (const key of ['command', 'cmd', 'CommandLine', 'file_path', 'path', 'AbsolutePath', 'Path', 'pattern', 'query', 'url',

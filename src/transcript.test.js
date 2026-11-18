@@ -123,3 +123,14 @@ test('reused call IDs keep the first call and empty output remains pending', () 
   ]);
   assert.deepEqual(turn.items[0].calls.map(call => call.result), ['first', 'second']);
 });
+
+test('unclosed and overlapping prompt wrappers preserve unmatched source', () => {
+  const raw = '<USER_REQUEST>x'.repeat(4000) + '</OTHER>';
+  assert.equal(parsePrompt(raw).text, raw);
+  assert.equal(parsePrompt('<ENV attr=<USER_REQUEST>typed</USER_REQUEST>').text, 'typed\n\n<ENV attr=');
+  assert.equal(parsePrompt('<USER_REQUEST attr <USER_REQUEST>typed</USER_REQUEST>').text, 'typed');
+  assert.equal(parsePrompt('<div><USER_REQUEST>literal</USER_REQUEST></div>').text, '<div><USER_REQUEST>literal</USER_REQUEST></div>');
+  assert.equal(parsePrompt('<USER_REQUEST>x</user_request>').text, '<USER_REQUEST>x</user_request>');
+  const missing = '<USER_REQUEST attr='.repeat(4000);
+  assert.equal(parsePrompt(missing).text, missing);
+});

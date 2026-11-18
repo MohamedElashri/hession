@@ -3,6 +3,8 @@
 //! query, scope, filters or page size instead of quietly skipping/duplicating rows.
 mod bounds;
 mod compiler;
+#[cfg(test)]
+mod performance;
 pub mod query;
 use crate::{
     db,

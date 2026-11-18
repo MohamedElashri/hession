@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Improved
+
+- Release late export previews, serialize cleanup, and coalesce pending cancel
+  requests; retain indexing preference and notification errors until recovery.
+- Observe valid library revisions even when the accompanying health read fails.
+- Preserve unchanged Live rows and cursors without repainting the retained window;
+  count repeated event IDs once and avoid repeated serialization within a delta.
+- Share indexing startup and pause/resume work, coalesce event and revision
+  refreshes, and retain read ownership across failures and readiness changes.
+- Suppress deferred syntax callbacks after their client is disposed.
+- Defer formatting full tool arguments and detecting panel syntax until those
+  panels open, reducing conversation rendering time and retained memory.
+- Seek directly to the next transcript page and reuse per-entry SQL statements
+  when exporting large project archives.
+- Parse truncated prompt wrappers without repeatedly scanning their remaining text.
+- Avoid repeated argument decoding for fallback tool headers and preserve the
+  original JSON if deeply nested input cannot be pretty-printed.
+- Recover promptly from syntax-worker failures, reuse duplicate and plain-text
+  results, and release canceled highlighting work without blocking later blocks.
+
 ## [0.5.1] - 2026-11-17
 
 ### Improved

@@ -4,6 +4,19 @@ import ToolActivity, { TextPanel } from './ToolActivity.jsx';
 import { Conversation } from './Conversation.jsx';
 import { buildConversation } from '../transcript.js';
 
+test('collapsed tools and folded auxiliary arguments do not format their payloads', async () => {
+  const serialize = vi.fn(() => ({ cmd: 'echo synthetic', payload: 'x'.repeat(65536) }));
+  const tool = { tool_name: 'exec_command', command_text: 'echo synthetic', arguments_json: { toJSON: serialize } };
+  const { container } = render(<ToolActivity tool={tool}/>);
+  expect(serialize).not.toHaveBeenCalled();
+  fireEvent.click(container.querySelector('summary'));
+  await screen.findByRole('region', { name: 'Command' });
+  expect(serialize).not.toHaveBeenCalled();
+  fireEvent.click(container.querySelector('.tool-arguments summary'));
+  await screen.findByRole('region', { name: 'Arguments' });
+  expect(serialize).toHaveBeenCalledOnce();
+});
+
 test('tools have separate command, complete arguments and output with exact copy', async () => {
   const writeText = vi.fn().mockResolvedValue();
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
@@ -98,4 +111,15 @@ test('conversation separates speakers, preserves turn anchors and folds long too
   fireEvent.click(screen.getByRole('button', { name: 'Show 5 more tool calls' }));
   expect(container.querySelectorAll('.tool-activity')).toHaveLength(9);
   expect(screen.getByText('The build passed.')).toBeTruthy();
+});
+
+test('deeply nested tool input falls back to the original JSON and copies it exactly', async () => {
+  const raw = '['.repeat(12000) + '0' + ']'.repeat(12000);
+  const writeText = vi.fn().mockResolvedValue();
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  render(<ToolActivity tool={{ arguments_json: raw, status: 'failed' }} initiallyOpen/>);
+  expect(screen.getByLabelText('Arguments text').textContent).toBe(raw.slice(0, 12000));
+  fireEvent.click(screen.getByRole('button', { name: 'Copy arguments' }));
+  await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(raw));
+  expect(screen.getByText('Failed')).toBeTruthy();
 });

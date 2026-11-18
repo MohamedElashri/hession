@@ -250,3 +250,40 @@ test('bounded recent-session summaries disclose truncation', async () => {
   render(<LiveView observer={observer()} onSelectSession={vi.fn()}/>); await tick();
   expect(screen.getByLabelText('Preview truncated')).toBeTruthy();
 });
+
+test('empty deltas advance the cursor without repainting retained rows or measuring scroll', async () => {
+  api.mockResolvedValueOnce(delta([entry(1)], 1, { reset: true }));
+  const onOpen = vi.fn();
+  const { rerender } = render(<LiveTail session={session()} available onSelectSession={onOpen}/>); await tick();
+  const format = vi.spyOn(Date.prototype, 'toLocaleString');
+  const area = screen.getByRole('region', { name: 'Live transcript' });
+  const geometry = vi.spyOn(area, 'getBoundingClientRect');
+  try {
+    api.mockResolvedValueOnce(delta([], 2)); act(emit); await tick(250);
+    expect(format).not.toHaveBeenCalled(); expect(geometry).not.toHaveBeenCalled();
+    rerender(<LiveTail session={{ ...session(), title: 'Updated title' }} available onSelectSession={onOpen}/>);
+    expect(screen.getByRole('heading', { name: 'Updated title' })).toBeTruthy();
+    expect(format).not.toHaveBeenCalled();
+    api.mockResolvedValueOnce(delta([entry(2)], 3)); act(emit); await tick(250);
+    expect(api.mock.calls.at(-1)[1].cursor.seq).toBe(2);
+    expect(screen.getByText('Event 2')).toBeTruthy(); expect(format).toHaveBeenCalledTimes(1);
+  } finally { format.mockRestore(); geometry.mockRestore(); }
+});
+test('duplicate pages do not inflate pending counts or repaint identical snapshots', async () => {
+  api.mockResolvedValueOnce(delta([entry(1)], 1, { reset: true }));
+  render(<LiveTail session={session()} available onSelectSession={vi.fn()}/>); await tick();
+  api.mockResolvedValueOnce(delta(Array.from({ length: 100 }, () => entry(2)), 2)); act(emit); await tick(250);
+  expect(screen.getByRole('button', { name: '1 new event · Jump to latest' })).toBeTruthy();
+  expect(document.querySelectorAll('[data-live-entry="2"]')).toHaveLength(1);
+  const format = vi.spyOn(Date.prototype, 'toLocaleString');
+  try {
+    api.mockResolvedValueOnce(delta(Array.from({ length: 100 }, () => entry(2)), 3)); act(emit); await tick(250);
+    expect(format).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '1 new event · Jump to latest' })).toBeTruthy();
+    const changed = { ...entry(2), parts: [{ kind: 'text', text: 'Late replacement' }] };
+    api.mockResolvedValueOnce(delta([changed, structuredClone(changed)], 4)); act(emit); await tick(250);
+    expect(screen.getByText('Late replacement')).toBeTruthy();
+    expect(screen.getByText('1 earlier recorded event updated.')).toBeTruthy();
+    expect(format).toHaveBeenCalledTimes(1);
+  } finally { format.mockRestore(); }
+});

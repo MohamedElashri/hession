@@ -74,11 +74,12 @@ pub(super) fn cell(
     budget: usize,
 ) -> Result<Option<String>, ExportError> {
     work.check()?;
-    let null = work.conn.query_row(
-        &format!("SELECT {column} IS NULL FROM {table} WHERE rowid=?"),
-        [id],
-        |r| r.get::<_, bool>(0),
-    )?;
+    let null = work
+        .conn
+        .prepare_cached(&format!(
+            "SELECT {column} IS NULL FROM {table} WHERE rowid=?"
+        ))?
+        .query_row([id], |r| r.get::<_, bool>(0))?;
     if null {
         return Ok(None);
     }
@@ -296,9 +297,27 @@ pub(super) fn write_transcript(
     let mut counts = TranscriptCounts::default();
     loop {
         work.check()?;
-        let mut stmt=work.conn.prepare(&format!("SELECT e.id,{},{},{},{} FROM entry e INDEXED BY entry_session_order_idx WHERE e.session_id=?1 AND (?2 IS NULL OR e.ordinal>?2) ORDER BY e.ordinal LIMIT 50",Metadata::EntryOrdinal.sql(),Metadata::EntryKind.sql(),Metadata::Role.sql(),Metadata::Occurred.sql()))?;
+        // Separate first/continuation queries let SQLite seek on both index columns.
+        // A nullable OR would rescan the session prefix for every page.
+        let predicate = if after.is_some() {
+            " AND e.ordinal>?2"
+        } else {
+            ""
+        };
+        let mut stmt = work.conn.prepare_cached(&format!(
+            "SELECT e.id,{},{},{},{} FROM entry e INDEXED BY entry_session_order_idx \
+             WHERE e.session_id=?1{predicate} ORDER BY e.ordinal LIMIT 50",
+            Metadata::EntryOrdinal.sql(),
+            Metadata::EntryKind.sql(),
+            Metadata::Role.sql(),
+            Metadata::Occurred.sql()
+        ))?;
+        let parameters: &[&dyn rusqlite::ToSql] = match &after {
+            Some(ordinal) => &[&session_id, ordinal],
+            None => &[&session_id],
+        };
         let rows = stmt
-            .query_map(params![session_id, after], |r| {
+            .query_map(parameters, |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, i64>(1)?,
@@ -339,7 +358,7 @@ pub(super) fn write_transcript(
             }
             let mut remaining = work.limits.max_entry_bytes;
             let mut parts = Vec::new();
-            let mut part_stmt=work.conn.prepare(&format!("SELECT p.id,{},{} FROM content_part p INDEXED BY sqlite_autoindex_content_part_1 WHERE p.entry_id=? ORDER BY p.ordinal LIMIT 1001",Metadata::PartKind.sql(),Metadata::PartOrdinal.sql()))?;
+            let mut part_stmt=work.conn.prepare_cached(&format!("SELECT p.id,{},{} FROM content_part p INDEXED BY sqlite_autoindex_content_part_1 WHERE p.entry_id=? ORDER BY p.ordinal LIMIT 1001",Metadata::PartKind.sql(),Metadata::PartOrdinal.sql()))?;
             let source_parts = part_stmt
                 .query_map([id], |r| {
                     Ok((
@@ -382,7 +401,7 @@ pub(super) fn write_transcript(
                 }
                 parts.push(part);
             }
-            let mut tool_stmt=work.conn.prepare("SELECT id FROM tool_invocation INDEXED BY tool_entry_idx WHERE session_id=?1 AND entry_id=?2 ORDER BY id LIMIT 101")?;
+            let mut tool_stmt=work.conn.prepare_cached("SELECT id FROM tool_invocation INDEXED BY tool_entry_idx WHERE session_id=?1 AND entry_id=?2 ORDER BY id LIMIT 101")?;
             let ids = tool_stmt
                 .query_map(params![session_id, id], |r| r.get::<_, i64>(0))?
                 .collect::<Result<Vec<_>, _>>()?;

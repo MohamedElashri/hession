@@ -61,3 +61,43 @@ test('only structured output gets an automatic syntax hint and valid JSON argume
   assert.equal(toolPresentation({ result_text: '--- a/file\n+++ b/file\n-old\n+new' }).resultLanguage, 'diff');
   assert.equal(toolPresentation({ arguments_json: '"a string"' }).args, '"a string"');
 });
+
+test('collapsed indexed commands defer argument serialization and cache it on demand', () => {
+  let serialized = 0;
+  const command = 'echo "recorded only"';
+  const input = { toJSON() { serialized++; return { cmd: command, workdir: '/synthetic' }; } };
+  const view = toolPresentation({ tool_name: 'exec_command', command_text: command, arguments_json: input });
+  assert.equal(view.summary, command);
+  assert.equal(view.action, 'Run command');
+  assert.equal(view.hasArguments, true);
+  assert.equal(serialized, 0);
+  const formatted = view.args;
+  assert.deepEqual(JSON.parse(formatted), { cmd: command, workdir: '/synthetic' });
+  assert.equal(view.args, formatted);
+  assert.equal(serialized, 1);
+});
+
+test('fallback summaries decode arguments once and retain JSON string literals', t => {
+  const parse = JSON.parse; let calls = 0;
+  t.mock.method(JSON, 'parse', (...args) => { calls++; return parse(...args); });
+  for (const [arguments_json, summary] of [
+    ['{"file_path":"/synthetic/a.rs"}', '/synthetic/a.rs'],
+    ['{"code":"print(1)","language":"python"}', 'print(1)'],
+    ['{"invalid":"unterminated', '{"invalid":"unterminated'],
+    ['"{\\"cmd\\":\\"literal JSON string\\"}"', '{"cmd":"literal JSON string"}'],
+  ]) {
+    calls = 0;
+    const view = toolPresentation({ arguments_json, status: 'failed' });
+    assert.equal(view.summary, summary); assert.equal(calls, 1);
+    assert.equal(view.outcome, 'Failed');
+    void view.args; void view.argsLanguage;
+    assert.equal(calls, 1, 'expanding arguments reuses the existing decode');
+  }
+});
+
+test('deep valid JSON remains readable when pretty-printing exceeds the JS stack', () => {
+  const raw = '['.repeat(12000) + '0' + ']'.repeat(12000);
+  const view = toolPresentation({ arguments_json: raw });
+  assert.equal(view.args, raw); assert.equal(view.argsLanguage, 'json');
+  assert.equal(view.args, raw);
+});

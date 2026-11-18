@@ -8,8 +8,18 @@ export function toolPresentation(tool) {
   const rawArgs = tool.args ?? tool.arguments_json;
   let parsed = rawArgs;
   let json = rawArgs != null && typeof rawArgs === 'object';
-  try { parsed = JSON.parse(rawArgs); json = true; } catch { /* Preserve non-JSON tool input. */ }
+  let parsedInput = false;
+  const input = () => {
+    if (!parsedInput) {
+      parsedInput = true;
+      try { parsed = JSON.parse(rawArgs); json = true; } catch { /* Preserve non-JSON tool input. */ }
+    }
+    return parsed;
+  };
   let command = tool.command || tool.command_text || null;
+  // Indexed commands already provide everything needed by the collapsed card.
+  // Decode other inputs only when their contents are actually needed.
+  if (command == null) input();
   if (command == null && parsed && typeof parsed === 'object') {
     for (const key of ['command', 'cmd', 'CommandLine']) {
       // Keep array arguments as JSON; joining would lose quoting and boundaries.
@@ -17,8 +27,8 @@ export function toolPresentation(tool) {
     }
   }
   const code = command == null && typeof parsed?.code === 'string' ? parsed.code : null;
-  const args = rawArgs && rawArgs !== '{}' && rawArgs !== 'null'
-    ? (json ? JSON.stringify(parsed, null, 2) : String(parsed)) : null;
+  const hasArguments = Boolean(rawArgs && rawArgs !== '{}' && rawArgs !== 'null');
+  let args;
   const result = tool.result ?? tool.result_text ?? null;
   const exit = tool.exit_code;
   const failed = ['error', 'failed', 'failure'].includes(String(tool.status ?? '').toLowerCase()) || (exit != null && exit !== 0);
@@ -28,10 +38,23 @@ export function toolPresentation(tool) {
   const actions = { exec_command: 'Run command', shell_command: 'Run command', run_command: 'Run command', bash: 'Run command',
     read_file: 'Read file', read: 'Read file', write_file: 'Write file', edit_file: 'Edit file', apply_patch: 'Apply patch' };
   const action = command != null ? 'Run command' : code != null ? 'Run code' : Object.hasOwn(actions, shortName) ? actions[shortName] : name;
-  const codeLanguage = syntaxLanguage(parsed?.language || parsed?.lang || (/python/i.test(name) ? 'python' : /javascript|node_repl|(?:^|[._])js$|^functions\.exec$/i.test(name) ? 'javascript' : 'plaintext'));
-  const commandLanguage = /powershell|pwsh/i.test(name) || syntaxLanguage(parsed?.shell) === 'powershell' ? 'powershell' : 'bash';
-  const resultLanguage = recordedSyntax(result);
-  const rawSummary = tool.summary ?? toolSummary({ command_text: command, arguments_json: rawArgs });
+  const rawSummary = tool.summary ?? toolSummary({ command_text: command, arguments_json: parsedInput ? parsed : rawArgs }, { argumentsParsed: parsedInput });
   const summary = rawSummary.length > 320 ? `${textPreview(rawSummary, 320, Infinity)}…` : rawSummary;
-  return { name, action, command, commandLanguage, code, codeLanguage, args, argsLanguage: json ? 'json' : 'plaintext', result, resultLanguage, failed, completed, exit, outcome, summary };
+  return {
+    name, action, command, code, hasArguments, result, failed, completed, exit, outcome, summary,
+    // Full arguments can be megabytes. Keep their formatting and syntax hints
+    // lazy, scoped to this view, and cached once the arguments panel opens.
+    get args() {
+      if (args === undefined) {
+        input();
+        try { args = hasArguments ? (json ? JSON.stringify(parsed, null, 2) : String(parsed)) : null; }
+        catch { args = typeof rawArgs === 'string' ? rawArgs : String(rawArgs); }
+      }
+      return args;
+    },
+    get argsLanguage() { input(); return json ? 'json' : 'plaintext'; },
+    get commandLanguage() { return /powershell|pwsh/i.test(name) || syntaxLanguage(input()?.shell) === 'powershell' ? 'powershell' : 'bash'; },
+    get codeLanguage() { return syntaxLanguage(input()?.language || parsed?.lang || (/python/i.test(name) ? 'python' : /javascript|node_repl|(?:^|[._])js$|^functions\.exec$/i.test(name) ? 'javascript' : 'plaintext')); },
+    get resultLanguage() { return recordedSyntax(result); },
+  };
 }

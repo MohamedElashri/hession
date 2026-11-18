@@ -309,7 +309,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
   // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching shows a loading state
   useEffect(()=>{loadDetail();},[loadDetail]);
   useEffect(()=>{let cancelled=false;api('get_sync_status').then(data=>{if(!cancelled){if(!syncLaunchPending.current)setSync(data);setSyncStatusReady(true);}}).catch(()=>{});return()=>{cancelled=true;};},[]);
-  const indexedChange=()=>{setReportRevision(value=>value+1);loadMeta({silent:true});loadSessions({silent:true});loadDetail({silent:true});};
+  const indexedChange=async()=>{setReportRevision(value=>value+1);await Promise.all([loadMeta({silent:true}),loadSessions({silent:true}),loadDetail({silent:true})]);};
   const indexing=useIndexing({ready:libraryReady&&syncStatusReady,onChanged:indexedChange});
   useEffect(()=>{
     if(!sync.running)return;

@@ -7,6 +7,38 @@ use rusqlite::{params, Connection};
 fn seed(conn: &Connection) {
     conn.execute_batch("INSERT INTO agent(id,family,product) VALUES(1,'codex','Codex');INSERT INTO workspace(id,path) VALUES(1,'/synthetic/allowed'),(2,'/synthetic/denied');INSERT INTO session(id,agent_id,workspace_id,source_uri,title) VALUES(1,1,1,'fixture:1','Normal history'),(2,1,2,'fixture:2','Denied history');").unwrap();
 }
+
+#[test]
+fn field_only_conversation_results_do_not_inspect_unsearched_text() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    db::init_schema(&conn).unwrap();
+    seed(&conn);
+    conn.execute_batch("INSERT INTO entry(id,session_id,ordinal,kind,role,search_text) VALUES(1,1,0,'message','assistant','needle');INSERT INTO content_part(entry_id,ordinal,kind,text) VALUES(1,0,'text',CAST(zeroblob(2097152) AS TEXT));").unwrap();
+    let scope = SearchScope::workspaces([1]).unwrap();
+    for mode in [SearchMode::Sessions, SearchMode::Messages] {
+        let request = SearchRequest {
+            query: "agent:codex".into(),
+            mode,
+            visibility: SearchVisibility::Conversation,
+            ..Default::default()
+        };
+        let result = search::search(&mut conn, &request, &scope).unwrap();
+        assert_eq!(result.results.len(), 1);
+        assert!(result.results[0].excerpt.is_none());
+    }
+    assert!(matches!(
+        search::search(
+            &mut conn,
+            &SearchRequest {
+                query: "needle".into(),
+                visibility: SearchVisibility::Conversation,
+                ..Default::default()
+            },
+            &scope
+        ),
+        Err(SearchError::InputTooLarge)
+    ));
+}
 #[test]
 fn ordinary_transcript_corpus_over_sixteen_mib_remains_searchable_and_pageable() {
     // In-memory storage isolates query correctness from the other test's large

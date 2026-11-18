@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, Folder, X } from 'lucide-react';
 import { save } from '@tauri-apps/plugin-dialog';
 import { listen } from '@tauri-apps/api/event';
@@ -20,6 +20,7 @@ export default function ProjectExportDialog(props) {
 function ProjectExportForm({ project, query = '', filters = {}, onClose }) {
   const dialog = useModalDialog();
   const alive = useRef(true), working = useRef(false), job = useRef(null), cancellationRequested = useRef(false);
+  const releasing = useRef(Promise.resolve()), cancelling = useRef(null);
   const [initialFilters] = useState(() => JSON.parse(JSON.stringify(filters)));
   const [queryText, setQuery] = useState(query);
   const [options, setOptions] = useState(defaults);
@@ -30,14 +31,21 @@ function ProjectExportForm({ project, query = '', filters = {}, onClose }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [result, setResult] = useState(null);
+  const releaseId = useCallback(id => {
+    if (id) releasing.current = releasing.current.then(() => api('release_project_archive', { jobId: id })).catch(() => {});
+    return releasing.current;
+  }, []);
+  const release = useCallback(() => {
+    const id = job.current; job.current = null;
+    return releaseId(id);
+  }, [releaseId]);
   useEffect(() => {
     alive.current = true;
     let active = true, unlisten;
     listen('project-export-progress', event => { if (active && event.payload.jobId === job.current) setProgress(event.payload); })
       .then(dispose => { if (active) unlisten = dispose; else dispose(); }).catch(() => {});
-    return () => { active = false; alive.current = false; unlisten?.(); if (job.current) api('release_project_archive', { jobId: job.current }).catch(() => {}); };
-  }, []);
-  const release = async () => { const id = job.current; job.current = null; if (id) await api('release_project_archive', { jobId: id }).catch(() => {}); };
+    return () => { active = false; alive.current = false; unlisten?.(); release(); };
+  }, [release]);
   const invalidate = () => { release(); setPreview(null); setResult(null); setProgress(null); setError(''); setNotice(''); };
   const update = (key, value) => { invalidate(); setOptions(current => ({ ...current, [key]: value })); };
   const browse = async () => {
@@ -50,13 +58,18 @@ function ProjectExportForm({ project, query = '', filters = {}, onClose }) {
   };
   const prepare = async () => {
     if (working.current || !target) return; working.current = true; cancellationRequested.current = false; setBusy('prepare'); setError(''); setNotice(''); setPreview(null); setResult(null);
-    await release(); const id = crypto.randomUUID(); job.current = id;
+    let id;
     try {
+      await release();
+      if (!alive.current) return;
+      if (cancellationRequested.current) { setNotice('Project preview cancelled. No archive was saved.'); return; }
+      id = crypto.randomUUID(); job.current = id;
       const response = await api('prepare_project_archive', { jobId: id, request: { workspaceId: project.workspace_id, query: queryText, filters: initialFilters, options }, expectedProjectKey: project.project_key, target });
-      if (alive.current && job.current === id) {
-        if (cancellationRequested.current) { await release(); setNotice('Project preview cancelled. No archive was saved.'); }
-        else setPreview(response.preview);
-      }
+      if (!alive.current || job.current !== id) {
+        // A close can release before native admission; clean up again after its acknowledgement.
+        await releaseId(id);
+      } else if (cancellationRequested.current) { await release(); setNotice('Project preview cancelled. No archive was saved.'); }
+      else setPreview(response.preview);
     } catch (failure) { if (alive.current && job.current === id) { setError(failure.message); await release(); } }
     finally { working.current = false; if (alive.current) setBusy(''); }
   };
@@ -66,11 +79,18 @@ function ProjectExportForm({ project, query = '', filters = {}, onClose }) {
     catch (failure) { if (alive.current) { setPreview(null); setError(failure.message); } }
     finally { release(); working.current = false; if (alive.current) setBusy(''); }
   };
-  const cancel = async () => {
-    if (!job.current) return;
+  const cancel = () => {
     cancellationRequested.current = true;
-    try { const cancelled = await api('cancel_project_archive', { jobId: job.current }); if (alive.current && working.current) setNotice(cancelled ? 'Stopping export safely…' : 'The archive is already saved; finishing…'); }
-    catch (failure) { if (alive.current && working.current) setError(failure.message); }
+    const id = job.current;
+    if (!id) { if (alive.current && working.current) setNotice('Stopping export safely…'); return; }
+    if (cancelling.current?.id === id) return cancelling.current.promise;
+    const pending = Promise.resolve().then(() => api('cancel_project_archive', { jobId: id })).then(cancelled => {
+      if (alive.current && working.current && job.current === id) setNotice(cancelled ? 'Stopping export safely…' : 'The archive is already saved; finishing…');
+    }).catch(failure => {
+      if (alive.current && working.current && job.current === id) setError(failure.message);
+    }).finally(() => { if (cancelling.current?.promise === pending) cancelling.current = null; });
+    cancelling.current = { id, promise: pending };
+    return pending;
   };
   return <dialog ref={dialog} className="data-dialog project-export-dialog" aria-labelledby="project-export-title" aria-describedby="project-export-description"
     onCancel={event => { event.preventDefault(); if (busy && busy !== 'choose') cancel(); else if (!busy) onClose(); }}>

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Activity, ArrowDown, ArrowRight, LoaderCircle, Menu, Pause, Play, RefreshCw } from 'lucide-react';
 import { api, hasTauriRuntime } from '../api.js';
 import { familyLabel, shortPath } from '../labels.js';
@@ -14,14 +14,14 @@ const text = value => typeof value === 'string' ? value : '';
 const timeLabel = value => parseDate(value)?.toLocaleString() || 'Time not recorded';
 const location = entry => ({ entryId: entry.id, position: Number.isSafeInteger(entry.position) && entry.position >= 0 ? entry.position : null });
 
-function LiveEntry({ entry, expanded, onToggle, onOpen }) {
+const LiveEntry = memo(function LiveEntry({ entry, expanded, onToggle, onOpen }) {
   const toolOnly = entry.role === 'tool' || ((entry.tools?.length || entry.parts?.some(part => part.kind === 'tool_result')) && !entry.parts?.some(part => part.kind === 'text' && part.text));
   const role = toolOnly ? 'tool' : ['user', 'assistant'].includes(entry.role) ? entry.role : 'event';
   const speaker = { user: 'You', assistant: 'Agent', tool: 'Tool activity', event: 'Event' }[role];
   return <article className={`live-entry live-role-${role}`} data-live-entry={entry.id}>
-    <div className="live-entry-heading"><button type="button" className="live-entry-toggle" aria-expanded={expanded} disabled={entry.oversized} onClick={onToggle}>
+    <div className="live-entry-heading"><button type="button" className="live-entry-toggle" aria-expanded={expanded} disabled={entry.oversized} onClick={() => onToggle(entry.id)}>
       <strong>{entry.oversized ? 'Large recorded event' : `${speaker} · ${text(entry.kind) || 'Recorded event'}`}</strong><span>{timeLabel(entry.occurred_at)}</span>
-    </button><button type="button" className="text-button" onClick={onOpen}>Open full history<ArrowRight size={12}/></button></div>
+    </button><button type="button" className="text-button" onClick={() => onOpen(entry)}>Open full history<ArrowRight size={12}/></button></div>
     {expanded ? <div className="live-entry-content">
       {(entry.parts || []).filter(part => part.kind !== 'tool_call' || !entry.tools?.length).map((part, index) => part.kind === 'text' && role !== 'tool'
         ? <div className="markdown-body" key={part.id || index}><Markdown text={text(part.text)} preserveLines/></div>
@@ -30,7 +30,7 @@ function LiveEntry({ entry, expanded, onToggle, onOpen }) {
       {(entry.tools || []).map((tool, index) => <ToolActivity key={tool.id || tool.call_id || index} tool={tool} initiallyOpen/>)}
     </div> : <p className="live-entry-preview">{liveEntrySummary(entry)}</p>}
   </article>;
-}
+});
 
 function emptyTail(sessionId) { return { sessionId, entries: [], cursor: null, loaded: false, pending: 0, updated: 0, trimmed: 0, reset: false, deleted: false, error: '' }; }
 
@@ -65,14 +65,20 @@ export function LiveTail({ session, available, onSelectSession }) {
       if (result.oversizedEntries != null && !Array.isArray(result.oversizedEntries)) throw new Error('Invalid live event response.');
       const omitted = (result.oversizedEntries || []).map(item => ({ id: item.id, ordinal: item.ordinal, position: item.position, oversized: true }));
       const merged = mergeLiveEntries(previous.entries, [...result.entries, ...omitted], !!result.reset || !!result.deleted);
-      scrollSnapshot.current = previous.loaded && !result.reset && !result.deleted ? captureScroll() : { initial: true };
       const next = { sessionId, ...merged, cursor: result.cursor, loaded: true, error: '', reset: !!result.reset && previous.loaded, deleted: !!result.deleted,
         pending: !previous.loaded || result.reset || result.deleted || followingRef.current ? 0 : store.current.pending + merged.added };
       if (result.deleted) next.entries = [];
-      store.current = next; setTail(next);
-      const retained = new Set(next.entries.map(entry => entry.id));
-      setExpanded(value => result.reset || result.deleted || value.sessionId !== sessionId ? { sessionId, ids: new Set() }
-        : [...value.ids].every(id => retained.has(id)) ? value : { sessionId, ids: new Set([...value.ids].filter(id => retained.has(id))) });
+      const entriesChanged = next.entries !== previous.entries;
+      const visibleChanged = entriesChanged || ['loaded', 'error', 'reset', 'deleted', 'pending', 'updated', 'trimmed'].some(key => next[key] !== previous[key]);
+      if (entriesChanged) scrollSnapshot.current = previous.loaded && !result.reset && !result.deleted ? captureScroll() : { initial: true };
+      // Advance cursors even when a replay/empty page has nothing new to paint.
+      store.current = next;
+      if (visibleChanged) setTail(next);
+      if (entriesChanged || result.reset || result.deleted) {
+        const retained = new Set(next.entries.map(entry => entry.id));
+        setExpanded(value => result.reset || result.deleted || value.sessionId !== sessionId ? { sessionId, ids: new Set() }
+          : [...value.ids].every(id => retained.has(id)) ? value : { sessionId, ids: new Set([...value.ids].filter(id => retained.has(id))) });
+      }
       return result.hasMore;
     } catch (error) {
       if (isCurrent()) { const next = { ...store.current, error: error?.message || 'Could not read local session updates.' }; store.current = next; setTail(next); }
@@ -108,6 +114,12 @@ export function LiveTail({ session, available, onSelectSession }) {
     setPause({ sessionId, enabled: !paused });
     if (!paused) { followingRef.current = false; setFollow({ sessionId, enabled: false }); }
   };
+  const toggleEntry = useCallback(id => setExpanded(value => {
+    const ids = new Set(value.sessionId === sessionId ? value.ids : []);
+    if (ids.has(id)) ids.delete(id); else ids.add(id);
+    return { sessionId, ids };
+  }), [sessionId]);
+  const openEntry = useCallback(entry => onSelectSession(sessionId, location(entry)), [sessionId, onSelectSession]);
   if (!session) return <section className="live-tail live-tail-empty" aria-label="Recorded events"><p>Select a local session to inspect its recorded events.</p></section>;
   return <section className="live-tail" aria-label="Recorded events">
     <header className="live-tail-heading"><div><h2>{session.title || 'Untitled session'}</h2><p>{familyLabel(session.agent)} · {liveStatusLabel(session.status)}</p></div>
@@ -131,9 +143,7 @@ export function LiveTail({ session, available, onSelectSession }) {
     }}>
       {!current.loaded && !current.error && <p role="status"><LoaderCircle className="spin" size={16}/>Loading recorded events…</p>}
       {current.deleted ? <p role="status">This session is no longer indexed.</p> : current.loaded && !current.entries.length ? <p role="status">No events are recorded for this session.</p> : current.entries.map(entry => <LiveEntry key={entry.id} entry={entry}
-        expanded={expanded.sessionId === sessionId && expanded.ids.has(entry.id)} onToggle={() => setExpanded(value => {
-          const ids = new Set(value.sessionId === sessionId ? value.ids : []); if (ids.has(entry.id)) ids.delete(entry.id); else ids.add(entry.id); return { sessionId, ids };
-        })} onOpen={() => onSelectSession(session.id, location(entry))}/>)}
+        expanded={expanded.sessionId === sessionId && expanded.ids.has(entry.id)} onToggle={toggleEntry} onOpen={openEntry}/>)}
     </div>
     <p className="live-window-note">Live keeps up to {MAX_LIVE_ENTRIES} events and a bounded amount of content. Full history contains the complete indexed transcript.</p>
   </section>;

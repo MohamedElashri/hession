@@ -29,23 +29,33 @@ export function mergeLiveEntries(previous, incoming, reset = false) {
   const merged = reset ? new Map() : new Map(before);
   const lastOrdinal = previous.length ? Math.max(...previous.map(entry => entry.ordinal)) : -Infinity;
   let added = 0, updated = 0;
+  // Validate every row before folding replays; the final value for an ID wins.
+  const latest = new Map(), serialized = new Map();
   for (const entry of incoming) {
     if (!entry || !Number.isSafeInteger(entry.id) || entry.id <= 0 || !Number.isSafeInteger(entry.ordinal)) throw new Error('Invalid live event response.');
-    const id = String(entry.id), old = reset ? null : before.get(id);
+    latest.set(String(entry.id), entry);
+  }
+  for (const [id, entry] of latest) {
+    const old = reset ? null : before.get(id);
+    const json = JSON.stringify(entry);
+    const same = old && JSON.stringify(old) === json;
     if (!old && (reset || entry.ordinal > lastOrdinal)) added++;
-    else if (!old) updated++;
-    else if (JSON.stringify(old) !== JSON.stringify(entry)) updated++;
-    merged.set(id, entry);
+    else if (!old || !same) updated++;
+    const retained = same ? old : entry;
+    merged.set(id, retained);
+    serialized.set(retained, json);
   }
   const ordered = [...merged.values()].sort((a, b) => a.ordinal - b.ordinal || a.id - b.id);
   const retained = [];
   let bytes = 0;
   for (let i = ordered.length - 1; i >= 0 && retained.length < MAX_LIVE_ENTRIES; i--) {
-    const size = encoder.encode(JSON.stringify(ordered[i])).byteLength;
+    const size = encoder.encode(serialized.get(ordered[i]) ?? JSON.stringify(ordered[i])).byteLength;
     if (bytes + size > MAX_LIVE_BYTES) break;
     retained.push(ordered[i]); bytes += size;
   }
-  return { entries: retained.reverse(), added, updated, trimmed: ordered.length - retained.length };
+  retained.reverse();
+  const unchanged = !reset && retained.length === previous.length && retained.every((entry, index) => entry === previous[index]);
+  return { entries: unchanged ? previous : retained, added, updated, trimmed: ordered.length - retained.length };
 }
 
 export function createLiveCommands({ openLive, openFiles, observer }) {
