@@ -223,6 +223,9 @@ with service activation disabled; macOS uses a disposable CI login session.
 
 ## Performance measurements
 
+See the [latest patch audit](performance-audit.md) for measured improvements,
+failure-path coverage, and the conditions behind the release claims.
+
 Run benchmarks serially after compilation, with synthetic data and idle build/test
 workers. Keep the baseline and candidate binaries: rebuilding between timed runs
 changes cache/load conditions. Record CPU time alongside wall time, retain raw

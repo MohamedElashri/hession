@@ -24,6 +24,72 @@ fn legacy(conn: &Connection) {
 }
 
 #[test]
+fn classification_only_libraries_receive_catalog_indexes_without_reclassifying_history() {
+    let conn = Connection::open_in_memory().unwrap();
+    db::init_schema(&conn).unwrap();
+    conn.execute_batch("DROP INDEX session_main_activity_idx; DROP INDEX session_main_workspace_activity_idx; DROP INDEX session_main_agent_activity_idx; DROP INDEX session_workspace_activity_idx; DROP INDEX session_agent_activity_idx; DROP INDEX context_model_session_idx; DROP INDEX context_branch_session_idx; UPDATE application_schema SET version=4;").unwrap();
+    db::init_schema(&conn).unwrap();
+    assert_eq!(db::schema_version(&conn).unwrap(), db::SCHEMA_VERSION);
+    for name in [
+        "session_main_activity_idx",
+        "session_main_workspace_activity_idx",
+        "session_main_agent_activity_idx",
+        "session_workspace_activity_idx",
+        "session_agent_activity_idx",
+        "context_model_session_idx",
+        "context_branch_session_idx",
+    ] {
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE type='index' AND name=?",
+                [name],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+}
+
+#[test]
+fn background_classification_migrates_existing_library_without_deleting_sessions() {
+    let conn = Connection::open_in_memory().unwrap();
+    legacy(&conn);
+    conn.execute_batch(r#"
+        INSERT INTO agent(id,family,product) VALUES(2,'claude','Claude Code'),(3,'opencode','OpenCode');
+        INSERT INTO session(id,agent_id,source_uri,raw_metadata_json) VALUES
+        (43,1,'codex:///guardian','{"source":{"subagent":{"other":"guardian"}}}'),
+        (44,2,'claude:///parent/subagents/agent-child.jsonl','{}'),
+        (45,3,'opencode:///db#child','{"parent_id":"parent"}'),
+        (46,1,'codex:///main','malformed legacy metadata');
+    "#).unwrap();
+    db::init_schema(&conn).unwrap();
+    let classified: Vec<(i64, bool)> = conn
+        .prepare("SELECT id,is_subagent FROM session ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        classified,
+        vec![(42, false), (43, true), (44, true), (45, true), (46, false)]
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT starred FROM session_annotation WHERE session_id=42",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    let revision = library_revision::current(&conn).unwrap();
+    db::init_schema(&conn).unwrap();
+    assert_eq!(library_revision::current(&conn).unwrap(), revision);
+}
+
+#[test]
 fn legacy_migration_preserves_history_ids_annotations_fts_and_backup_version() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sessions.sqlite");

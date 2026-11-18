@@ -527,14 +527,7 @@ pub(crate) fn calculate_session(
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0),
             ),
-            None => db
-                .query_row(
-                    "SELECT COUNT(*),
-                        COALESCE(SUM(status='error' OR (exit_code IS NOT NULL AND exit_code!=0)),0)
-                     FROM tool_invocation WHERE session_id=?1",
-                    [id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
+            None => hession_core::sessions::tool_counts(db, id)
                 .map_err(|e| sqlite_error("Could not read the analytics tools", e))?,
         }
     };

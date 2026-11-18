@@ -21,6 +21,44 @@ fn cursor(value: &serde_json::Value) -> DeltaCursor {
 }
 
 #[test]
+fn tool_counts_preserve_null_exit_status_and_session_boundaries_with_large_bodies() {
+    let (_dir, conn, _library) = fixture();
+    for (status, exit) in [
+        (None, None),
+        (Some("success"), Some(0)),
+        (Some("error"), Some(0)),
+        (None, Some(7)),
+        (Some("completed"), Some(-2)),
+        (Some("failed"), None),
+        (Some("error"), None),
+    ] {
+        conn.execute("INSERT INTO tool_invocation(session_id,tool_name,arguments_json,result_text,status,exit_code) VALUES(1,'Read','{}',CAST(zeroblob(65536) AS TEXT),?,?)",params![status,exit]).unwrap();
+    }
+    conn.execute_batch("INSERT INTO session(id,agent_id,source_uri) VALUES(2,1,'fixture://other'); INSERT INTO tool_invocation(session_id,tool_name,status) VALUES(2,'Read','error');").unwrap();
+    assert_eq!(
+        hession_core::sessions::tool_counts(&conn, 1).unwrap(),
+        (7, 4)
+    );
+    assert_eq!(
+        hession_core::sessions::tool_counts(&conn, 2).unwrap(),
+        (1, 1)
+    );
+    assert_eq!(
+        hession_core::sessions::tool_counts(&conn, 999).unwrap(),
+        (0, 0)
+    );
+    conn.execute(
+        "UPDATE tool_invocation SET status='completed',exit_code=0 WHERE session_id=1",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        hession_core::sessions::tool_counts(&conn, 1).unwrap(),
+        (7, 0)
+    );
+}
+
+#[test]
 fn durable_delta_follows_gapped_entries_and_updates_earlier_tool_results() {
     let (_dir, conn, library) = fixture();
     let first = insert(&conn, 100);

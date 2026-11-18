@@ -131,6 +131,11 @@ jobs:
           sleep 8
           kill -0 "$gui"
           test -s "$scratch/library/sessions.sqlite"
+          /usr/sbin/screencapture -x "$RUNNER_TEMP/native-gui-early.png"
+          # Retain a settled view as well: a cold runner can still be loading
+          # at the first capture, which alone cannot establish UI readiness.
+          sleep 20
+          kill -0 "$gui"
           /usr/sbin/screencapture -x "$RUNNER_TEMP/native-gui.png"
           kill "$gui"
           wait "$gui" || true
@@ -163,6 +168,7 @@ jobs:
             ${{ runner.temp }}/candidate.key.pub
             ${{ runner.temp }}/gui-smoke.log
             ${{ runner.temp }}/native-gui.png
+            ${{ runner.temp }}/native-gui-early.png
             ${{ runner.temp }}/native-import.json
             ${{ runner.temp }}/instance/
           if-no-files-found: warn

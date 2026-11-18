@@ -74,6 +74,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
   // '' = every machine, '@local' = this computer, otherwise an SSH host.
   const [hostFilter,setHostFilter]=useState('');
   const [starredOnly,setStarredOnly]=useState(false),[tagFilters,setTagFilters]=useState([]);
+  const [includeSubagents,setIncludeSubagents]=useState(false);
   const [tagDraft,setTagDraft]=useState(''),[annotationBusy,setAnnotationBusy]=useState(false);
   const [exportOpen,setExportOpen]=useState(false),[exportScope,setExportScope]=useState('filtered'),[exportFormat,setExportFormat]=useState('markdown'),[exportBusy,setExportBusy]=useState(false);
   const [exportProgress,setExportProgress]=useState({phase:'',done:0,total:0}),[exportStopping,setExportStopping]=useState(false);
@@ -147,8 +148,8 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
   }
   // Back to the first page whenever the filters change.
   const developerSearchActive=searchEngine==='developer'&&Boolean(query.trim());
-  const developerFilters=useMemo(()=>({agent:agentFilter,project:projectFilter,models:modelFilters,tools:toolFilters,branch:branchFilter,host:hostFilter,since:timeFilter,starred:starredOnly,tags:tagFilters}),[agentFilter,projectFilter,modelFilters,toolFilters,branchFilter,hostFilter,timeFilter,starredOnly,tagFilters]);
-  const filterKey=JSON.stringify([searchEngine,query,hostFilter,agentFilter,projectFilter,modelFilters,branchFilter,toolFilters,timeFilter,sortOrder,starredOnly,tagFilters]);
+  const developerFilters=useMemo(()=>({excludeSubagents:!includeSubagents,agent:agentFilter,project:projectFilter,models:modelFilters,tools:toolFilters,branch:branchFilter,host:hostFilter,since:timeFilter,starred:starredOnly,tags:tagFilters}),[includeSubagents,agentFilter,projectFilter,modelFilters,toolFilters,branchFilter,hostFilter,timeFilter,starredOnly,tagFilters]);
+  const filterKey=JSON.stringify([includeSubagents,searchEngine,query,hostFilter,agentFilter,projectFilter,modelFilters,branchFilter,toolFilters,timeFilter,sortOrder,starredOnly,tagFilters]);
   const [pageFilterKey,setPageFilterKey]=useState(filterKey);
   if(pageFilterKey!==filterKey){setPageFilterKey(filterKey);setPage(0);}
   const navigate=useCallback((patch,{replace=false}={})=>{
@@ -275,7 +276,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
     const requestId=++sessionRequest.current;
     if(!silent)setLoading(true);
     try{
-      const sessionParams={q:developerSearchActive?'':query,host:hostFilter,agent:agentFilter,project:projectFilter,model:modelFilters.join(','),branch:branchFilter,tool:toolFilters.join(','),since:filterSince(timeFilter),sort:sortOrder,starred:String(starredOnly),tags:tagFilters,limit:String(PAGE_SIZE),offset:String(page*PAGE_SIZE)};
+      const sessionParams={includeSubagents,q:developerSearchActive?'':query,host:hostFilter,agent:agentFilter,project:projectFilter,model:modelFilters.join(','),branch:branchFilter,tool:toolFilters.join(','),since:filterSince(timeFilter),sort:sortOrder,starred:String(starredOnly),tags:tagFilters,limit:String(PAGE_SIZE),offset:String(page*PAGE_SIZE)};
       const result=await api('search_sessions',sessionParams);
       if(requestId!==sessionRequest.current)return;
       setSessions(result.sessions||[]);setTotal(result.total??result.sessions?.length??0);setLibraryReady(true);
@@ -289,7 +290,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
       if(page>lastPage)setPage(lastPage);
     }catch(e){if(requestId===sessionRequest.current){if(syncActiveRef.current&&isSyncLockError(e))return;setSessions([]);setTotal(0);setSyncError(e.message);}}
     finally{if(requestId===sessionRequest.current)setLoading(false);}
-  },[query,developerSearchActive,hostFilter,agentFilter,projectFilter,modelFilters,branchFilter,toolFilters,timeFilter,sortOrder,starredOnly,tagFilters,page,navigate]);
+  },[includeSubagents,query,developerSearchActive,hostFilter,agentFilter,projectFilter,modelFilters,branchFilter,toolFilters,timeFilter,sortOrder,starredOnly,tagFilters,page,navigate]);
 
   useEffect(()=>{loadMeta();},[loadMeta]);
   useEffect(()=>{const timer=setInterval(()=>setCurrentTime(Date.now()),60000);return()=>clearInterval(timer);},[]);
@@ -404,7 +405,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
       job.saving=true;
       const result=await api('export_sessions',{
         jobId:job.id,path,format:exportFormat,scope:exportScope,id:exportScope==='session'?detail?.session.id:null,includeStats,
-        filters:{q:query,host:hostFilter,agent:agentFilter,project:projectFilter,models:modelFilters,branch:branchFilter,tools:toolFilters,since:filterSince(timeFilter),sort:sortOrder,starred:starredOnly,tags:tagFilters},
+        filters:{includeSubagents,q:query,host:hostFilter,agent:agentFilter,project:projectFilter,models:modelFilters,branch:branchFilter,tools:toolFilters,since:filterSince(timeFilter),sort:sortOrder,starred:starredOnly,tags:tagFilters},
       });
       job.saved=true;
       await job.stopPromise;
@@ -524,8 +525,8 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
 
   const syncLabel=syncStarting?'Starting…':syncStopping||sync.phase==='stopping'?'Stopping…':sync.running?`Syncing ${sync.filesDone||0}/${sync.filesTotal||0}`:'Sync';
   const lastSyncText=metadataState['sync/checkpoints']==='loading'?'Loading…':metadataState['sync/checkpoints']==='error'?'Unavailable':latestSync?relativeAgo(latestSync,currentTime):'Never';
-  const filterDefaults=!(timeFilter||modelFilters.length||branchFilter||toolFilters.length||starredOnly||tagFilters.length||hostFilter||agentFilter||projectFilter);
-  const clearAllFilters=()=>{setTimeFilter('');setModelFilters([]);setBranchFilter('');setToolFilters([]);setStarredOnly(false);setTagFilters([]);setHostFilter('');setAgentFilter('');setProjectFilter('');};
+  const filterDefaults=!(includeSubagents||timeFilter||modelFilters.length||branchFilter||toolFilters.length||starredOnly||tagFilters.length||hostFilter||agentFilter||projectFilter);
+  const clearAllFilters=()=>{setIncludeSubagents(false);setTimeFilter('');setModelFilters([]);setBranchFilter('');setToolFilters([]);setStarredOnly(false);setTagFilters([]);setHostFilter('');setAgentFilter('');setProjectFilter('');};
   const showSessions=()=>navigate({view:'sessions',selectionExplicit:false});
   const hostName=h=>h==='@local'?'This computer':h;
   const activeChips=[
@@ -688,6 +689,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
             <div className="search-engine-switch" role="group" aria-label="Search engine">{[['developer','Developer search'],['legacy','Legacy search']].map(([value,label])=><button type="button" key={value} aria-pressed={searchEngine===value} onClick={()=>{setSearchEngine(value);try{localStorage.setItem(storageKey('search-engine'),value);}catch{/* preference only */}}}>{label}</button>)}</div>
             <div className="toolbar-actions">
               <button type="button" className={`filter-button ${starredOnly?'filter-has-value':''}`} onClick={()=>setStarredOnly(v=>!v)} aria-pressed={starredOnly} title="Show starred sessions"><Star size={14} fill={starredOnly?'currentColor':'none'}/><span>Starred</span></button>
+              <button type="button" className={`filter-button ${includeSubagents?'filter-has-value':''}`} onClick={()=>setIncludeSubagents(v=>!v)} aria-pressed={includeSubagents} title="Show background and subagent sessions"><Bot size={14}/><span>Show subagents</span></button>
               <DateFilter value={timeFilter} onChange={setTimeFilter}/>
               <ModelFilter loading={metadataState.facets==='loading'} error={metadataState.facets==='error'} onRetry={loadMeta} models={facets.models} selected={modelFilters} onChange={setModelFilters}/>
               <BranchFilter loading={metadataState.facets==='loading'} error={metadataState.facets==='error'} onRetry={loadMeta} branches={facets.branches} selected={branchFilter} onChange={setBranchFilter}/>
@@ -714,7 +716,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
                 {loading&&<div className="session-loading" role="status" aria-live="polite">{[0,1,2,3].map(item=><div className="session-skeleton" key={item}><span className="skeleton-line skeleton-agent"/><span className="skeleton-line skeleton-title"/><span className="skeleton-line skeleton-meta"/></div>)}</div>}
                 {/* eslint-disable-next-line react-hooks/refs -- selectSession reads navigation state only when the button is clicked. */}
                 {!loading&&groups.map(g=><div className="date-group" key={g.label}><div className="date-label">{g.label}</div>{g.items.map(s=><div key={s.id} className="session-card-wrap"><button type="button" data-session-navigation className={`session-card ${String(selected)===String(s.id)?'session-selected':''}`} aria-current={String(selected)===String(s.id)?'true':undefined} onClick={()=>selectSession(s.id)}>
-                  <div className="card-top"><span className={`agent-dot ${agentColors[s.agent]||'gray'}`}/><span className="card-agent">{s.product||familyLabel(s.agent)}</span>{s.host&&<span className="host-chip" title={`Recorded on ${s.host}`}><Server size={10}/>{s.host}</span>}<span className="card-time">{parseDate(s.last_event_at||s.started_at)?.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})||'—'}</span></div>
+                  <div className="card-top"><span className={`agent-dot ${agentColors[s.agent]||'gray'}`}/><span className="card-agent">{s.product||familyLabel(s.agent)}</span>{Boolean(s.is_subagent)&&<span className="host-chip">Subagent</span>}{s.host&&<span className="host-chip" title={`Recorded on ${s.host}`}><Server size={10}/>{s.host}</span>}<span className="card-time">{parseDate(s.last_event_at||s.started_at)?.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})||'—'}</span></div>
                   <strong className="session-title">{s.title||'Untitled session'}</strong>
                   <div className="card-meta"><span title={s.project||s.cwd}><Folder size={12}/>{shortPath(s.project||s.cwd)}</span>{s.branch&&<span><GitBranch size={12}/>{s.branch}</span>}{s.tags?.map(tag=><span className="tag-chip" key={tag}>{tag}</span>)}</div>
                 </button><button type="button" className={`card-star ${s.starred?'is-starred':''}`} aria-label={`${s.starred?'Unstar':'Star'} ${s.title||'session'}`} aria-pressed={Boolean(s.starred)} title={s.starred?'Unstar':'Star'} disabled={starPending.has(s.id)} onClick={e=>{e.stopPropagation();toggleSessionStar(s);}}><Star size={14} fill={s.starred?'currentColor':'none'}/></button></div>)}</div>)}

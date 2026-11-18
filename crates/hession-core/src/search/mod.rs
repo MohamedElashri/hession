@@ -118,6 +118,9 @@ pub enum SearchVisibility {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct SearchFilters {
+    /// Desktop's session list hides helpers by default; programmatic readers
+    /// retain all history unless they explicitly request this filter.
+    pub exclude_subagents: bool,
     pub agent: String,
     pub project: String,
     pub models: Vec<String>,
@@ -251,7 +254,6 @@ pub fn search_snapshot(
     validate_request(conn, request)?;
     compiler::register_visible_match(conn)?;
     let parsed = query::parse(&request.query)?;
-    bounds::check(conn, request, scope, &parsed)?;
     let revision = library_revision::current(conn)?;
     let fingerprint = fingerprint(request, scope)?;
     let offset = if let Some(cursor) = &request.cursor {
@@ -269,6 +271,9 @@ pub fn search_snapshot(
     } else {
         0
     };
+    // Reject expired/foreign cursors before visiting any transcript or metadata
+    // corpus. Valid requests still pass every bound in the same read snapshot.
+    bounds::check(conn, request, scope, &parsed)?;
     let mut results = compiler::execute(conn, request, scope, &parsed, offset)
         .map_err(bounds::map_execution_error)?;
     let more = results.len() > request.limit as usize;

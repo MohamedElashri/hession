@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const { values: options } = parseArgs({ options: { ref: { type: 'string', default: 'working' }, output: { type: 'string' }, chrome: { type: 'string' }, live: { type: 'boolean' }, unhappy: { type: 'boolean' }, 'worker-failures': { type: 'boolean' }, 'prompt-failures': { type: 'boolean' }, help: { type: 'boolean' } } });
-if (options.help) { console.log('Usage: node scripts/benchmark-browser.mjs [--ref COMMIT|working] [--output REPORT.json] [--chrome EXECUTABLE] [--live] [--unhappy] [--worker-failures] [--prompt-failures]'); process.exit(0); }
+const { values: options } = parseArgs({ options: { ref: { type: 'string', default: 'working' }, 'source-dir': { type: 'string' }, output: { type: 'string' }, chrome: { type: 'string' }, live: { type: 'boolean' }, unhappy: { type: 'boolean' }, 'worker-failures': { type: 'boolean' }, 'prompt-failures': { type: 'boolean' }, help: { type: 'boolean' } } });
+if (options.help) { console.log('Usage: node scripts/benchmark-browser.mjs [--ref COMMIT|working] [--source-dir ARCHIVED_SRC] [--output REPORT.json] [--chrome EXECUTABLE] [--live] [--unhappy] [--worker-failures] [--prompt-failures]'); process.exit(0); }
 const ref = options.ref || 'working';
 const scratch = mkdtempSync(join(tmpdir(), 'hession-browser-perf-'));
 const site = join(scratch, 'site');
@@ -32,6 +32,8 @@ try {
     execFileSync('tar', ['-xf', archive, '-C', site]);
     rmSync(join(site, 'src/dev'), { recursive: true, force: true });
   }
+  if (options['source-dir']) cpSync(resolve(options['source-dir']), join(site, 'src'), { recursive: true,
+    filter: path => !resolve(path).startsWith(resolve(options['source-dir'], 'dev')) });
   assert(!existsSync(join(site, 'src/dev/fixtures.local.json')));
   assert(!existsSync(join(site, 'plan.md')));
   symlinkSync(join(repository, 'node_modules'), join(site, 'node_modules'), 'dir');
@@ -56,9 +58,21 @@ window.prepareFixture = (size, count, scenario = "indexed") => {
   const command = '# Synthetic recorded command\\nprintf "%s\\\\n" "' + 'x'.repeat(size) + '"';
   const args = JSON.stringify({ cmd: command, workdir: '/synthetic/project', timeout: 30 });
   cards = Array.from({length: count}, (_, index) => ({id:index, tool_name:'exec_command', command_text:command, arguments_json:args, result_text:'{"ok":true}', status:'completed'}));
-  if (scenario !== 'indexed') cards = cards.map(tool => ({ ...tool, command_text:null, status:'failed',
-    arguments_json:scenario === 'malformed' ? '{"patch":"' + 'x'.repeat(size)
-      : JSON.stringify(scenario === 'path' ? {file_path:'/synthetic/project.rs',content:'x'.repeat(size)} : {code:'x'.repeat(size),language:'python'}) }));
+  if (scenario !== 'indexed') {
+    const input = index => scenario.startsWith('malformed') ? '{"patch":"' + 'x'.repeat(size) + (index ?? '')
+      : JSON.stringify(scenario.startsWith('path') ? {file_path:'/synthetic/project'+(index ?? '')+'.rs',content:'x'.repeat(size)} : {code:'x'.repeat(size)+(index == null ? '' : '//'+index),language:'python'});
+    // Share the repeated source string before the initial heap measurement.
+    // Otherwise string deduplication during lookup can subtract input memory
+    // and masquerade as negative component retention. Unique cases are controls.
+    const shared = scenario.endsWith('-unique') ? null : input(null);
+    cards = cards.map((tool,index) => ({ ...tool, command_text:null, status:'failed', arguments_json:shared ?? input(index) }));
+  }
+  // Flatten synthetic concatenated strings before the initial heap snapshot,
+  // as IPC-decoded strings would already be. Input allocation is not card memory.
+  for (const tool of cards) {
+    tool.arguments_json.indexOf(String.fromCharCode(10));
+    if (typeof tool.command_text === 'string') tool.command_text.indexOf(String.fromCharCode(10));
+  }
 };
 window.mountFixture = () => {
   const start = performance.now();
@@ -198,19 +212,22 @@ window.benchmarkReady = true;
     pending.set(id, { resolve, reject, timer });
     chrome.stdio[3].write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + '\0');
   });
-  const { targetId } = await send('Target.createTarget', { url: 'http://127.0.0.1:' + port });
-  const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
+  let { targetId } = await send('Target.createTarget', { url: 'http://127.0.0.1:' + port });
+  let { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
   await send('Runtime.enable', {}, sessionId);
   const evaluate = async expression => {
     const response = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, sessionId);
     assert(!response.exceptionDetails, JSON.stringify(response.exceptionDetails));
     return response.result.value;
   };
-  for (let attempt = 0; !await evaluate('!!window.benchmarkReady'); attempt++) {
-    assert.equal(errors.length, 0, errors.join('\n'));
-    assert(attempt < 300, 'Benchmark page failed to load within 30 seconds');
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
+  const ready = async () => {
+    for (let attempt = 0; !await evaluate('!!window.benchmarkReady'); attempt++) {
+      assert.equal(errors.length, 0, errors.join('\n'));
+      assert(attempt < 300, 'Benchmark page failed to load within 30 seconds');
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  };
+  await ready();
   const cases = [];
   if (options.live) {
     await evaluate('window.prepareLive()');
@@ -239,9 +256,18 @@ window.benchmarkReady = true;
     await evaluate('window.clearFixture()');
     cases.push({scenario:'indexing-event-and-poll',...await evaluate('window.runIndexingProbe()')});
   } else {
-  const scenarios = options.unhappy ? [['malformed', 1024 * 1024, 50], ['path', 1024 * 1024, 50], ['code', 1024 * 1024, 50]]
+  const scenarios = options.unhappy ? ['malformed','path','code','malformed-unique','path-unique','code-unique'].map(scenario => [scenario,1024 * 1024,50])
     : [['indexed', 1024, 200], ['indexed', 64 * 1024, 200], ['indexed', 1024 * 1024, 50]];
   for (const [scenario, size, count] of scenarios) {
+    // Keep module-level caches from one workload out of the next workload's
+    // initial heap. Each case warms its own fresh page before measured samples.
+    if (cases.length) {
+      await send('Target.closeTarget', { targetId });
+      ({ targetId } = await send('Target.createTarget', { url: 'http://127.0.0.1:' + port }));
+      ({ sessionId } = await send('Target.attachToTarget', { targetId, flatten: true }));
+      await send('Runtime.enable', {}, sessionId);
+      await ready();
+    }
     await evaluate('window.prepareFixture(' + size + ',' + count + ',' + JSON.stringify(scenario) + ')');
     await send('HeapProfiler.collectGarbage', {}, sessionId);
     const before = await send('Runtime.getHeapUsage', {}, sessionId);
@@ -264,7 +290,7 @@ window.benchmarkReady = true;
   assert.equal(errors.length, 0, errors.join('\n'));
   const workerFailure = options['worker-failures'] ? await evaluate('window.runWorkerFaults()') : undefined;
   const promptFailure = options['prompt-failures'] ? await evaluate('window.runPromptFaults()') : undefined;
-  const report = { ref, workerFailure, promptFailure, browser: await send('Browser.getVersion'), scenario: options.live ? 'production LiveTail, synthetic IPC' : options.unhappy ? 'production component, collapsed failed/fallback calls' : 'production component, collapsed recorded commands', cases };
+  const report = { ref, source: options['source-dir'] ? 'archived source snapshot' : 'repository source', workerFailure, promptFailure, browser: await send('Browser.getVersion'), scenario: options.live ? 'production LiveTail, synthetic IPC' : options.unhappy ? 'production component, collapsed failed/fallback calls' : 'production component, collapsed recorded commands', cases };
   const output = JSON.stringify(report, null, 2) + '\n';
   if (options.output) writeFileSync(resolve(options.output), output);
   process.stdout.write(output);

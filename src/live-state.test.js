@@ -4,6 +4,21 @@ import { createLiveCommands, liveEntrySummary, liveStatusLabel, MAX_LIVE_BYTES, 
 
 const entry = (id, ordinal = id) => ({ id, ordinal, parts: [{ kind: 'text', text: `Event ${id}` }] });
 
+test('live byte limits include JSON array brackets and separators at the exact boundary', () => {
+  const row = { ...entry(1), parts: [{ kind: 'text', text: '' }] };
+  const encoder = new TextEncoder();
+  const overhead = encoder.encode(JSON.stringify(row)).byteLength;
+  row.parts[0].text = 'x'.repeat(MAX_LIVE_BYTES - overhead - 2);
+  const exact = mergeLiveEntries([], [row], true);
+  assert.equal(exact.entries.length, 1);
+  assert.equal(encoder.encode(JSON.stringify(exact.entries)).byteLength, MAX_LIVE_BYTES);
+  const larger = { ...row, parts: [{ kind: 'text', text: row.parts[0].text + 'x' }] };
+  assert.equal(mergeLiveEntries([], [larger], true).entries.length, 0);
+  const extra = entry(2);
+  const combined = mergeLiveEntries([], [row, extra], true);
+  assert.ok(encoder.encode(JSON.stringify(combined.entries)).byteLength <= MAX_LIVE_BYTES);
+});
+
 test('live merge updates stable IDs, preserves gapped order and replaces resets', () => {
   const old = [entry(1, 10), entry(2, 900)];
   const changed = { ...entry(1, 10), tools: [{ result_text: 'Late result' }] };
