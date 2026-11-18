@@ -444,7 +444,18 @@ pub async fn search_sessions(
 
 // get_session  (paginated transcript)
 
+#[cfg(test)]
 fn get_session_inner(db_path: &Path, id: &str, limit: i64, page: i64) -> Result<Value, String> {
+    get_session_if_changed(db_path, id, limit, page, None)
+}
+
+fn get_session_if_changed(
+    db_path: &Path,
+    id: &str,
+    limit: i64,
+    page: i64,
+    known_token: Option<&str>,
+) -> Result<Value, String> {
     let session_id: i64 = id
         .trim()
         .parse()
@@ -452,8 +463,28 @@ fn get_session_inner(db_path: &Path, id: &str, limit: i64, page: i64) -> Result<
     let mut offset = page.max(1).saturating_sub(1).saturating_mul(limit);
     let mut conn = open_db(db_path)?;
     let snapshot = conn.transaction().map_err(|e| e.to_string())?;
-    let result =
+    let token = hession_core::session_changes::token(&snapshot, session_id)
+        .map(|token| format!("{token}:page:{}:limit:{limit}", page.max(1)));
+    if token
+        .as_deref()
+        .is_some_and(|token| Some(token) == known_token)
+    {
+        return Ok(json!({"unchanged":true,"readToken":token}));
+    }
+    if known_token.is_some()
+        && !snapshot
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM session WHERE id=?)",
+                [session_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|e| e.to_string())?
+    {
+        return Ok(json!({"deleted":true}));
+    }
+    let mut result =
         hession_core::sessions::get_session_from_conn(&snapshot, session_id, limit, &mut offset)?;
+    result["readToken"] = json!(token);
     snapshot.commit().map_err(|e| e.to_string())?;
     Ok(result)
 }
@@ -465,14 +496,17 @@ pub async fn get_session(
     id: Option<String>,
     limit: Option<String>,
     page: Option<String>,
+    known_token: Option<String>,
 ) -> Result<Value, String> {
     let db_path = db_path_of(&state)?;
     let id = opt_str(&id).to_string();
     let limit = clamp_limit(limit.as_deref(), 100, 1, 500);
     let page = parse_i64(opt_str(&page), 1).max(1);
-    tauri::async_runtime::spawn_blocking(move || get_session_inner(&db_path, &id, limit, page))
-        .await
-        .map_err(|e| format!("get_session failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        get_session_if_changed(&db_path, &id, limit, page, known_token.as_deref())
+    })
+    .await
+    .map_err(|e| format!("get_session failed: {e}"))?
 }
 
 // Search the complete indexed transcript, independently of the displayed page.

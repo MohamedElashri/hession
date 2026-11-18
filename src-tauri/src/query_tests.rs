@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::params;
 
 #[test]
 fn facets_preserve_distinct_values_and_exclude_orphaned_evidence() {
@@ -653,4 +654,90 @@ fn benchmark_latest_context_lookup() {
     let (original, before) = measure();
     assert_eq!(indexed, original);
     println!("1,000 sessions / 200,000 context rows: latest branch before {before:.3} ms, after {after:.3} ms ({:.1}x)", before / after);
+}
+
+#[test]
+fn conditional_transcript_reads_track_parts_tools_annotations_pages_and_deletion() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("conditional.sqlite");
+    let conn = open_db(&path).unwrap();
+    conn.execute_batch("INSERT INTO agent(id,family,product) VALUES(1,'codex','Codex');
+        INSERT INTO session(id,agent_id,source_uri) VALUES(1,1,'fixture://1'),(2,1,'fixture://2');
+        INSERT INTO entry(id,session_id,ordinal,kind,role) VALUES(1,1,0,'message','user'),(2,1,1,'message','assistant');
+        INSERT INTO content_part(entry_id,ordinal,kind,text) VALUES(1,0,'text','hello'),(2,0,'text','reply');").unwrap();
+    let full = get_session_if_changed(&path, "1", 1, 1, None).unwrap();
+    let mut token = full["readToken"].as_str().unwrap().to_owned();
+    let unchanged = || get_session_if_changed(&path, "1", 1, 1, Some(&token)).unwrap();
+    assert_eq!(unchanged()["unchanged"], true);
+    conn.execute("UPDATE session SET title='unrelated' WHERE id=2", [])
+        .unwrap();
+    assert_eq!(unchanged()["unchanged"], true);
+    for query in [
+        "UPDATE content_part SET text='edited' WHERE entry_id=1",
+        "INSERT INTO tool_invocation(session_id,entry_id,tool_name) VALUES(1,1,'Read')",
+        "INSERT INTO session_annotation(session_id,starred) VALUES(1,1)",
+        "INSERT INTO session_tag(session_id,label) VALUES(1,'important')",
+    ] {
+        conn.execute_batch(query).unwrap();
+        let changed = get_session_if_changed(&path, "1", 1, 1, Some(&token)).unwrap();
+        assert!(changed.get("entries").is_some(), "{query}");
+        let next = changed["readToken"].as_str().unwrap();
+        assert_ne!(next, token);
+        token = next.into();
+    }
+    let page = get_session_if_changed(&path, "1", 1, 2, Some(&token)).unwrap();
+    assert_eq!(page["entries"][0]["id"], 2);
+    let resized = get_session_if_changed(&path, "1", 2, 1, Some(&token)).unwrap();
+    assert_eq!(resized["entries"].as_array().unwrap().len(), 2);
+    conn.execute_batch("DROP TRIGGER index_read_content_part_update; UPDATE content_part SET text='untracked' WHERE entry_id=1;").unwrap();
+    let fallback = get_session_if_changed(&path, "1", 1, 1, Some(&token)).unwrap();
+    assert_eq!(fallback["entries"][0]["parts"][0]["text"], "untracked");
+    assert!(fallback["readToken"].is_null());
+    conn.execute("DELETE FROM session WHERE id=1", []).unwrap();
+    assert_eq!(
+        get_session_if_changed(&path, "1", 1, 1, Some(&token)).unwrap()["deleted"],
+        true
+    );
+}
+
+#[test]
+#[ignore = "synthetic full-page versus unchanged refresh probe; run release and serial"]
+fn conditional_transcript_performance() {
+    use std::time::Instant;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("refresh.sqlite");
+    let mut conn = open_db(&path).unwrap();
+    let tx = conn.transaction().unwrap();
+    tx.execute_batch("INSERT INTO agent(id,family,product) VALUES(1,'codex','Codex'); INSERT INTO session(id,agent_id,source_uri) VALUES(1,1,'fixture://refresh');").unwrap();
+    for id in 1..=10000 {
+        tx.execute("INSERT INTO entry(id,session_id,ordinal,kind,role) VALUES(?,1,?,'message','assistant')",params![id,id]).unwrap();
+        tx.execute(
+            "INSERT INTO content_part(entry_id,ordinal,kind,text) VALUES(?,0,'text',?)",
+            params![id, "synthetic conversation ".repeat(250)],
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+    let full = get_session_if_changed(&path, "1", 500, 1, None).unwrap();
+    let token = full["readToken"].as_str().unwrap();
+    let mut cases = Vec::new();
+    for known in [None, Some(token)] {
+        let mut samples = Vec::new();
+        let mut bytes = 0;
+        for run in 0..10 {
+            let start = Instant::now();
+            let result = get_session_if_changed(&path, "1", 500, 1, known).unwrap();
+            bytes = serde_json::to_vec(&result).unwrap().len();
+            if run >= 3 {
+                samples.push(start.elapsed().as_secs_f64() * 1000.);
+            }
+        }
+        samples.sort_by(f64::total_cmp);
+        cases.push(json!({"conditional":known.is_some(),"medianMs":samples[3],"samplesMs":samples,"responseBytes":bytes}));
+    }
+    let report = json!({"historyEntries":10000,"pageSize":500,"cases":cases});
+    if let Ok(path) = std::env::var("HESSION_REFRESH_BENCH_OUTPUT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    }
+    println!("{report}");
 }

@@ -266,3 +266,16 @@ test('failed health reads do not discard valid library revisions', async () => {
   revision=2;await act(async()=>vi.advanceTimersByTimeAsync(3000));
   expect(changed).toHaveBeenCalledTimes(2);
 });
+
+test('hidden windows skip UI polling and catch up once visible without restarting observation', async () => {
+  const changed = vi.fn(); let hidden = true;
+  vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
+  const hook = renderHook(() => useIndexing({ ready: true, onChanged: changed }));
+  await act(async () => { events.callback({ payload: {} }); await vi.advanceTimersByTimeAsync(12000); });
+  expect(api.mock.calls.filter(([command]) => command === 'observed_library_revision')).toHaveLength(0);
+  hidden = false;
+  await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+  expect(changed).toHaveBeenCalledOnce();
+  expect(api.mock.calls.filter(([command]) => command === 'start_indexing')).toHaveLength(1);
+  hook.unmount(); vi.restoreAllMocks();
+});

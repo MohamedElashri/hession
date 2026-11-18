@@ -86,6 +86,13 @@ pub fn get_status() -> SyncState {
     lock_state().clone()
 }
 
+pub(crate) fn set_phase(phase: &str) {
+    let mut state = lock_state();
+    if state.running && state.phase != "stopping" {
+        state.phase = phase.into();
+    }
+}
+
 /// Start a background sync. Returns `false` when a run is already active
 /// (single-flight guard); `true` when a new run was launched.
 pub fn start_sync(agent_filter: Option<String>, mode: &str) -> bool {
@@ -118,7 +125,7 @@ pub fn start_sync(agent_filter: Option<String>, mode: &str) -> bool {
                         state.files_done = done;
                         state.files_total = total;
                         state.records = records;
-                        if state.phase == "scanning" && total > 0 {
+                        if state.phase != "stopping" && total > 0 {
                             state.phase = "importing".to_string();
                         }
                     },

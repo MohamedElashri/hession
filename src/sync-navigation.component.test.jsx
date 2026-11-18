@@ -303,3 +303,67 @@ test('file evidence opens its source session and true transcript page despite ga
   expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 2 of 2' })).toBeTruthy();
   expect(new URL(window.location.href).searchParams.get('session')).toBe('2');
 }, 15000);
+
+test('focus mode restores the surrounding layout and keeps the same transcript and page', async () => {
+  const user = userEvent.setup();
+  render(boot.tree);
+  await screen.findByRole('heading', { name: 'First session' });
+  await user.click(screen.getByRole('button', { name: 'Next transcript page' }));
+  await screen.findByRole('textbox', { name: 'Go to transcript page, current page 2 of 2' });
+  const transcript = screen.getByRole('region', { name: 'Transcript' });
+  transcript.scrollTop = 120;
+  const reads = api.mock.calls.filter(([command]) => command === 'get_session').length;
+  await user.click(screen.getByRole('button', { name: 'Focus mode' }));
+  expect(document.querySelector('.app-shell').classList.contains('reader-focus')).toBe(true);
+  expect(screen.getByRole('region', { name: 'Transcript' })).toBe(transcript);
+  expect(transcript.scrollTop).toBe(120);
+  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 2 of 2' })).toBeTruthy();
+  await user.keyboard('{Escape}');
+  expect(document.querySelector('.app-shell').classList.contains('reader-focus')).toBe(false);
+  expect(screen.getByRole('region', { name: 'Transcript' })).toBe(transcript);
+  await user.click(screen.getByRole('button', { name: 'Focus mode' }));
+  await user.keyboard('{Control>}b{/Control}');
+  expect(document.querySelector('.app-shell').classList.contains('reader-focus')).toBe(false);
+  expect(document.querySelector('.app-shell').classList.contains('sidebar-hidden')).toBe(false);
+  expect(api.mock.calls.filter(([command]) => command === 'get_session')).toHaveLength(reads);
+});
+
+test('layout controls persist widths, keyboard resize panels, and preserve reading preferences across focus', async () => {
+  const user = userEvent.setup();
+  render(boot.tree);
+  await screen.findByRole('heading', { name: 'First session' });
+  const transcript = screen.getByRole('region', { name: 'Transcript' });
+  const separator = screen.getByRole('separator', { name: 'Session list width' });
+  fireEvent.keyDown(separator, { key: 'ArrowRight', shiftKey: true });
+  expect(document.querySelector('.app-shell').style.getPropertyValue('--list-w')).toBe('410px');
+  await user.click(screen.getByLabelText('Reading layout'));
+  await user.click(screen.getByRole('checkbox', { name: 'Hide session details' }));
+  await user.click(screen.getByRole('checkbox', { name: 'Use available reading width' }));
+  expect(document.querySelector('.app-shell').style.getPropertyValue('--reading-w')).toBe('none');
+  expect(screen.getByRole('slider', { name: 'Reading width' }).disabled).toBe(true);
+  await user.click(screen.getByRole('button', { name: 'Focus mode' }));
+  await user.click(screen.getByRole('button', { name: 'Exit focus' }));
+  expect(document.querySelector('.app-shell').classList.contains('reader-header-hidden')).toBe(true);
+  expect(screen.getByRole('region', { name: 'Transcript' })).toBe(transcript);
+  expect(JSON.parse(localStorage.getItem(storageKey('reading-layout')))).toEqual(expect.objectContaining({ listWidth: 410, headerHidden: true, fullWidth: true }));
+});
+
+test('a background refresh reuses the selected transcript and retains the list on transient query failure', async () => {
+  const user=userEvent.setup(); const handler=api.getMockImplementation(); let refreshing=false;
+  api.mockImplementation(async(command,args)=>{
+    if(command==='run_device_sync'){refreshing=true;return {status:{uploaded:0,downloaded:1}};}
+    if(command==='search_sessions'&&refreshing)throw new Error('Temporary query failure');
+    if(command==='get_session')return args.knownToken?{unchanged:true,readToken:'same-session-page'}:{...await handler(command,args),readToken:'same-session-page'};
+    return handler(command,args);
+  });
+  render(boot.tree); await screen.findByRole('heading',{name:'First session'});
+  const transcript=screen.getByRole('region',{name:'Transcript'});
+  await user.click(screen.getByRole('button',{name:'Settings'}));
+  await user.click(await screen.findByRole('tab',{name:'Private sync'}));
+  await user.click(await screen.findByRole('button',{name:'Sync now'}));
+  await screen.findByText('Temporary query failure');
+  await waitFor(()=>expect(api.mock.calls).toContainEqual(['get_session',{id:'1',limit:'500',page:'1',knownToken:'same-session-page'}]));
+  await user.click(screen.getByRole('button',{name:'Done'}));
+  expect(screen.getByRole('region',{name:'Transcript'})).toBe(transcript);
+  expect(screen.getByRole('button',{name:/^Claude Code.*Selected session/})).toBeTruthy();
+});

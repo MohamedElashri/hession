@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const { values: options } = parseArgs({ options: { ref: { type: 'string', default: 'working' }, 'source-dir': { type: 'string' }, output: { type: 'string' }, chrome: { type: 'string' }, live: { type: 'boolean' }, unhappy: { type: 'boolean' }, 'worker-failures': { type: 'boolean' }, 'prompt-failures': { type: 'boolean' }, help: { type: 'boolean' } } });
-if (options.help) { console.log('Usage: node scripts/benchmark-browser.mjs [--ref COMMIT|working] [--source-dir ARCHIVED_SRC] [--output REPORT.json] [--chrome EXECUTABLE] [--live] [--unhappy] [--worker-failures] [--prompt-failures]'); process.exit(0); }
+const { values: options } = parseArgs({ options: { ref: { type: 'string', default: 'working' }, 'source-dir': { type: 'string' }, output: { type: 'string' }, chrome: { type: 'string' }, live: { type: 'boolean' }, unhappy: { type: 'boolean' }, 'worker-failures': { type: 'boolean' }, 'prompt-failures': { type: 'boolean' }, reading: { type: 'boolean' }, help: { type: 'boolean' } } });
+if (options.help) { console.log('Usage: node scripts/benchmark-browser.mjs [--ref COMMIT|working] [--source-dir ARCHIVED_SRC] [--output REPORT.json] [--chrome EXECUTABLE] [--live] [--unhappy] [--worker-failures] [--prompt-failures] [--reading]'); process.exit(0); }
 const ref = options.ref || 'working';
 const scratch = mkdtempSync(join(tmpdir(), 'hession-browser-perf-'));
 const site = join(scratch, 'site');
@@ -20,7 +20,7 @@ mkdirSync(site);
 let chrome, server;
 try {
   if (ref === 'working') {
-    const tracked = execFileSync('git', ['ls-files', '-z', '--', 'src', 'package.json', 'brand.json', 'vite.config.js'], { cwd: repository }).toString().split('\0').filter(Boolean);
+    const tracked = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', 'src', 'package.json', 'brand.json', 'vite.config.js', 'branding', 'docs'], { cwd: repository }).toString().split('\0').filter(Boolean);
     for (const path of tracked.filter(path => !path.startsWith('src/dev/'))) {
       const target = join(site, path);
       mkdirSync(dirname(target), { recursive: true });
@@ -28,7 +28,7 @@ try {
     }
   } else {
     const archive = join(scratch, 'source.tar');
-    execFileSync('git', ['archive', '--format=tar', '--output', archive, ref, 'src', 'package.json', 'brand.json', 'vite.config.js'], { cwd: repository });
+    execFileSync('git', ['archive', '--format=tar', '--output', archive, ref, 'src', 'package.json', 'brand.json', 'vite.config.js', 'branding', 'docs'], { cwd: repository });
     execFileSync('tar', ['-xf', archive, '-C', site]);
     rmSync(join(site, 'src/dev'), { recursive: true, force: true });
   }
@@ -37,7 +37,7 @@ try {
   assert(!existsSync(join(site, 'src/dev/fixtures.local.json')));
   assert(!existsSync(join(site, 'plan.md')));
   symlinkSync(join(repository, 'node_modules'), join(site, 'node_modules'), 'dir');
-  writeFileSync(join(site, 'index.html'), '<!doctype html><html data-theme="light"><head><meta charset="UTF-8"></head><body><main id="root"></main><script type="module" src="/performance.jsx"></script></body></html>');
+  writeFileSync(join(site, 'index.html'), '<!doctype html><html data-theme="light"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head><body><main id="root"></main><script type="module" src="/performance.jsx"></script></body></html>');
   writeFileSync(join(site, 'performance.jsx'), `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
@@ -179,6 +179,44 @@ window.runIndexingProbe = async () => {
 };
 window.benchmarkReady = true;
 `);
+  if (options.reading) {
+    assert.equal(ref, 'working', 'Reading checks require the current implementation');
+    const entry = join(site, 'src/main.jsx');
+    const source = readFileSync(entry, 'utf8');
+    assert(source.includes('function App('));
+    writeFileSync(entry, source.replace('function App(', 'export default function App(').replace(/^createRoot\(document\.getElementById\('root'\)\)\.render\(.+$/m, ''));
+    writeFileSync(join(site, 'performance.jsx'), `
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './src/main.jsx';
+import './src/styles/tokens.css';
+import { storageKey } from './src/brand.js';
+localStorage.setItem(storageKey('auto-sync'),'false');
+window.readingSavedLayout=()=>JSON.parse(localStorage.getItem(storageKey('reading-layout')));
+const session={id:1,title:'Synthetic reading performance',agent:'codex',cwd:'/synthetic/project',tags:[]};
+const entries=Array.from({length:500},(_,i)=>({id:i+1,ordinal:i,kind:'message',role:i%2?'assistant':'user',parts:[{kind:'text',text:'Recorded conversation '+i+'\\n\\n'+('A readable synthetic paragraph about the recorded work. ').repeat(20)}],tools:[]}));
+const calls={}; let callback=0;
+window.readingCalls=calls;
+window.__TAURI_INTERNALS__={ transformCallback(){return ++callback;}, async invoke(command,args={}) {
+  calls[command]=(calls[command]||0)+1;
+  if(command==='plugin:event|listen')return ++callback;
+  if(command==='plugin:event|unlisten')return;
+  if(command==='start_indexing'||command==='indexing_status')return {phase:'active',roots:[],errors:[]};
+  if(command==='observed_library_revision')return {identity:'synthetic',revision:1};
+  if(command==='get_optional_features')return {continuationEnabled:false};
+  if(['get_agents','get_projects','get_sync_checkpoints'].includes(command))return [];
+  if(command==='get_stats')return {sessions:1,entries:1000,agents:1,files:1};
+  if(command==='get_facets')return {models:[],branches:[],tools:[]};
+  if(command==='get_sync_status')return {running:false};
+  if(command==='search_sessions')return {sessions:[session],total:1};
+  if(command==='get_session')return args.knownToken?{unchanged:true,readToken:'synthetic-token'}:{session,entries,total:1000,limit:500,offset:0,readToken:'synthetic-token'};
+  throw new Error('Unexpected synthetic IPC '+command);
+}};
+window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener(){}};
+createRoot(document.getElementById('root')).render(<App/>);
+window.benchmarkReady=true;
+`);
+  }
   await build({ root: site, configFile: join(site, 'vite.config.js'), logLevel: 'silent', build: { outDir: 'dist', sourcemap: true } });
   const dist = join(site, 'dist');
   const mime = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.woff2': 'font/woff2' };
@@ -229,7 +267,54 @@ window.benchmarkReady = true;
   };
   await ready();
   const cases = [];
-  if (options.live) {
+  if (options.reading) {
+    const frames = 'new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))';
+    for (let attempt=0; !await evaluate("!!document.querySelector('.transcript-scroll .turn')"); attempt++) {
+      assert(attempt<300,'Synthetic transcript did not mount');
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    const outputDir = options.output ? dirname(resolve(options.output)) : scratch;
+    mkdirSync(outputDir,{recursive:true});
+    const capture = async name => {
+      const shot=await send('Page.captureScreenshot',{format:'png'},sessionId);
+      writeFileSync(join(outputDir,`reading-${name}.png`),Buffer.from(shot.data,'base64'));
+    };
+    const initial=await evaluate(`(()=>{window.readingTranscript=document.querySelector('.transcript-scroll');window.readingFirst=document.querySelector('.transcript-scroll .turn');window.readingTranscript.scrollTop=300;return {width:window.innerWidth,detailWidth:document.querySelector('.detail-column').getBoundingClientRect().width,turns:document.querySelectorAll('.turn').length};})()`);
+    await capture('normal');
+    const before=await evaluate('readingCalls.get_session');
+    await evaluate(`document.querySelector('button[title^="Focus mode"]').click();${frames}`);
+    const focus=await evaluate(`(()=>{const t=document.querySelector('.transcript-scroll');return {sameTranscript:t===window.readingTranscript,sameTurn:document.querySelector('.transcript-scroll .turn')===window.readingFirst,scrollTop:t.scrollTop,sidebarHidden:getComputedStyle(document.querySelector('.sidebar')).display==='none',listHidden:getComputedStyle(document.querySelector('.session-column')).display==='none',detailWidth:document.querySelector('.detail-column').getBoundingClientRect().width};})()`);
+    assert(focus.sameTranscript&&focus.sameTurn&&focus.sidebarHidden&&focus.listHidden,JSON.stringify(focus));
+    assert(focus.detailWidth>initial.detailWidth);
+    await capture('focus-light');
+    await evaluate(`document.documentElement.dataset.theme='dark';${frames}`); await capture('focus-dark');
+    await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));${frames}`);
+    const divider = await evaluate(`(()=>{const element=document.querySelector('[aria-label="Session list width"][role="separator"]');const rect=element.getBoundingClientRect();return {x:rect.x+rect.width/2,y:rect.y+rect.height/2,width:Number(element.getAttribute('aria-valuenow')),rect:rect.toJSON(),hit:document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2)?.outerHTML.slice(0,300),shell:document.querySelector('.app-shell').className};})()`);
+    await evaluate(`window.readingPointerEvents=[];for(const type of ['pointerdown','pointermove','pointerup','gotpointercapture','lostpointercapture'])document.addEventListener(type,event=>readingPointerEvents.push({type,target:event.target.className,id:event.pointerId,x:event.clientX,buttons:event.buttons,button:event.button,captured:event.target.hasPointerCapture?.(event.pointerId)}),true)`);
+    await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:divider.x,y:divider.y},sessionId);
+    await send('Input.dispatchMouseEvent',{type:'mousePressed',x:divider.x,y:divider.y,button:'left',buttons:1,clickCount:1},sessionId);
+    await evaluate(frames);
+    await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:divider.x+40,y:divider.y,button:'left',buttons:1},sessionId);
+    await evaluate(frames);
+    await send('Input.dispatchMouseEvent',{type:'mouseReleased',x:divider.x+40,y:divider.y,button:'left',buttons:0,clickCount:1},sessionId);
+    await evaluate(frames);
+    const dragged = await evaluate(`Number(document.querySelector('[aria-label="Session list width"][role="separator"]').getAttribute('aria-valuenow'))`);
+    assert.equal(dragged,divider.width+40,'Pointer drag must resize the session list '+JSON.stringify({divider,events:await evaluate('readingPointerEvents'),errors}));
+    assert.equal(await evaluate(`window.readingSavedLayout().listWidth`),dragged);
+    const resized=await evaluate(`(async()=>{const separator=document.querySelector('[aria-label="Session list width"][role="separator"]');if(!separator)throw new Error('Missing session list resize control');const observer=new MutationObserver(records=>{window.readingMutations+=records.length;});window.readingMutations=0;observer.observe(window.readingTranscript,{subtree:true,childList:true,characterData:true});const start=performance.now();for(let n=0;n<100;n++){separator.dispatchEvent(new KeyboardEvent('keydown',{key:n%2?'ArrowLeft':'ArrowRight',bubbles:true}));await Promise.resolve();}await ${frames};observer.disconnect();return {elapsedMs:performance.now()-start,transcriptMutations:window.readingMutations,sameTurn:document.querySelector('.transcript-scroll .turn')===window.readingFirst,width:separator.getAttribute('aria-valuenow')};})()`);
+    assert.equal(resized.transcriptMutations,0); assert(resized.sameTurn);
+    assert.equal(await evaluate('readingCalls.get_session'),before,'Focus/resize must not reload the transcript');
+    await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true},sessionId);
+    await evaluate(frames);
+    const phone=await evaluate(`({detailVisible:getComputedStyle(document.querySelector('.detail-column')).display!=='none',listHidden:getComputedStyle(document.querySelector('.session-column')).display==='none',overflow:document.documentElement.scrollWidth>innerWidth})`);
+    assert(phone.detailVisible&&phone.listHidden&&!phone.overflow,JSON.stringify(phone));
+    await capture('phone');
+    await evaluate(`document.querySelector('button[title^="Focus mode"]').click();${frames}`);
+    await capture('phone-focus');
+    await evaluate(`document.querySelector('[aria-label="Browse sessions"]').click();${frames}`);
+    assert.equal(await evaluate(`getComputedStyle(document.querySelector('.session-column')).display!=='none'`),true);
+    cases.push({initial,focus,draggedWidth:dragged,resized,phone,detailRequestsForFocusAndResize:0});
+  } else   if (options.live) {
     await evaluate('window.prepareLive()');
     let ready;
     for (let attempt = 0; attempt < 300; attempt++) {
@@ -290,7 +375,7 @@ window.benchmarkReady = true;
   assert.equal(errors.length, 0, errors.join('\n'));
   const workerFailure = options['worker-failures'] ? await evaluate('window.runWorkerFaults()') : undefined;
   const promptFailure = options['prompt-failures'] ? await evaluate('window.runPromptFaults()') : undefined;
-  const report = { ref, source: options['source-dir'] ? 'archived source snapshot' : 'repository source', workerFailure, promptFailure, browser: await send('Browser.getVersion'), scenario: options.live ? 'production LiveTail, synthetic IPC' : options.unhappy ? 'production component, collapsed failed/fallback calls' : 'production component, collapsed recorded commands', cases };
+  const report = { ref, source: options['source-dir'] ? 'archived source snapshot' : 'repository source', workerFailure, promptFailure, browser: await send('Browser.getVersion'), scenario: options.reading ? 'production App reading layout, synthetic IPC' : options.live ? 'production LiveTail, synthetic IPC' : options.unhappy ? 'production component, collapsed failed/fallback calls' : 'production component, collapsed recorded commands', cases };
   const output = JSON.stringify(report, null, 2) + '\n';
   if (options.output) writeFileSync(resolve(options.output), output);
   process.stdout.write(output);

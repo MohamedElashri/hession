@@ -1,6 +1,6 @@
 [package]
 name = "hession-relay"
-version = "0.5.3"
+version = "0.5.4"
 edition = "2021"
 rust-version = "1.90"
 description = "Self-hosted encrypted record relay for Hession"

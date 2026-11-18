@@ -60,11 +60,11 @@ export default function useIndexing({ ready, onChanged }) {
     const ownership = reads.current;
     let active = true, dirty = false, timer, unlisten;
     const resume = () => {
-      if (active && dirty && !timer) timer = setTimeout(() => { timer = null; poll(); }, 750);
+      if (active && dirty && !document.hidden && !timer) timer = setTimeout(() => { timer = null; poll(); }, 750);
     };
     ownership.resume = resume;
     const poll = async () => {
-      if (!active || ownership.busy) return;
+      if (!active || ownership.busy || document.hidden) return;
       clearTimeout(timer); timer = null;
       ownership.busy = true; dirty = false;
       const control = controlEpoch.current;
@@ -72,7 +72,7 @@ export default function useIndexing({ ready, onChanged }) {
         const results = await Promise.allSettled([api('indexing_status'), api('observed_library_revision')]);
         const [health, version] = results;
         if (active) {
-          if (health.status === 'fulfilled' && control === controlEpoch.current && !starting.current) setStatus(health.value);
+          if (health.status === 'fulfilled' && control === controlEpoch.current && !starting.current) setStatus(previous => JSON.stringify(previous) === JSON.stringify(health.value) ? previous : health.value);
           if (version.status === 'rejected') throw version.reason;
           const current = version.value;
           if (typeof current?.identity !== 'string' || !current.identity || !Number.isSafeInteger(current?.revision) || current.revision < 0) throw new Error('Invalid library revision');
@@ -89,14 +89,16 @@ export default function useIndexing({ ready, onChanged }) {
         ownership.resume?.();
       }
     };
+    const visible = () => { if (!document.hidden) { dirty = true; poll(); } };
+    document.addEventListener('visibilitychange', visible);
     const interval = setInterval(poll, 3000);
     listen('library-changed', () => {
       if (!active) return;
       dirty = true;
-      if (!timer) timer = setTimeout(() => { timer = null; poll(); }, 750);
+      if (!document.hidden && !timer) timer = setTimeout(() => { timer = null; poll(); }, 750);
     }).then(stop => { if (active) { unlisten = stop; setNotificationError(''); } else stop(); }).catch(e => { if (active) setNotificationError(e.message || 'Live notifications are unavailable; polling continues.'); });
     return () => {
-      active = false; clearInterval(interval); clearTimeout(timer); unlisten?.();
+      active = false; document.removeEventListener('visibilitychange', visible); clearInterval(interval); clearTimeout(timer); unlisten?.();
       if (ownership.resume === resume) ownership.resume = null;
     };
   }, [available, ready, attempt]);

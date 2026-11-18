@@ -223,9 +223,6 @@ with service activation disabled; macOS uses a disposable CI login session.
 
 ## Performance measurements
 
-See the [latest patch audit](performance-audit.md) for measured improvements,
-failure-path coverage, and the conditions behind the release claims.
-
 Run benchmarks serially after compilation, with synthetic data and idle build/test
 workers. Keep the baseline and candidate binaries: rebuilding between timed runs
 changes cache/load conditions. Record CPU time alongside wall time, retain raw
@@ -242,8 +239,28 @@ python3 scripts/benchmark-native.py --binary /absolute/path/to/hession --idle --
 python3 scripts/benchmark-export.py --seed-binary /absolute/path/to/hession --before /absolute/path/to/baseline-cli --after /absolute/path/to/candidate-cli --output target/performance/exports.json
 ```
 
+Reading and refresh probes use only synthetic history:
+
+```sh
+node scripts/benchmark-browser.mjs --reading --output target/performance/reading-sync/reading-browser.json
+PKG_CONFIG=/usr/bin/pkg-config cargo test --release --locked -p app --lib --no-run
+HESSION_PRIVATE_SYNC_BENCH_OUTPUT=target/performance/reading-sync/private-after.json target/release/deps/app_lib-<hash> --exact device_sync::performance::private_sync_performance --ignored --nocapture --test-threads=1
+HESSION_REFRESH_BENCH_OUTPUT=target/performance/reading-sync/refresh.json target/release/deps/app_lib-<hash> --exact commands::query_tests::conditional_transcript_performance --ignored --nocapture --test-threads=1
+```
+
+Use the executable path printed by Cargo. Preserve that executable and the
+baseline before timing; run these probes alone. The reading browser probe mounts
+the production App with synthetic IPC, verifies focus/scroll/DOM preservation,
+100 keyboard width adjustments without transcript mutations or reloads, and
+390 px conversation/list navigation. It saves normal, focused light/dark, and
+phone screenshots beside the report. It makes no native WebKit timing claim.
+Private-sync timings cover projection, initial/edited encryption capture, and
+quiet capture at 1k/10k events, with digest parity and outbox assertions. They
+exclude network latency. The refresh probe compares a full 500-entry projection
+and its unchanged-token response against the same 10k-entry library.
+
 The browser probe needs Chrome (`--chrome` selects its executable). It builds the
-production tool component from tracked source in a temporary directory, uses a
+production tool component from repository source in a temporary directory, uses a
 fresh browser profile, and measures collapsed-card React commits and additional
 retained heap after GC. Input strings are excluded from that heap difference.
 The native probes isolate HOME, XDG, and agent roots; they generate 1k/10k/100k

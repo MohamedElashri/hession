@@ -38,9 +38,13 @@ export default function DeviceSyncSettings({ onLibraryChanged, onBusyChange, onH
   }, [busy, onBusyChange]);
   useEffect(() => {
     if (busy !== 'sync') return;
-    let active = true;
+    let active = true, reading = false;
     const timer = window.setInterval(() => {
-      api('get_device_sync_settings').then(value => { if (active) setSettings(value); }).catch(() => {});
+      if (reading || document.hidden) return;
+      reading = true;
+      api('get_device_sync_status').then(status => {
+        if (active) setSettings(current => JSON.stringify(current?.status) === JSON.stringify(status) ? current : { ...current, status });
+      }).catch(() => {}).finally(() => { reading = false; });
     }, 800);
     return () => { active = false; window.clearInterval(timer); };
   }, [busy]);

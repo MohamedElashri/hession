@@ -15,6 +15,7 @@ pub mod projects;
 pub mod reader;
 pub mod search;
 pub mod service;
+pub mod session_changes;
 pub mod session_kind;
 pub mod sessions;
 pub mod source;

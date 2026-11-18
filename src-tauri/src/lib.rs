@@ -103,6 +103,7 @@ pub fn run() {
             continuation::list_continuation_packages,
             continuation::cleanup_continuation_packages,
             device_sync::get_device_sync_settings,
+            device_sync::get_device_sync_status,
             device_sync::preview_device_sync,
             device_sync::test_device_sync_relay,
             device_sync::setup_device_sync,
