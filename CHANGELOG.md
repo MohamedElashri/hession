@@ -4,6 +4,9 @@
 
 ### Improved
 
+- Release late export previews, serialize cleanup, and coalesce pending cancel
+  requests; retain indexing preference and notification errors until recovery.
+- Observe valid library revisions even when the accompanying health read fails.
 - Preserve unchanged Live rows and cursors without repainting the retained window;
   count repeated event IDs once and avoid repeated serialization within a delta.
 - Share indexing startup and pause/resume work, coalesce event and revision

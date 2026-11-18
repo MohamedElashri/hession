@@ -88,3 +88,59 @@ test('a completed save wins a concurrent cancellation without claiming the archi
   await act(async () => finish(saved)); await screen.findByRole('heading', { name: 'Project archive saved' });
   expect(screen.queryByRole('alert')).toBeNull(); expect(screen.getByRole('button', { name: 'Done' })).toBeTruthy();
 });
+
+test.each(['close', 'cancel'])('waiting for old cleanup cannot start a new preview after %s', async action => {
+  const user=userEvent.setup();const view=render(<ProjectExportDialog project={project} onClose={vi.fn()}/>);await prepare(user);
+  let finishRelease;
+  api.mockImplementation((command,args)=>command==='release_project_archive'?new Promise(resolve=>{finishRelease=resolve;}):Promise.resolve(handler(command,args)));
+  await user.click(screen.getByRole('checkbox',{name:'Include tool inputs and outputs'}));
+  await waitFor(()=>expect(finishRelease).toBeTypeOf('function'));
+  await user.click(screen.getByRole('button',{name:'Prepare preview'}));
+  expect(calls('prepare_project_archive')).toHaveLength(1);
+  if(action==='close') view.unmount();
+  else await user.click(screen.getByRole('button',{name:'Cancel export'}));
+  await act(async()=>finishRelease());
+  expect(calls('prepare_project_archive')).toHaveLength(1);
+  if(action==='cancel') {
+    await screen.findByText('Project preview cancelled. No archive was saved.');
+    expect(screen.getByRole('button',{name:'Save reviewed ZIP'}).disabled).toBe(true);
+  }
+});
+test('repeated cancellation shares one pending native request', async()=>{
+  const user=userEvent.setup();let finishPreview,finishCancel;
+  api.mockImplementation((command,args)=>command==='prepare_project_archive'?new Promise(resolve=>{finishPreview=()=>resolve({jobId:args.jobId,preview});})
+    :command==='cancel_project_archive'?new Promise(resolve=>{finishCancel=resolve;}):Promise.resolve(handler(command,args)));
+  render(<ProjectExportDialog project={project} onClose={vi.fn()}/>);
+  await user.click(screen.getByRole('button',{name:'Choose destination'}));await user.click(screen.getByRole('button',{name:'Prepare preview'}));
+  const button=screen.getByRole('button',{name:'Cancel export'});
+  await act(async()=>{for(let n=0;n<20;n++)fireEvent.click(button);});
+  expect(calls('cancel_project_archive')).toHaveLength(1);
+  await act(async()=>finishCancel(true));await act(async()=>finishPreview());
+  await screen.findByText('Project preview cancelled. No archive was saved.');
+  expect(calls('write_project_archive')).toHaveLength(0);
+});
+test('late native admission is released even if closing cleanup ran before admission',async()=>{
+  const user=userEvent.setup();let finish;
+  api.mockImplementation((command,args)=>command==='prepare_project_archive'?new Promise(resolve=>{finish=()=>resolve({jobId:args.jobId,preview});})
+    :command==='release_project_archive'?Promise.reject(Error('Not admitted yet')):Promise.resolve(handler(command,args)));
+  const view=render(<ProjectExportDialog project={project} onClose={vi.fn()}/>);
+  await user.click(screen.getByRole('button',{name:'Choose destination'}));await user.click(screen.getByRole('button',{name:'Prepare preview'}));
+  const id=calls('prepare_project_archive')[0][1].jobId;view.unmount();
+  await waitFor(()=>expect(calls('release_project_archive')).toHaveLength(1));
+  await act(async()=>finish());
+  expect(calls('release_project_archive').map(([,args])=>args.jobId)).toEqual([id,id]);
+  expect(calls('write_project_archive')).toHaveLength(0);
+});
+test('a late cancellation response cannot replace a newer preview status',async()=>{
+  const user=userEvent.setup();const previews=[];let finishCancel;
+  api.mockImplementation((command,args)=>command==='prepare_project_archive'?new Promise(resolve=>previews.push(()=>resolve({jobId:args.jobId,preview})))
+    :command==='cancel_project_archive'?new Promise(resolve=>{finishCancel=resolve;}):Promise.resolve(handler(command,args)));
+  render(<ProjectExportDialog project={project} onClose={vi.fn()}/>);
+  await user.click(screen.getByRole('button',{name:'Choose destination'}));await user.click(screen.getByRole('button',{name:'Prepare preview'}));
+  await user.click(screen.getByRole('button',{name:'Cancel export'}));await act(async()=>previews[0]());
+  await screen.findByText('Project preview cancelled. No archive was saved.');
+  await user.click(screen.getByRole('button',{name:'Prepare preview'}));await act(async()=>finishCancel(false));
+  expect(screen.queryByText('The archive is already saved; finishing…')).toBeNull();
+  await act(async()=>previews[1]());await screen.findByText('Reviewed selection');
+  expect(screen.getByRole('button',{name:'Save reviewed ZIP'}).disabled).toBe(false);
+});

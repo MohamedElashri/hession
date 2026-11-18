@@ -11,6 +11,7 @@ export default function useIndexing({ ready, onChanged }) {
   });
   const [status, setStatus] = useState({ phase: 'stopped', mayBeStale: true });
   const [error, setError] = useState('');
+  const [preferenceError, setPreferenceError] = useState(''), [notificationError, setNotificationError] = useState('');
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const started = useRef(false), starting = useRef(null), currentEnabled = useRef(enabled), change = useRef(onChanged);
@@ -69,12 +70,12 @@ export default function useIndexing({ ready, onChanged }) {
       const control = controlEpoch.current;
       try {
         const results = await Promise.allSettled([api('indexing_status'), api('observed_library_revision')]);
-        const failed = results.find(result => result.status === 'rejected');
-        if (failed) throw failed.reason;
-        const [next, current] = results.map(result => result.value);
+        const [health, version] = results;
         if (active) {
+          if (health.status === 'fulfilled' && control === controlEpoch.current && !starting.current) setStatus(health.value);
+          if (version.status === 'rejected') throw version.reason;
+          const current = version.value;
           if (typeof current?.identity !== 'string' || !current.identity || !Number.isSafeInteger(current?.revision) || current.revision < 0) throw new Error('Invalid library revision');
-          if (control === controlEpoch.current && !starting.current) setStatus(next);
           const token = JSON.stringify([current.identity, current.revision]);
           if (revision.current !== token) {
             await change.current?.();
@@ -93,19 +94,22 @@ export default function useIndexing({ ready, onChanged }) {
       if (!active) return;
       dirty = true;
       if (!timer) timer = setTimeout(() => { timer = null; poll(); }, 750);
-    }).then(stop => { if (active) unlisten = stop; else stop(); }).catch(e => { if (active) setError(e.message); });
+    }).then(stop => { if (active) { unlisten = stop; setNotificationError(''); } else stop(); }).catch(e => { if (active) setNotificationError(e.message || 'Live notifications are unavailable; polling continues.'); });
     return () => {
       active = false; clearInterval(interval); clearTimeout(timer); unlisten?.();
       if (ownership.resume === resume) ownership.resume = null;
     };
-  }, [available, ready]);
+  }, [available, ready, attempt]);
+  const persist = useCallback(value => {
+    try { localStorage.setItem(storageKey('background-indexing'), String(value)); setPreferenceError(''); }
+    catch { setPreferenceError('Could not save the automatic indexing preference.'); }
+  }, []);
   const toggle = useCallback(() => {
     const next = !currentEnabled.current;
     currentEnabled.current = next;
-    try { localStorage.setItem(storageKey('background-indexing'), String(next)); }
-    catch { setError('Could not save the automatic indexing preference.'); }
+    persist(next);
     setEnabled(next);
-  }, []);
-  const retry = useCallback(() => setAttempt(value => value + 1), []);
-  return { available, enabled, status, error, busy, toggle, retry };
+  }, [persist]);
+  const retry = useCallback(() => { persist(currentEnabled.current); setAttempt(value => value + 1); }, [persist]);
+  return { available, enabled, status, error: [...new Set([error, preferenceError, notificationError].filter(Boolean))].join(' '), busy, toggle, retry };
 }

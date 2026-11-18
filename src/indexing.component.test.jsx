@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { act, fireEvent, render, renderHook, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { listen } from '@tauri-apps/api/event';
 import { api, hasTauriRuntime } from './api.js';
 import useIndexing from './useIndexing.js';
 import IndexingControl from './components/IndexingControl.jsx';
@@ -230,4 +231,38 @@ test('failed controls release admission and can retry without claiming a pause',
   expect(hook.result.current.busy).toBe(false);
   fail=false;await act(async()=>hook.result.current.retry());
   expect(hook.result.current.status.phase).toBe('paused');expect(hook.result.current.error).toBe('');
+});
+
+test('a successful native pause cannot hide a failed preference save and retry persists it', async () => {
+  const hook=renderHook(()=>useIndexing({ready:true}));await act(async()=>{});
+  const persist=localStorage.setItem;
+  localStorage.setItem=()=>{throw Error('Storage full');};
+  await act(async()=>hook.result.current.toggle());
+  expect(hook.result.current.status.phase).toBe('paused');
+  expect(hook.result.current.error).toContain('Could not save');
+  expect(hook.result.current.busy).toBe(false);
+  localStorage.setItem=persist;
+  await act(async()=>hook.result.current.retry());
+  expect(localStorage.getItem(storageKey('background-indexing'))).toBe('false');
+  expect(hook.result.current.error).toBe('');
+});
+test('notification admission failures survive successful controls and retry reconnects', async () => {
+  listen.mockRejectedValueOnce(Error('No event host'));
+  const hook=renderHook(()=>useIndexing({ready:true}));await act(async()=>{});
+  expect(hook.result.current.error).toBe('No event host');
+  await act(async()=>hook.result.current.toggle());
+  expect(hook.result.current.status.phase).toBe('paused');
+  expect(hook.result.current.error).toBe('No event host');
+  await act(async()=>hook.result.current.retry());
+  expect(hook.result.current.error).toBe('');expect(events.callback).toBeTypeOf('function');
+});
+test('failed health reads do not discard valid library revisions', async () => {
+  let revision=1;const normal=api.getMockImplementation();
+  api.mockImplementation((command,args)=>command==='indexing_status'?Promise.reject(Error('Status unavailable'))
+    :command==='observed_library_revision'?Promise.resolve({identity:'fixture',revision}):normal(command,args));
+  const changed=vi.fn();const hook=renderHook(()=>useIndexing({ready:true,onChanged:changed}));
+  await act(async()=>vi.advanceTimersByTimeAsync(6000));
+  expect(changed).toHaveBeenCalledOnce();expect(hook.result.current.status.phase).toBe('active');
+  revision=2;await act(async()=>vi.advanceTimersByTimeAsync(3000));
+  expect(changed).toHaveBeenCalledTimes(2);
 });
