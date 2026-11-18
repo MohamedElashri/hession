@@ -12,6 +12,8 @@ For installation, see [Install](../README.md#install).
 **Refresh histories** imports new and changed local/SSH sessions. It also runs at
 startup unless disabled under **Settings → History refresh**. Its menu offers a per-agent refresh
 and **Full rescan**. Stopping keeps completed imports; original files are unchanged.
+Local histories import before SSH transfers start. Up to two remote hosts refresh
+at once; unavailable hosts retain their last successful mirror.
 
 Hession also indexes **local** changes automatically while its desktop window is
 open. Pause or resume it in the sidebar or **Settings → History refresh**. This
@@ -116,6 +118,25 @@ full history. Polling and local change notifications are coalesced, so rapid
 updates do not queue unlimited requests. Live requires the desktop SQLite
 service; browser preview shows recorded sample data and does not monitor native stores.
 
+## Focus mode and panel sizes
+
+Open a conversation and choose **Focus mode** above it, or press
+**Cmd/Ctrl+Shift+F**. Navigation, the session list, filters, session details, and
+view controls collapse around the conversation. **Exit focus** or **Escape**
+restores your layout. Transcript pagination and conversation search remain
+available. Focus mode keeps your current transcript page and scroll position.
+
+Choose **Layout** beside the focus button to hide individual panels and bars,
+change navigation/list/reading widths, or use all available reading width. Drag
+the dividers beside navigation and the session list to resize them. Focus a
+divider with Tab and use **Left/Right** for 10 px steps, **Shift+Left/Right** for
+50 px, or **Home/End** for the minimum/maximum. Double-click a divider to restore
+its default width. **Reset layout** restores all defaults.
+
+Panel sizes and visibility are saved on this computer. Focus mode starts off
+when you reopen Hession. On narrow windows, selecting a session opens its
+conversation; **Browse sessions** returns to the list.
+
 ## Keyboard navigation
 
 Open **Commands** in the sidebar or press **Cmd+K** on macOS / **Ctrl+K** on Linux.
@@ -135,10 +156,11 @@ current reference, including platform-specific modifier labels.
 | Cmd/Ctrl+, | Open Settings |
 | Cmd/Ctrl+Shift+L | Focus the session list |
 | Cmd/Ctrl+Shift+T | Focus the transcript for scrolling |
+| Cmd/Ctrl+Shift+F | Enter/exit focus mode |
 | j/k or ↓/↑ | Move focus in the session list; Enter opens the focused session |
 | Home/End | Focus the first/last session while in the list |
 | ? | Show keyboard shortcuts |
-| Escape | Dismiss a menu or dialog when its operation permits |
+| Escape | Dismiss a menu or dialog, or leave focus mode |
 
 Tab reaches the sidebar, session list, transcript, and their controls. In the
 sidebar, ↑/↓ and Home/End move between navigation buttons. Once the transcript

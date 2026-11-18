@@ -10,8 +10,8 @@ use chacha20poly1305::{
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::OnceLock;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use std::{borrow::Cow, io::Write, sync::OnceLock};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_PLAINTEXT: usize = 2 * 1024 * 1024;
@@ -80,6 +80,10 @@ pub fn digest(parts: &[&[u8]]) -> String {
 
 /// Best-effort defense in depth, never a promise to detect every secret.
 pub fn redact(value: &str) -> String {
+    redact_text(value).into_owned()
+}
+
+fn redact_text(value: &str) -> Cow<'_, str> {
     static PATTERNS: OnceLock<Vec<regex::Regex>> = OnceLock::new();
     let patterns = PATTERNS.get_or_init(|| [
         r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
@@ -87,9 +91,61 @@ pub fn redact(value: &str) -> String {
         r"(?i)\b(?:authorization\s*:\s*bearer\s+)[A-Za-z0-9._~+/=-]+",
         r#"(?im)\b(?:api[_-]?key|access[_-]?token|secret[_-]?key|password)\s*[:=]\s*["']?[^\s"',;]{8,}"#,
     ].iter().map(|p| regex::Regex::new(p).expect("fixed redaction regex")).collect());
-    patterns.iter().fold(value.to_owned(), |s, p| {
-        p.replace_all(&s, "[REDACTED]").into_owned()
-    })
+    let mut text = Cow::Borrowed(value);
+    for pattern in patterns {
+        if let Cow::Owned(redacted) = pattern.replace_all(text.as_ref(), "[REDACTED]") {
+            text = Cow::Owned(redacted);
+        }
+    }
+    text
+}
+
+/// Keep the original allocation when no credential pattern matches.
+pub fn redact_owned(value: String) -> String {
+    match redact_text(&value) {
+        Cow::Borrowed(_) => value,
+        Cow::Owned(redacted) => redacted,
+    }
+}
+
+/// Hash the exact compact JSON representation without allocating a second copy
+/// of an entire portable conversation.
+pub fn serialized_digest(value: &impl Serialize) -> Result<String, String> {
+    struct Counter(u64);
+    impl Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len() as u64;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    struct HashWriter<'a>(&'a mut Sha256);
+    impl Write for HashWriter<'_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    // The v1 digest prefixes each part with its byte length. Count the exact
+    // JSON bytes first to preserve existing revision identities and wire data.
+    let mut count = Counter(0);
+    serde_json::to_writer(&mut count, value).map_err(|_| "Could not serialize portable session")?;
+    let mut hash = Sha256::new();
+    hash.update(count.0.to_be_bytes());
+    {
+        let mut writer = std::io::BufWriter::with_capacity(16 * 1024, HashWriter(&mut hash));
+        serde_json::to_writer(&mut writer, value)
+            .map_err(|_| "Could not serialize portable session")?;
+        writer
+            .flush()
+            .map_err(|_| "Could not serialize portable session")?;
+    }
+    Ok(format!("{:x}", hash.finalize()))
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -280,25 +336,63 @@ pub struct SnapshotChunk {
 }
 
 pub fn chunks(snapshot: &Snapshot) -> Result<Vec<SnapshotChunk>, String> {
+    Ok(chunk_stream(snapshot)?.collect())
+}
+
+/// Yield one protocol chunk at a time instead of retaining all base64 chunks
+/// alongside the serialized snapshot. The private plaintext buffer is wiped.
+pub struct ChunkStream {
+    bytes: Zeroizing<Vec<u8>>,
+    snapshot_id: String,
+    index: usize,
+    total: u32,
+}
+impl Iterator for ChunkStream {
+    type Item = SnapshotChunk;
+    fn next(&mut self) -> Option<Self::Item> {
+        let start = self.index * CHUNK_BYTES;
+        if start >= self.bytes.len() {
+            return None;
+        }
+        let index = self.index as u32;
+        self.index += 1;
+        Some(SnapshotChunk {
+            version: 1,
+            snapshot_id: self.snapshot_id.clone(),
+            index,
+            total: self.total,
+            data: STANDARD.encode(&self.bytes[start..(start + CHUNK_BYTES).min(self.bytes.len())]),
+        })
+    }
+}
+
+pub fn chunk_stream(snapshot: &Snapshot) -> Result<ChunkStream, String> {
     if snapshot.version != PROTOCOL_VERSION || !valid_identifier(&snapshot.revision_id, true) {
         return Err("Unsupported snapshot version or invalid revision identity".into());
     }
-    let bytes = serde_json::to_vec(snapshot).map_err(|_| "Could not encode session snapshot")?;
-    if bytes.len() > MAX_SNAPSHOT_BYTES {
-        return Err("Session exceeds the 128 MiB snapshot limit. Exclude it from sync.".into());
+    struct Bounded(Zeroizing<Vec<u8>>);
+    impl Write for Bounded {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > MAX_SNAPSHOT_BYTES.saturating_sub(self.0.len()) {
+                return Err(std::io::Error::other("Snapshot exceeds limit"));
+            }
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
-    let total = bytes.len().div_ceil(CHUNK_BYTES) as u32;
-    Ok(bytes
-        .chunks(CHUNK_BYTES)
-        .enumerate()
-        .map(|(i, b)| SnapshotChunk {
-            version: 1,
-            snapshot_id: snapshot.revision_id.clone(),
-            index: i as u32,
-            total,
-            data: STANDARD.encode(b),
-        })
-        .collect())
+    let mut buffer = Bounded(Zeroizing::new(Vec::new()));
+    serde_json::to_writer(&mut buffer, snapshot)
+        .map_err(|_| "Session exceeds the 128 MiB snapshot limit. Exclude it from sync.")?;
+    let total = buffer.0.len().div_ceil(CHUNK_BYTES) as u32;
+    Ok(ChunkStream {
+        bytes: buffer.0,
+        snapshot_id: snapshot.revision_id.clone(),
+        index: 0,
+        total,
+    })
 }
 
 impl SnapshotChunk {
@@ -594,5 +688,26 @@ mod tests {
         invalid.version = 1;
         invalid.revision_id.clear();
         assert!(chunks(&invalid).is_err());
+    }
+    #[test]
+    fn streamed_digest_and_chunks_preserve_v1_bytes_and_owned_redaction() {
+        for text in ["", "hello", "🦀 café\n\"\\\0"] {
+            let value = snapshot(text.repeat(10000));
+            let bytes = serde_json::to_vec(&value).unwrap();
+            assert_eq!(serialized_digest(&value).unwrap(), digest(&[&bytes]));
+            let streamed: Vec<u8> = chunk_stream(&value)
+                .unwrap()
+                .flat_map(|chunk| chunk.bytes().unwrap())
+                .collect();
+            assert_eq!(streamed, bytes);
+        }
+        let unchanged = String::from("ordinary recorded conversation");
+        let allocation = unchanged.as_ptr();
+        let result = redact_owned(unchanged);
+        assert_eq!(result.as_ptr(), allocation);
+        let secret =
+            "password=long-secret-value Authorization: Bearer abcdefghijklmnop sk-abcdefghijklmnop";
+        assert_eq!(redact_owned(secret.to_owned()), redact(secret));
+        assert!(!redact_owned(secret.to_owned()).contains("long-secret"));
     }
 }

@@ -10,8 +10,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::HashSet,
     fs,
-    io::{Read, Write},
+    io::{BufRead, Read, Seek, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -21,6 +22,10 @@ use std::{
 };
 use tauri::State;
 use zeroize::Zeroizing;
+
+#[cfg(test)]
+#[path = "device_sync_benchmark.rs"]
+mod performance;
 
 const SETTINGS_FILE: &str = "device-sync.json";
 const SERVICE: &str = "sh.hession.private-sync";
@@ -316,6 +321,11 @@ fn settings(path: &Path) -> Result<Value, String> {
 }
 
 #[tauri::command]
+pub fn get_device_sync_status() -> Value {
+    json!(progress().lock().unwrap_or_else(|e| e.into_inner()).clone())
+}
+
+#[tauri::command]
 pub async fn get_device_sync_settings(state: State<'_, AppState>) -> Result<Value, String> {
     let path = path_of(&state)?;
     tauri::async_runtime::spawn_blocking(move || settings(&path))
@@ -582,13 +592,18 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         CREATE TABLE IF NOT EXISTS replication_revision(revision_id TEXT PRIMARY KEY,portable_id TEXT NOT NULL,parent_revision TEXT,content_digest TEXT NOT NULL,local_session_id INTEGER);
         CREATE TABLE IF NOT EXISTS replication_outbox(record_id TEXT PRIMARY KEY,vault_id TEXT NOT NULL,revision_id TEXT NOT NULL,record_json TEXT NOT NULL,workspace TEXT NOT NULL DEFAULT '');
         CREATE TABLE IF NOT EXISTS replication_checkpoint(vault_id TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS replication_publication(vault_id TEXT NOT NULL,local_session_id INTEGER NOT NULL,digest TEXT NOT NULL,revision_id TEXT NOT NULL,PRIMARY KEY(vault_id,local_session_id));
+        CREATE TABLE IF NOT EXISTS replication_publication(vault_id TEXT NOT NULL,local_session_id INTEGER NOT NULL,digest TEXT NOT NULL,revision_id TEXT NOT NULL,capture_token TEXT,PRIMARY KEY(vault_id,local_session_id));
         CREATE TABLE IF NOT EXISTS replication_chunk(vault_id TEXT NOT NULL,snapshot_id TEXT NOT NULL,part INTEGER NOT NULL,total INTEGER NOT NULL,data BLOB NOT NULL,writer_id TEXT NOT NULL,PRIMARY KEY(vault_id,snapshot_id,part));"))?;
     let has_workspace:bool=sql(conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('replication_outbox') WHERE name='workspace')",[],|r|r.get(0)))?;
     if !has_workspace {
         sql(conn.execute_batch(
             "ALTER TABLE replication_outbox ADD COLUMN workspace TEXT NOT NULL DEFAULT '';",
         ))?;
+    }
+    let has_token: bool = sql(conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('replication_publication') WHERE name='capture_token')", [], |r| r.get(0)))?;
+    if !has_token {
+        sql(conn
+            .execute_batch("ALTER TABLE replication_publication ADD COLUMN capture_token TEXT;"))?;
     }
     Ok(())
 }
@@ -684,10 +699,11 @@ fn reset_checkpoint(path: &Path) -> Result<Value, String> {
 fn workspace_sessions(conn: &Connection, scope: &[String]) -> Result<Vec<i64>, String> {
     let mut statement = sql(conn.prepare("SELECT s.id,COALESCE(w.path,s.cwd,'') FROM session s LEFT JOIN workspace w ON w.id=s.workspace_id ORDER BY s.id"))?;
     let rows = sql(statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))))?;
+    let selected: HashSet<&str> = scope.iter().map(String::as_str).collect();
     let mut ids = Vec::new();
     for row in rows {
         let (id, workspace) = sql(row)?;
-        if scope.contains(&workspace) {
+        if selected.contains(workspace.as_str()) {
             ids.push(id);
         }
     }
@@ -731,25 +747,27 @@ fn content(conn: &Connection, id: i64) -> Result<SessionContent, String> {
     })))?;
     let context:Option<RecordedContext>=sql(conn.query_row("SELECT c.branch,c.commit_sha,m.provider,m.model_key FROM session_context c LEFT JOIN model m ON m.id=c.model_id WHERE c.session_id=? ORDER BY c.id DESC LIMIT 1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional())?;
     if let Some((branch, commit, provider, model)) = context {
-        value.branch = branch.map(|s| hession_sync::redact(&s));
-        value.commit_sha = commit.map(|s| hession_sync::redact(&s));
-        value.model_provider = provider.map(|s| hession_sync::redact(&s));
-        value.model_key = model.map(|s| hession_sync::redact(&s));
+        value.branch = branch.map(hession_sync::redact_owned);
+        value.commit_sha = commit.map(hession_sync::redact_owned);
+        value.model_provider = provider.map(hession_sync::redact_owned);
+        value.model_key = model.map(hession_sync::redact_owned);
     }
-    value.title = hession_sync::redact(&value.title);
-    value.cwd = hession_sync::redact(&value.cwd);
+    value.title = hession_sync::redact_owned(value.title);
+    value.cwd = hession_sync::redact_owned(value.cwd);
     let mut statement = sql(conn.prepare(
         "SELECT label FROM session_tag WHERE session_id=? ORDER BY label COLLATE NOCASE",
     ))?;
     value.tags = sql(sql(statement.query_map([id], |r| r.get::<_, String>(0)))?
         .collect::<rusqlite::Result<Vec<_>>>())?
     .into_iter()
-    .map(|s| hession_sync::redact(&s))
+    .map(hession_sync::redact_owned)
     .collect();
     let mut statement = sql(conn.prepare(
         "SELECT id,ordinal,kind,role,occurred_at FROM entry WHERE session_id=? ORDER BY ordinal",
     ))?;
     let mut rows = sql(statement.query([id]))?;
+    let mut texts = sql(conn.prepare_cached("SELECT text FROM content_part WHERE entry_id=? AND kind='text' AND text IS NOT NULL ORDER BY ordinal"))?;
+    let mut tools_statement = sql(conn.prepare_cached("SELECT tool_name,status,exit_code FROM tool_invocation WHERE session_id=? AND entry_id=? ORDER BY id"))?;
     while let Some(row) = sql(rows.next())? {
         let entry_id: i64 = sql(row.get(0))?;
         let role: Option<String> = sql(row.get(3))?;
@@ -762,16 +780,21 @@ fn content(conn: &Connection, id: i64) -> Result<SessionContent, String> {
         {
             continue;
         }
-        let mut texts = sql(conn.prepare("SELECT text FROM content_part WHERE entry_id=? AND kind='text' AND text IS NOT NULL ORDER BY ordinal"))?;
         let text = if matches!(role.as_deref(), Some("user" | "assistant")) {
-            sql(sql(texts.query_map([entry_id], |r| r.get::<_, String>(0)))?
-                .collect::<rusqlite::Result<Vec<_>>>())?
-            .join("\n")
+            let mut parts = sql(texts.query([entry_id]))?;
+            let mut text = match sql(parts.next())? {
+                Some(part) => sql(part.get::<_, String>(0))?,
+                None => String::new(),
+            };
+            while let Some(part) = sql(parts.next())? {
+                text.push('\n');
+                text.push_str(&sql(part.get::<_, String>(0))?);
+            }
+            text
         } else {
             String::new()
         };
-        let mut tools = sql(conn.prepare("SELECT tool_name,status,exit_code FROM tool_invocation WHERE session_id=? AND entry_id=? ORDER BY id"))?;
-        let tools = sql(sql(tools.query_map(params![id, entry_id], |r| {
+        let tools = sql(sql(tools_statement.query_map(params![id, entry_id], |r| {
             Ok(hession_sync::Tool {
                 name: r.get(0)?,
                 status: r.get(1)?,
@@ -790,7 +813,7 @@ fn content(conn: &Connection, id: i64) -> Result<SessionContent, String> {
             kind,
             role,
             occurred_at: sql(row.get(4))?,
-            text: hession_sync::redact(&text),
+            text: hession_sync::redact_owned(text),
             tools,
         });
         if value.events.len() > 200_000 {
@@ -801,9 +824,7 @@ fn content(conn: &Connection, id: i64) -> Result<SessionContent, String> {
 }
 
 fn content_digest(value: &SessionContent) -> Result<String, String> {
-    Ok(hession_sync::digest(&[
-        &serde_json::to_vec(value).map_err(|_| "Could not serialize portable session")?
-    ]))
+    hession_sync::serialized_digest(value)
 }
 
 fn identity(
@@ -830,11 +851,72 @@ fn identity(
     } else {
         uuid::Uuid::new_v4().to_string()
     };
-    sql(conn.execute(
-        "INSERT INTO replication_identity(local_session_id,portable_id) VALUES(?,?)",
-        params![id, portable],
-    ))?;
     Ok((portable, None, None))
+}
+
+// Keep small encrypted revisions in memory; larger ones spill ciphertext only.
+// The memory buffer never contains serialized portable plaintext or keys.
+#[derive(Default)]
+struct CiphertextStage {
+    memory: Vec<u8>,
+    disk: Option<std::io::BufWriter<fs::File>>,
+}
+impl CiphertextStage {
+    const MEMORY_LIMIT: usize = 4 * 1024 * 1024;
+    fn push(&mut self, record: &RelayRecord) -> Result<(), String> {
+        let encoded =
+            serde_json::to_vec(record).map_err(|_| "Could not stage encrypted sync records")?;
+        if self.disk.is_none()
+            && self
+                .memory
+                .len()
+                .saturating_add(encoded.len())
+                .saturating_add(1)
+                > Self::MEMORY_LIMIT
+        {
+            let file = tempfile::NamedTempFile::new()
+                .map_err(|_| "Could not stage encrypted sync records")?
+                .into_file();
+            let mut writer = std::io::BufWriter::new(file);
+            writer
+                .write_all(&self.memory)
+                .map_err(|_| "Could not stage encrypted sync records")?;
+            self.memory = Vec::new();
+            self.disk = Some(writer);
+        }
+        if let Some(writer) = self.disk.as_mut() {
+            writer
+                .write_all(&encoded)
+                .and_then(|_| writer.write_all(b"\n"))
+                .map_err(|_| "Could not stage encrypted sync records")?;
+        } else {
+            // Avoid geometric capacity growth beyond the small-record budget.
+            self.memory
+                .try_reserve_exact(encoded.len() + 1)
+                .map_err(|_| "Could not buffer encrypted sync records")?;
+            self.memory.extend_from_slice(&encoded);
+            self.memory.push(b'\n');
+        }
+        Ok(())
+    }
+    fn reader(self) -> Result<Box<dyn BufRead>, String> {
+        if let Some(writer) = self.disk {
+            let mut file = writer
+                .into_inner()
+                .map_err(|_| "Could not finish encrypted sync staging")?;
+            file.rewind()
+                .map_err(|_| "Could not read encrypted sync staging")?;
+            Ok(Box::new(std::io::BufReader::new(file)))
+        } else {
+            Ok(Box::new(std::io::Cursor::new(self.memory)))
+        }
+    }
+}
+
+// Include the portable/redaction policy in cache keys. A policy change must
+// recapture even when no database row changed.
+fn capture_token(conn: &Connection, id: i64) -> Option<String> {
+    hession_core::session_changes::token(conn, id).map(|token| format!("portable-v1:{token}"))
 }
 
 fn capture(
@@ -844,8 +926,146 @@ fn capture(
     expected_epoch: i64,
 ) -> Result<(), String> {
     let conn = db::open_db(path).map_err(|e| e.to_string())?;
-    let ids = workspace_sessions(&conn, &config.scope)?;
-    for id in ids {
+    for id in workspace_sessions(&conn, &config.scope)? {
+        let mut completed = false;
+        for _ in 0..3 {
+            check_cancel(path)?;
+            hession_core::indexing::check_epoch(&conn, expected_epoch)?;
+            let read = sql(conn.unchecked_transaction())?;
+            let Some(token) = capture_token(&read, id) else {
+                drop(read);
+                capture_untracked(path, config, key, expected_epoch, id)?;
+                completed = true;
+                break;
+            };
+            let sent: Option<(String, Option<String>)> = sql(read.query_row(
+                "SELECT digest,capture_token FROM replication_publication WHERE vault_id=? AND local_session_id=?",
+                params![config.vault_id,id], |r| Ok((r.get(0)?,r.get(1)?))).optional())?;
+            if sent.as_ref().and_then(|s| s.1.as_deref()) == Some(token.as_str()) {
+                completed = true;
+                break;
+            }
+            let value = content(&read, id)?;
+            let digest = content_digest(&value)?;
+            let already_sent = sent.as_ref().is_some_and(|s| s.0 == digest);
+            let existing: Option<(String, Option<String>, Option<String>)> = sql(read.query_row(
+                "SELECT portable_id,head_revision,digest FROM replication_identity WHERE local_session_id=?",
+                [id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional())?;
+            let (portable, head, old_digest) = identity(&read, id)?;
+            let same = old_digest.as_deref() == Some(&digest);
+            let revision_id = if same {
+                head.clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            };
+            let parent_revision = if same {
+                sql(read
+                    .query_row(
+                        "SELECT parent_revision FROM replication_revision WHERE revision_id=?",
+                        [&revision_id],
+                        |r| r.get::<_, Option<String>>(0),
+                    )
+                    .optional())?
+                .flatten()
+            } else {
+                head
+            };
+            let workspace: String = sql(read.query_row("SELECT COALESCE(w.path,s.cwd,'') FROM session s LEFT JOIN workspace w ON w.id=s.workspace_id WHERE s.id=?",[id],|r|r.get(0)))?;
+            // Stage ciphertext only, with a bounded memory buffer and a private
+            // automatically removed temporary file for larger revisions. Expensive projection/serialization/encryption owns no write
+            // permit and never spills portable plaintext to disk.
+            let mut staged = if already_sent {
+                None
+            } else {
+                let snapshot = Snapshot {
+                    version: 1,
+                    session_id: portable.clone(),
+                    revision_id: revision_id.clone(),
+                    parent_revision: parent_revision.clone(),
+                    content: value,
+                };
+                let mut stage = CiphertextStage::default();
+                for chunk in hession_sync::chunk_stream(&snapshot)? {
+                    check_cancel(path)?;
+                    let plaintext = Zeroizing::new(
+                        serde_json::to_vec(&chunk)
+                            .map_err(|_| "Could not encode snapshot chunk")?,
+                    );
+                    let record = hession_sync::encrypt(
+                        key,
+                        &config.vault_id,
+                        &uuid::Uuid::new_v4().to_string(),
+                        &config.device_id,
+                        &plaintext,
+                    )?;
+                    stage.push(&record)?;
+                }
+                Some(stage.reader()?)
+            };
+            drop(read);
+            check_cancel(path)?;
+            let _guard = db::background_write(&conn).map_err(|e| e.to_string())?;
+            hession_core::indexing::check_epoch(&conn, expected_epoch)?;
+            let tx = sql(conn.unchecked_transaction())?;
+            let current: Option<(String,Option<String>,Option<String>)> = sql(tx.query_row(
+                "SELECT portable_id,head_revision,digest FROM replication_identity WHERE local_session_id=?", [id], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional())?;
+            if capture_token(&tx, id).as_deref() != Some(&token) || current != existing {
+                continue; // The snapshot changed while it was being prepared.
+            }
+            if already_sent {
+                // A published equal digest needs only a cache refresh. Keep
+                // its actual revision identity, including across vault changes.
+                let updated = sql(tx.execute("UPDATE replication_publication SET capture_token=? WHERE vault_id=? AND local_session_id=? AND digest=?",params![token,config.vault_id,id,digest]))?;
+                if updated == 0 {
+                    continue;
+                }
+                sql(tx.commit())?;
+                completed = true;
+                break;
+            }
+            if let Some(file) = staged.take() {
+                let mut insert = sql(tx.prepare_cached("INSERT INTO replication_outbox(record_id,vault_id,revision_id,record_json,workspace) VALUES(?,?,?,?,?)"))?;
+                for line in file.lines() {
+                    check_cancel(path)?;
+                    let line = line.map_err(|_| "Could not read encrypted sync staging")?;
+                    let record: RelayRecord = serde_json::from_str(&line)
+                        .map_err(|_| "Invalid staged encrypted record")?;
+                    sql(insert.execute(params![
+                        record.id,
+                        config.vault_id,
+                        revision_id,
+                        line,
+                        workspace
+                    ]))?;
+                }
+                sql(tx.execute("INSERT OR IGNORE INTO replication_revision(revision_id,portable_id,parent_revision,content_digest,local_session_id) VALUES(?,?,?,?,?)",params![revision_id,portable,parent_revision,digest,id]))?;
+                sql(tx.execute("INSERT INTO replication_identity(local_session_id,portable_id,head_revision,digest) VALUES(?,?,?,?) ON CONFLICT(local_session_id) DO UPDATE SET head_revision=excluded.head_revision,digest=excluded.digest",params![id,portable,revision_id,digest]))?;
+            }
+            sql(tx.execute("INSERT INTO replication_publication(vault_id,local_session_id,digest,revision_id,capture_token) VALUES(?,?,?,?,?) ON CONFLICT(vault_id,local_session_id) DO UPDATE SET digest=excluded.digest,revision_id=excluded.revision_id,capture_token=excluded.capture_token",params![config.vault_id,id,digest,revision_id,token]))?;
+            sql(tx.commit())?;
+            completed = true;
+            break;
+        }
+        if !completed {
+            return Err(
+                "History changed repeatedly while preparing private sync. Retry when it settles."
+                    .into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn capture_untracked(
+    path: &Path,
+    config: &Config,
+    key: &LibraryKey,
+    expected_epoch: i64,
+    id: i64,
+) -> Result<(), String> {
+    let conn = db::open_db(path).map_err(|e| e.to_string())?;
+    {
         check_cancel(path)?;
         hession_core::indexing::check_epoch(&conn, expected_epoch)?;
         let _guard = db::background_write(&conn).map_err(|e| e.to_string())?;
@@ -855,7 +1075,7 @@ fn capture(
         let digest = content_digest(&value)?;
         let sent: Option<String> = sql(tx.query_row("SELECT digest FROM replication_publication WHERE vault_id=? AND local_session_id=?",params![config.vault_id,id],|r|r.get(0)).optional())?;
         if sent.as_deref() == Some(&digest) {
-            continue;
+            return Ok(());
         }
         let (portable, head, old_digest) = identity(&tx, id)?;
         let same = old_digest.as_deref() == Some(&digest);
@@ -885,7 +1105,7 @@ fn capture(
             content: value,
         };
         let workspace:String=sql(tx.query_row("SELECT COALESCE(w.path,s.cwd,'') FROM session s LEFT JOIN workspace w ON w.id=s.workspace_id WHERE s.id=?",[id],|r|r.get(0)))?;
-        for chunk in hession_sync::chunks(&snapshot)? {
+        for chunk in hession_sync::chunk_stream(&snapshot)? {
             let record = hession_sync::encrypt(
                 key,
                 &config.vault_id,
@@ -896,6 +1116,10 @@ fn capture(
             sql(tx.execute("INSERT INTO replication_outbox(record_id,vault_id,revision_id,record_json,workspace) VALUES(?,?,?,?,?)",params![record.id,config.vault_id,revision_id,serde_json::to_string(&record).map_err(|_| "Could not serialize encrypted record")?,workspace]))?;
         }
         sql(tx.execute("INSERT OR IGNORE INTO replication_revision(revision_id,portable_id,parent_revision,content_digest,local_session_id) VALUES(?,?,?,?,?)",params![revision_id,portable,parent_revision,digest,id]))?;
+        sql(tx.execute(
+            "INSERT OR IGNORE INTO replication_identity(local_session_id,portable_id) VALUES(?,?)",
+            params![id, portable],
+        ))?;
         sql(tx.execute(
             "UPDATE replication_identity SET head_revision=?,digest=? WHERE local_session_id=?",
             params![revision_id, digest, id],
@@ -1049,18 +1273,34 @@ fn apply_snapshot(conn: &Connection, value: &Snapshot, vault_id: &str) -> Result
                 params![id, tag],
             ))?;
         }
+        let mut insert_entry = sql(conn.prepare_cached("INSERT INTO entry(session_id,ordinal,kind,role,occurred_at,search_text,payload_json) VALUES(?,?,?,?,?,?,?)"))?;
+        let mut insert_part = sql(conn.prepare_cached(
+            "INSERT INTO content_part(entry_id,ordinal,kind,text) VALUES(?,0,'text',?)",
+        ))?;
+        let mut insert_tool = sql(conn.prepare_cached("INSERT INTO tool_invocation(session_id,entry_id,tool_name,status,exit_code) VALUES(?,?,?,?,?)"))?;
         for event in &value.content.events {
             let payload = json!({"role":event.role,"content":[{"type":"text","text":event.text}]});
-            sql(conn.execute("INSERT INTO entry(session_id,ordinal,kind,role,occurred_at,search_text,payload_json) VALUES(?,?,?,?,?,?,?)",params![id,event.ordinal,event.kind,event.role,event.occurred_at,event.text,payload.to_string()]))?;
+            sql(insert_entry.execute(params![
+                id,
+                event.ordinal,
+                event.kind,
+                event.role,
+                event.occurred_at,
+                event.text,
+                payload.to_string()
+            ]))?;
             let entry_id = conn.last_insert_rowid();
             if !event.text.is_empty() {
-                sql(conn.execute(
-                    "INSERT INTO content_part(entry_id,ordinal,kind,text) VALUES(?,0,'text',?)",
-                    params![entry_id, event.text],
-                ))?;
+                sql(insert_part.execute(params![entry_id, event.text]))?;
             }
             for tool in &event.tools {
-                sql(conn.execute("INSERT INTO tool_invocation(session_id,entry_id,tool_name,status,exit_code) VALUES(?,?,?,?,?)",params![id,entry_id,tool.name,tool.status,tool.exit_code]))?;
+                sql(insert_tool.execute(params![
+                    id,
+                    entry_id,
+                    tool.name,
+                    tool.status,
+                    tool.exit_code
+                ]))?;
             }
         }
         let model = match &value.content.model_key {
@@ -1080,7 +1320,7 @@ fn apply_snapshot(conn: &Connection, value: &Snapshot, vault_id: &str) -> Result
     let id = local_id.ok_or("Could not identify imported session")?;
     sql(conn.execute("INSERT INTO replication_identity(local_session_id,portable_id,head_revision,digest) VALUES(?,?,?,?) ON CONFLICT(local_session_id) DO UPDATE SET head_revision=excluded.head_revision,digest=excluded.digest",params![id,value.session_id,value.revision_id,digest]))?;
     sql(conn.execute("INSERT INTO replication_revision(revision_id,portable_id,parent_revision,content_digest,local_session_id) VALUES(?,?,?,?,?) ON CONFLICT(revision_id) DO UPDATE SET local_session_id=excluded.local_session_id",params![value.revision_id,value.session_id,value.parent_revision,digest,id]))?;
-    sql(conn.execute("INSERT INTO replication_publication(vault_id,local_session_id,digest,revision_id) VALUES(?,?,?,?) ON CONFLICT(vault_id,local_session_id) DO UPDATE SET digest=excluded.digest,revision_id=excluded.revision_id",params![vault_id,id,digest,value.revision_id]))?;
+    sql(conn.execute("INSERT INTO replication_publication(vault_id,local_session_id,digest,revision_id) VALUES(?,?,?,?) ON CONFLICT(vault_id,local_session_id) DO UPDATE SET digest=excluded.digest,revision_id=excluded.revision_id,capture_token=NULL",params![vault_id,id,digest,value.revision_id]))?;
     Ok(())
 }
 
@@ -1141,18 +1381,17 @@ fn apply_chunk(
         let mut statement = sql(conn.prepare(
             "SELECT data FROM replication_chunk WHERE vault_id=? AND snapshot_id=? ORDER BY part",
         ))?;
-        let parts = sql(sql(statement
-            .query_map(params![config.vault_id, chunk.snapshot_id], |r| {
-                r.get::<_, Vec<u8>>(0)
-            }))?
-        .collect::<rusqlite::Result<Vec<_>>>())?;
+        let mut rows = sql(statement.query(params![config.vault_id, chunk.snapshot_id]))?;
         let mut assembled = Zeroizing::new(Vec::new());
-        for part in parts {
-            assembled.extend_from_slice(&part);
-            if assembled.len() > hession_sync::MAX_SNAPSHOT_BYTES {
+        while let Some(row) = sql(rows.next())? {
+            let part = Zeroizing::new(sql(row.get::<_, Vec<u8>>(0))?);
+            if part.len() > hession_sync::MAX_SNAPSHOT_BYTES.saturating_sub(assembled.len()) {
                 return Err("Session exceeds snapshot size limit".into());
             }
+            assembled.extend_from_slice(&part);
         }
+        drop(rows);
+        drop(statement);
         let snapshot: Snapshot =
             serde_json::from_slice(&assembled).map_err(|_| "Invalid session snapshot")?;
         if snapshot.revision_id != chunk.snapshot_id {
@@ -1233,7 +1472,10 @@ fn pull(
 /// Dropped snapshots remain in the local library; clearing their publication
 /// marker lets an explicit later opt-in queue the current snapshot again.
 fn prune_outbox(conn: &Connection, config: &Config) -> Result<(), String> {
-    let selected = workspace_sessions(conn, &config.scope)?;
+    let selected: HashSet<i64> = workspace_sessions(conn, &config.scope)?
+        .into_iter()
+        .collect();
+    let scope: HashSet<&str> = config.scope.iter().map(String::as_str).collect();
     let mut statement=sql(conn.prepare("SELECT o.record_id,r.local_session_id,r.portable_id,i.portable_id,o.workspace,o.revision_id FROM replication_outbox o LEFT JOIN replication_revision r ON r.revision_id=o.revision_id LEFT JOIN replication_identity i ON i.local_session_id=r.local_session_id WHERE o.vault_id=?"))?;
     let rows = sql(sql(statement.query_map([&config.vault_id], |r| {
         Ok((
@@ -1248,7 +1490,7 @@ fn prune_outbox(conn: &Connection, config: &Config) -> Result<(), String> {
     .collect::<rusqlite::Result<Vec<_>>>())?;
     for (record, id, portable, current, workspace, revision) in rows {
         let allowed = id.is_some_and(|id| selected.contains(&id))
-            && config.scope.contains(&workspace)
+            && scope.contains(workspace.as_str())
             && portable.is_some()
             && portable == current;
         if !allowed {
@@ -2872,5 +3114,142 @@ mod tests {
                 .unwrap(),
             cursor_before
         );
+    }
+    #[test]
+    fn capture_cache_survives_quiet_reads_and_recovers_from_untracked_edits() {
+        let _network = TEST_NETWORK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        STOP.store(false, Ordering::Release);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.sqlite");
+        let id = fixture(&path, "cache-test");
+        let conn = db::open_db(&path).unwrap();
+        init_schema(&conn).unwrap();
+        let key = LibraryKey::generate();
+        let config = Config {
+            enabled: true,
+            vault_id: "fixture-vault".into(),
+            device_id: "fixture-device".into(),
+            credential_ref: "test-injected-no-keychain".into(),
+            scope: vec!["/work/project".into()],
+            ..Config::default()
+        };
+        save(&path, &config).unwrap();
+        let epoch = hession_core::indexing::epoch(&conn).unwrap();
+        capture(&path, &config, &key, epoch).unwrap();
+        let queued = || {
+            conn.query_row("SELECT COUNT(*) FROM replication_outbox", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+        };
+        let original = queued();
+        assert!(original > 0);
+        let original_token: String = conn
+            .query_row(
+                "SELECT capture_token FROM replication_publication",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(Some(original_token.clone()), capture_token(&conn, id));
+        capture(&path, &config, &key, epoch).unwrap();
+        assert_eq!(queued(), original);
+        let publication: (String, String) = conn
+            .query_row(
+                "SELECT revision_id,digest FROM replication_publication",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        conn.execute(
+            "UPDATE replication_identity SET digest='stale-other-vault-digest'",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE entry SET payload_json='{}'", [])
+            .unwrap();
+        capture(&path, &config, &key, epoch).unwrap();
+        assert_eq!(queued(), original);
+        assert_eq!(
+            conn.query_row("SELECT revision_id FROM replication_publication", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            publication.0
+        );
+        conn.execute("UPDATE replication_identity SET digest=?", [publication.1])
+            .unwrap();
+        conn.execute("UPDATE content_part SET text='late content edit' WHERE entry_id=(SELECT MIN(id) FROM entry)",[]).unwrap();
+        capture(&path, &config, &key, epoch).unwrap();
+        assert!(queued() > original);
+        let after_edit = queued();
+        conn.execute_batch("DROP TRIGGER index_read_content_part_update; UPDATE content_part SET text='untracked content edit';").unwrap();
+        assert!(capture_token(&conn, id).is_none());
+        capture(&path, &config, &key, epoch).unwrap();
+        assert!(queued() > after_edit);
+        // Old schemas upgrade additively, preserving queued records/publications.
+        conn.execute_batch("ALTER TABLE replication_publication DROP COLUMN capture_token;")
+            .unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM replication_publication", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+    #[test]
+    fn encrypted_staging_spills_only_after_the_memory_budget_and_preserves_records() {
+        let key = LibraryKey::generate();
+        let small = hession_sync::encrypt(
+            &key,
+            "vault",
+            "record",
+            "device",
+            b"synthetic recorded text",
+        )
+        .unwrap();
+        let mut stage = CiphertextStage::default();
+        stage.push(&small).unwrap();
+        assert!(stage.disk.is_none());
+        let mut reader = stage.reader().unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let record: RelayRecord = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            hession_sync::decrypt(&key, "vault", &record).unwrap(),
+            b"synthetic recorded text"
+        );
+        let mut stage = CiphertextStage::default();
+        let mut expected = Vec::new();
+        let repeats =
+            CiphertextStage::MEMORY_LIMIT / (serde_json::to_vec(&small).unwrap().len() + 1) + 2;
+        for _ in 0..repeats {
+            stage.push(&small).unwrap();
+            expected.extend_from_slice(&serde_json::to_vec(&small).unwrap());
+            expected.push(b'\n');
+        }
+        assert!(expected.len() > CiphertextStage::MEMORY_LIMIT);
+        assert!(stage.disk.is_some());
+        assert!(stage.memory.is_empty());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                stage
+                    .disk
+                    .as_ref()
+                    .unwrap()
+                    .get_ref()
+                    .metadata()
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o077,
+                0
+            );
+        }
+        let mut actual = Vec::new();
+        stage.reader().unwrap().read_to_end(&mut actual).unwrap();
+        assert_eq!(actual, expected);
     }
 }

@@ -13,6 +13,7 @@ pub const LOCAL_TABLES: &[&str] = &[
     "index_full_source",
     "index_source_session",
     "index_source_generation",
+    "index_read_revision",
 ];
 
 pub(crate) fn migrate_full_sources(conn: &Connection) -> rusqlite::Result<()> {

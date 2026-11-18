@@ -1,12 +1,15 @@
-import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import Markdown from './components/Markdown.jsx';
 import SessionSearch from './components/SessionSearch.jsx';
+import ReadingControls, { PanelResize } from './components/ReadingControls.jsx';
+import { applyReadingWidths, createReadingLayout } from './reading-layout.js';
+import { createLibraryRefresh } from './library-refresh.js';
 import DeveloperSearch from './components/DeveloperSearch.jsx';
 import {
   ArrowRight, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Code2,
   Copy, Download, FileCode2, Folder, GitBranch, Laptop, Layers3,
-  LoaderCircle, Menu, MessageSquareText, Plus, RefreshCw, Search,
+  LoaderCircle, Menu, MessageSquareText, PanelLeftClose, Plus, RefreshCw, Search,
   Server, Sparkles, Square, Star, Tag, Terminal, TrendingUp, User, X,
 } from 'lucide-react';
 import { api, hasTauriRuntime } from './api.js';
@@ -37,6 +40,7 @@ import '@fontsource-variable/geist-mono';
 import './styles/base.css';
 import './styles/app.css';
 import './styles/components.css';
+import './styles/reading-layout.css';
 import { buildConversation, hasToolActivity, isSessionEvent, transcriptParts } from './transcript.js';
 
 import { parseDate, filterSince, calendarDayDifference } from './dates.js';
@@ -103,7 +107,16 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
     setAutoSync(next);
   };
   const [mobileNav,setMobileNav]=useState(false);
-  const [sidebarHidden,setSidebarHidden]=useState(false),[paletteOpen,setPaletteOpen]=useState(false),[shortcutsOpen,setShortcutsOpen]=useState(false);
+  const [readingLayout]=useState(createReadingLayout);
+  const layoutFlags=useSyncExternalStore(readingLayout.subscribe,readingLayout.getVisibility);
+  const layoutRoot=useRef(null);
+  const sidebarHidden=layoutFlags.navHidden;
+  const setSidebarHidden=useCallback(value=>readingLayout.update({navHidden:typeof value==='function'?value(readingLayout.getSnapshot().navHidden):value}),[readingLayout]);
+  useLayoutEffect(()=>{
+    const apply=()=>applyReadingWidths(layoutRoot.current,readingLayout.getSnapshot());
+    apply();return readingLayout.subscribe(apply);
+  },[readingLayout]);
+  const [paletteOpen,setPaletteOpen]=useState(false),[shortcutsOpen,setShortcutsOpen]=useState(false);
   const [resumeOpen,setResumeOpen]=useState(false),[resumeBusy,setResumeBusy]=useState(false),[resumeInfo,setResumeInfo]=useState(null),[resumeError,setResumeError]=useState(''),[resumeCopied,setResumeCopied]=useState(false),[resumeTerminals,setResumeTerminals]=useState([]),[resumeTerminal,setResumeTerminal]=useState('');
   const resumeDialogRef=useRef(null);
   const [loading,setLoading]=useState(true),[detailLoading,setDetailLoading]=useState(false),[notice,setNotice]=useState('');
@@ -260,17 +273,20 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
   // Database lock contention while sync holds bulk write transactions.
   // Ignored when a sync is running; successes still update the UI normally.
   const isSyncLockError=e=>/database is (locked|busy)|database table is locked/i.test(String(e?.message??e??''));
+  const setChanged=(setter,data)=>setter(current=>JSON.stringify(current)===JSON.stringify(data)?current:data);
   const loadMeta=useCallback(async({silent=false}={})=>{
     const id=++metadataRequest.current;
     if(!silent)setMetadataState({agents:'loading',projects:'loading',stats:'loading',facets:'loading','sync/checkpoints':'loading'});
     const update=async(endpoint,setter)=>{
-      try{const data=await api(META_COMMANDS[endpoint]);if(id===metadataRequest.current){setter(data);setMetadataState(current=>({...current,[endpoint]:'ready'}));}}
-      catch(e){if(id===metadataRequest.current){if(syncActiveRef.current&&isSyncLockError(e))return;setNotice(e.message);setMetadataState(current=>({...current,[endpoint]:'error'}));}}
+      try{const data=await api(META_COMMANDS[endpoint]);if(id===metadataRequest.current){setChanged(setter,data);setMetadataState(current=>current[endpoint]==='ready'?current:{...current,[endpoint]:'ready'});}}
+      catch(e){if(id===metadataRequest.current){if(!(syncActiveRef.current&&isSyncLockError(e))){setNotice(e.message);setMetadataState(current=>({...current,[endpoint]:'error'}));}}return false;}
+      return true;
     };
-    await Promise.all([
+    const results=await Promise.all([
       update('agents',setAgents),update('projects',setProjects),update('stats',setStats),
       update('facets',setFacets),update('sync/checkpoints',setSyncCheckpoints),
     ]);
+    return results.every(Boolean);
   },[]);
   const loadSessions=useCallback(async({silent=false}={})=>{
     const requestId=++sessionRequest.current;
@@ -279,7 +295,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
       const sessionParams={includeSubagents,q:developerSearchActive?'':query,host:hostFilter,agent:agentFilter,project:projectFilter,model:modelFilters.join(','),branch:branchFilter,tool:toolFilters.join(','),since:filterSince(timeFilter),sort:sortOrder,starred:String(starredOnly),tags:tagFilters,limit:String(PAGE_SIZE),offset:String(page*PAGE_SIZE)};
       const result=await api('search_sessions',sessionParams);
       if(requestId!==sessionRequest.current)return;
-      setSessions(result.sessions||[]);setTotal(result.total??result.sessions?.length??0);setLibraryReady(true);
+      setChanged(setSessions,result.sessions||[]);setTotal(result.total??result.sessions?.length??0);setLibraryReady(true);
       const current=navigationRef.current;
       if(!current.selectionExplicit){
         const nextSelected=current.selected&&result.sessions?.some(s=>String(s.id)===String(current.selected))?current.selected:result.sessions?.[0]?.id??null;
@@ -288,50 +304,61 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
       setSyncError('');
       const lastPage=Math.max(0,Math.ceil((result.total??0)/PAGE_SIZE)-1);
       if(page>lastPage)setPage(lastPage);
-    }catch(e){if(requestId===sessionRequest.current){if(syncActiveRef.current&&isSyncLockError(e))return;setSessions([]);setTotal(0);setSyncError(e.message);}}
+      return true;
+    }catch(e){if(requestId===sessionRequest.current){if(!(syncActiveRef.current&&isSyncLockError(e))){if(!silent){setSessions([]);setTotal(0);}setSyncError(e.message);}}return false;}
     finally{if(requestId===sessionRequest.current)setLoading(false);}
   },[includeSubagents,query,developerSearchActive,hostFilter,agentFilter,projectFilter,modelFilters,branchFilter,toolFilters,timeFilter,sortOrder,starredOnly,tagFilters,page,navigate]);
 
   useEffect(()=>{loadMeta();},[loadMeta]);
   useEffect(()=>{const timer=setInterval(()=>setCurrentTime(Date.now()),60000);return()=>clearInterval(timer);},[]);
   useEffect(()=>{const t=setTimeout(loadSessions,query?180:0);return()=>clearTimeout(t);},[loadSessions,query]);
+  const detailCache=useRef(null);
   const loadDetail=useCallback(async({silent=false,page=detailPage}={})=>{
     const id=++detailRequest.current;
-    if(!selected||view!=='sessions'){setDetail(null);setDetailError('');setDetailLoading(false);return;}
+    if(!selected||view!=='sessions'){setDetail(null);setDetailError('');setDetailLoading(false);detailCache.current=null;return true;}
     if(!silent){setDetailLoading(true);setDetailError('');}
     try{
       const detailParams={id:String(selected),limit:String(DETAIL_PAGE_SIZE),page:String(page)};
+      const cached=detailCache.current;
+      if(silent&&cached?.id===String(selected)&&cached.page===page&&cached.token)detailParams.knownToken=cached.token;
       const data=await api('get_session',detailParams);
-      if(id===detailRequest.current){setDetail(data);setDetailError('');}
+      if(id===detailRequest.current){
+        if(data.deleted){detailCache.current=null;setDetail(null);setDetailError('This session was removed. Choose another conversation.');}
+        else if(!data.unchanged){detailCache.current={id:String(selected),page,token:data.readToken};setDetail(data);setDetailError('');}
+      }
+      return true;
     }
-    catch(e){if(id===detailRequest.current&&!silent){setDetail(null);setDetailError(e.message||'Could not load this session.');}}
+    catch(e){if(id===detailRequest.current&&!silent){setDetail(null);setDetailError(e.message||'Could not load this session.');}return false;}
     finally{if(id===detailRequest.current)setDetailLoading(false);}
   },[selected,detailPage,view]);
   // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching shows a loading state
   useEffect(()=>{loadDetail();},[loadDetail]);
   useEffect(()=>{let cancelled=false;api('get_sync_status').then(data=>{if(!cancelled){if(!syncLaunchPending.current)setSync(data);setSyncStatusReady(true);}}).catch(()=>{});return()=>{cancelled=true;};},[]);
-  const indexedChange=async()=>{setReportRevision(value=>value+1);await Promise.all([loadMeta({silent:true}),loadSessions({silent:true}),loadDetail({silent:true})]);};
+  const [refreshQueue]=useState(()=>createLibraryRefresh());
+  useLayoutEffect(()=>{refreshQueue.setWorker(async()=>{
+    const results=await Promise.all([loadMeta({silent:true}),loadSessions({silent:true}),loadDetail({silent:true})]);
+    setReportRevision(value=>value+1);
+    if(results.includes(false))throw new Error('Library refresh will retry.');
+  });},[refreshQueue,loadMeta,loadSessions,loadDetail]);
+  useEffect(()=>{refreshQueue.open();return()=>refreshQueue.close();},[refreshQueue]);
+  const indexedChange=useCallback(()=>refreshQueue.request(),[refreshQueue]);
   const indexing=useIndexing({ready:libraryReady&&syncStatusReady,onChanged:indexedChange});
   useEffect(()=>{
     if(!sync.running)return;
-    let active=true,busy=false,lastRefresh=0,lastMeta=0;
+    let active=true,busy=false;
     const timer=setInterval(async()=>{
-      if(busy)return;busy=true;
+      if(busy||document.hidden)return;busy=true;
       try{
-        const s=await api('get_sync_status');if(!active)return;setSync(s);
-        const now=Date.now();
+        const s=await api('get_sync_status');if(!active)return;setChanged(setSync,s);
         if(!s.running){
-          setSyncStopping(false);clearInterval(timer);setReportRevision(value=>value+1);loadMeta({silent:true});loadSessions({silent:true});loadDetail({silent:true});
+          setSyncStopping(false);clearInterval(timer);refreshQueue.request().catch(()=>{});
           if(s.errors?.length){const hosts=s.errors.filter(e=>e.startsWith('host ')).map(e=>e.slice(5).split(':')[0]),files=s.errors.length-hosts.length;setNotice([hosts.length&&`Could not reach ${hosts.join(', ')}; showing sessions from the last successful fetch.`,files&&`${files} source files could not be read.`].filter(Boolean).join(' '));}
           else if(s.cancelled)setNotice('Sync paused safely. Run sync updates to continue.');
-        }else{
-          if(now-lastRefresh>=2500){lastRefresh=now;loadSessions({silent:true});loadDetail({silent:true});}
-          if(now-lastMeta>=10000){lastMeta=now;loadMeta({silent:true});}
         }
       }catch{/* the next poll retries */}finally{busy=false;}
     },500);
     return()=>{active=false;clearInterval(timer);};
-  },[sync.running,loadMeta,loadSessions,loadDetail]);
+  },[sync.running,refreshQueue]);
   useEffect(()=>{if(!sortOpen)return;const h=e=>{if(sortAnchorRef.current&&!sortAnchorRef.current.contains(e.target))setSortOpen(false);};document.addEventListener('pointerdown',h);return()=>document.removeEventListener('pointerdown',h);},[sortOpen]);
 
   const refreshManagedData=async()=>{
@@ -344,8 +371,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
   const refreshSyncedData=async()=>{
     // Replication only adds or updates sessions. Preserve navigation and the
     // transcript page, including when a failed transfer still imports records.
-    setReportRevision(value=>value+1);
-    await Promise.all([loadMeta({silent:true}),loadSessions({silent:true}),loadDetail({silent:true})]);
+    await refreshQueue.request().catch(()=>{});
   };
 
   const updateAnnotations=async(patch)=>{
@@ -523,7 +549,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
   },null);
   const checkpointFor=family=>syncCheckpoints.find(item=>item.family===family)?.completed_at;
 
-  const syncLabel=syncStarting?'Starting…':syncStopping||sync.phase==='stopping'?'Stopping…':sync.running?`Syncing ${sync.filesDone||0}/${sync.filesTotal||0}`:'Sync';
+  const syncLabel=syncStarting?'Starting…':syncStopping||sync.phase==='stopping'?'Stopping…':sync.running?(sync.phase==='mirroring'?'Refreshing SSH histories…':`Syncing ${sync.filesDone||0}/${sync.filesTotal||0}`):'Sync';
   const lastSyncText=metadataState['sync/checkpoints']==='loading'?'Loading…':metadataState['sync/checkpoints']==='error'?'Unavailable':latestSync?relativeAgo(latestSync,currentTime):'Never';
   const filterDefaults=!(includeSubagents||timeFilter||modelFilters.length||branchFilter||toolFilters.length||starredOnly||tagFilters.length||hostFilter||agentFilter||projectFilter);
   const clearAllFilters=()=>{setIncludeSubagents(false);setTimeFilter('');setModelFilters([]);setBranchFilter('');setToolFilters([]);setStarredOnly(false);setTagFilters([]);setHostFilter('');setAgentFilter('');setProjectFilter('');};
@@ -544,23 +570,27 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
   /* eslint-disable react-hooks/refs -- registry builders store navigation callbacks; they never invoke them during render. */
   const commandRegistry=createCommandRegistry([
     {id:'palette.open',title:'Open command palette',shortcuts:['Mod+k'],allowInInput:true,run:()=>setPaletteOpen(true)},
-    {id:'search.global',title:'Search all sessions',shortcuts:['/'],run:()=>{setView('sessions');focusAfterRender('[aria-label="Search sessions"]');}},
-    {id:'search.session',title:'Search this session',shortcuts:['Mod+f'],allowInInput:true,disabled:sessionUnavailable,run:()=>focusAfterRender('[aria-label="Search this session"]')},
+    {id:'search.global',title:'Search all sessions',shortcuts:['/'],run:()=>{readingLayout.update({focusMode:false,filtersHidden:false});setView('sessions');focusAfterRender('[aria-label="Search sessions"]');}},
+    {id:'search.session',title:'Search this session',shortcuts:['Mod+f'],allowInInput:true,disabled:sessionUnavailable,run:()=>{readingLayout.update({searchVisible:true});focusAfterRender('[aria-label="Search this session"]');}},
     {id:'sidebar.toggle',title:'Toggle sidebar',shortcuts:['Mod+b'],run:()=>{
+      if(layoutFlags.focusMode){readingLayout.update({focusMode:false,navHidden:false});setMobileNav(window.matchMedia('(max-width: 1100px)').matches);focusAfterRender('.nav-primary button');return;}
       if(window.matchMedia('(max-width: 1100px)').matches){setSidebarHidden(false);setMobileNav(value=>!value);}
       else{setSidebarHidden(value=>!value);setMobileNav(false);focusAfterRender(sidebarHidden?'.nav-primary button':'.main-panel');}
     }},
     {id:'shortcuts.help',title:'Keyboard shortcuts',shortcuts:['?'],run:()=>setShortcutsOpen(true)},
     {id:'ui.dismiss',title:'Dismiss menu or navigation',scope:'Open menus/navigation',shortcuts:['Escape'],hidden:true,
-      when:()=>sortOpen||syncMenuOpen||mobileNav,run:()=>{setSortOpen(false);setSyncMenuOpen(false);setMobileNav(false);}},
+      when:()=>sortOpen||syncMenuOpen||mobileNav||layoutFlags.searchVisible,run:()=>{setSortOpen(false);setSyncMenuOpen(false);setMobileNav(false);readingLayout.update({searchVisible:false});}},
+    {id:'reading.focus',title:layoutFlags.focusMode?'Exit focus mode':'Enter focus mode',shortcuts:['Mod+Shift+f'],allowInInput:true,disabled:sessionUnavailable,run:()=>{readingLayout.update({focusMode:!layoutFlags.focusMode,searchVisible:false});focusAfterRender('.transcript-scroll');}},
+    {id:'reading.exit',title:'Exit focus mode',shortcuts:['Escape'],hidden:true,allowInInput:true,when:()=>layoutFlags.focusMode,run:()=>{readingLayout.update({focusMode:false});focusAfterRender('.transcript-scroll');}},
+    {id:'reading.list',title:layoutFlags.listHidden?'Show session list':'Hide session list',run:()=>readingLayout.update({listHidden:!layoutFlags.listHidden,focusMode:false})},
     ...createNavigationCommands([
       {id:'view.sessions',title:'Show sessions',open:showSessions},
       {id:'view.analytics',title:'Show analytics',open:()=>setView('analytics')},
     ]),
     ...createLiveCommands({openLive:()=>{setView('live');focusAfterRender('.live-title-row h1','.main-panel');},openFiles:onOpenFiles||(()=>{setView('projects');focusAfterRender('.main-panel');}),observer:indexingObserver??indexing}),
     {id:'settings.open',title:'Open settings',shortcuts:['Mod+,'],run:()=>setSettingsOpen(true)},
-    {id:'focus.sidebar',title:'Focus sidebar',run:()=>{setSidebarHidden(false);setMobileNav(true);focusAfterRender('.nav-primary button');}},
-    {id:'focus.sessions',title:'Focus session list',shortcuts:['Mod+Shift+l'],allowInInput:true,run:()=>{setView('sessions');focusAfterRender('[data-session-list] [aria-current="true"]','[data-session-list] [data-session-navigation]','.session-list .session-card','.session-list');}},
+    {id:'focus.sidebar',title:'Focus sidebar',run:()=>{readingLayout.update({focusMode:false});setSidebarHidden(false);setMobileNav(true);focusAfterRender('.nav-primary button');}},
+    {id:'focus.sessions',title:'Focus session list',shortcuts:['Mod+Shift+l'],allowInInput:true,run:()=>{readingLayout.update({focusMode:false,listHidden:false});setView('sessions');focusAfterRender('[data-session-list] [aria-current="true"]','[data-session-list] [data-session-navigation]','.session-list .session-card','.session-list');}},
     {id:'focus.transcript',title:'Focus transcript',shortcuts:['Mod+Shift+t'],allowInInput:true,disabled:sessionUnavailable,run:()=>focusAfterRender('.transcript-scroll')},
     ...[['j','Next session',1],['k','Previous session',-1],['ArrowDown','Next session',1],['ArrowUp','Previous session',-1],['Home','First session','first'],['End','Last session','last']].map(([key,title,direction])=>({
       id:`list.move.${key}`,title,scope:'Session list',shortcuts:[key],hidden:true,when:context=>!!context.sessionList,
@@ -592,7 +622,9 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
     if(direction!==undefined){event.preventDefault();moveRegionFocus(event.currentTarget,'.nav-item',direction);}
   };
 
-  return <div className={`app-shell ${sidebarHidden?'sidebar-hidden':''}`}>
+  const readerActive=view==='sessions'&&Boolean(selected);
+  return <div ref={layoutRoot} className={`app-shell ${sidebarHidden?'sidebar-hidden':''} ${readerActive?'has-selected-session':''} ${readerActive&&layoutFlags.focusMode?'reader-focus':''} ${readerActive&&layoutFlags.listHidden?'reader-list-hidden':''} ${readerActive&&layoutFlags.filtersHidden?'reader-filters-hidden':''} ${readerActive&&layoutFlags.headerHidden?'reader-header-hidden':''} ${readerActive&&layoutFlags.toolsHidden?'reader-tools-hidden':''} ${layoutFlags.searchVisible?'reader-search-open':''} ${detailTotalPages<=1?'reader-single-page':''}`}>
+
     {paletteOpen&&<CommandPalette registry={commandRegistry} context={keyboardContext} projects={projects}
       onClose={()=>setPaletteOpen(false)} onExecute={id=>runPaletteAction(()=>commandRegistry.execute(id,keyboardContext))}
       onSession={id=>runPaletteAction(()=>{selectSession(id);focusAfterRender('.detail-column');})}
@@ -612,6 +644,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
       <div className="brand-row">
         <span className="brand-mark"><BrandMark size={18}/></span>
         <span className="brand-name">{BRAND.wordmark[0]}<span className="brand-muted">{BRAND.wordmark[1]}</span></span>
+        <button type="button" className="icon-button sidebar-collapse" aria-label="Hide navigation" onClick={()=>setSidebarHidden(true)}><PanelLeftClose size={16}/></button>
         <button className="icon-button sidebar-mobile-close" onClick={()=>setMobileNav(false)} aria-label="Close navigation"><X size={16}/></button>
       </div>
       <nav className="nav-primary" aria-label="Views">
@@ -646,7 +679,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
         <button type="button" className="nav-item" onClick={()=>setShortcutsOpen(true)}><CircleHelp size={15}/><span>Keyboard shortcuts</span><kbd>?</kbd></button>
         <div className="sync-card">
           <IndexingControl observer={indexing}/>
-          <div className="sync-card-text"><span className={`sync-dot ${sync.running?'running':''}`}/><span>{sync.running?(sync.filesTotal?`Refreshing ${sync.filesDone||0} of ${sync.filesTotal}`:'Checking sources…'):`Refreshed ${lastSyncText}`}</span></div>
+          <div className="sync-card-text"><span className={`sync-dot ${sync.running?'running':''}`}/><span>{sync.running?(sync.phase==='mirroring'?'Refreshing SSH histories…':sync.filesTotal?`Refreshing ${sync.filesDone||0} of ${sync.filesTotal}`:'Checking sources…'):`Refreshed ${lastSyncText}`}</span></div>
           <div className="sync-action">
             <button type="button" className={`sync-button ${sync.running?'sync-stop':''}`} onClick={sync.running?stopSync:()=>startSync()} disabled={syncStarting||syncStopping||(sync.running&&sync.phase==='stopping')} title={sync.running?'Stop history refresh':'Refresh histories from local files and SSH hosts'} aria-label={sync.running?'Stop history refresh':'Refresh histories'}>{sync.running?<Square size={13}/>:<RefreshCw size={14}/>}<span>{sync.running?'Stop refresh':syncLabel==='Sync'?'Refresh histories':syncLabel}</span></button>
             <button type="button" className="sync-options-button" onClick={()=>setSyncMenuOpen(!syncMenuOpen)} aria-label="History refresh options" title="History refresh options" aria-haspopup="dialog" aria-expanded={syncMenuOpen}><ChevronDown size={14}/></button>
@@ -663,6 +696,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
         <SettingsButton onClick={section=>{if(section)setSettingsTab(section);setSyncMenuOpen(false);setSettingsOpen(true);}}/>
       </div>
     </aside>
+    <PanelResize layout={readingLayout} setting="navWidth" label="Navigation width" className="nav-resize"/>
 
     <main className="main-panel" tabIndex={-1}>
       {sidebarHidden&&<button type="button" className="sidebar-reopen text-button" onClick={()=>{setSidebarHidden(false);setMobileNav(true);}} aria-label="Show navigation"><Menu size={16}/>Show navigation</button>}
@@ -684,7 +718,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
       ) : (
         <div className="content-area">
           <header className="toolbar">
-            <button className="icon-button mobile-menu" onClick={()=>setMobileNav(true)} aria-label="Open navigation"><Menu size={18}/></button>
+            <button className="icon-button mobile-menu" onClick={()=>{setSidebarHidden(false);setMobileNav(true);}} aria-label="Open navigation"><Menu size={18}/></button>
             <div className="search-wrap"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder={searchEngine==='developer'?'Words, "phrases", agent:codex, file:src/…':'Search titles, prompts, and transcripts'} aria-label="Search sessions" maxLength={4096} aria-describedby={developerSearchActive?'developer-search-help':undefined}/>{query&&<button className="clear-search" onClick={()=>setQuery('')} aria-label="Clear search"><X size={14}/></button>}</div>
             <div className="search-engine-switch" role="group" aria-label="Search engine">{[['developer','Developer search'],['legacy','Legacy search']].map(([value,label])=><button type="button" key={value} aria-pressed={searchEngine===value} onClick={()=>{setSearchEngine(value);try{localStorage.setItem(storageKey('search-engine'),value);}catch{/* preference only */}}}>{label}</button>)}</div>
             <div className="toolbar-actions">
@@ -726,7 +760,11 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
               </>}
             </section>
 
+            <PanelResize layout={readingLayout} setting="listWidth" label="Session list width" className="list-resize"/>
             <section className="detail-column" aria-label="Session" tabIndex={-1}>
+              <ReadingControls layout={readingLayout} canFocus={Boolean(selected)} title={detail?.session.title||'Conversation'} onSearch={selected?()=>{readingLayout.update({searchVisible:true});focusAfterRender('[aria-label="Search this session"]');}:null}
+                onBrowse={()=>{readingLayout.update({focusMode:false,listHidden:false});navigate({selected:null,selectionExplicit:true});}}/>
+
               {detail&&<SessionSearch key={detail.session.id} sessionId={detail.session.id} onOpen={openSearchEntry}/>}
               {detail&&!isDetailLoading?<>
                 <div className="detail-header">

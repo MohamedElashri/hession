@@ -460,7 +460,7 @@ fn mirror_host(host: &str) -> Result<Probe, String> {
     Ok(probe)
 }
 
-/// Mirror every enabled host in parallel. Returns `(host, error)` failures;
+/// Mirror enabled hosts with at most two concurrent SSH/rsync workers. Returns `(host, error)` failures;
 /// a failed host keeps its previous mirror so its sessions stay importable.
 pub fn mirror_enabled_hosts(on_host_done: &(dyn Fn(&str) + Sync)) -> Vec<(String, String)> {
     let hosts: Vec<String> = load_hosts()
@@ -482,22 +482,59 @@ pub fn mirror_enabled_hosts(on_host_done: &(dyn Fn(&str) + Sync)) -> Vec<(String
             })
             .collect();
     }
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = hosts
-            .iter()
-            .map(|host| {
-                scope.spawn(move || {
-                    let result = mirror_host(host);
-                    on_host_done(host);
-                    result.err().map(|e| (host.clone(), e))
-                })
-            })
-            .collect();
-        workers
-            .into_iter()
-            .filter_map(|w| w.join().ok().flatten())
-            .collect()
+    bounded_mirrors(&hosts, &|host| {
+        let result = mirror_host(host);
+        on_host_done(host);
+        result.map(|_| ())
     })
+}
+
+fn bounded_mirrors(
+    hosts: &[String],
+    mirror: &(dyn Fn(&str) -> Result<(), String> + Sync),
+) -> Vec<(String, String)> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let errors = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for _ in 0..hosts.len().min(2) {
+            workers.push(scope.spawn(|| loop {
+                if crate::importer::is_stop_requested() {
+                    break;
+                }
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(host) = hosts.get(index) else {
+                    break;
+                };
+                let outcome =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| mirror(host)));
+                let error = match outcome {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => Some(error),
+                    Err(_) => {
+                        Some("Remote refresh worker stopped unexpectedly. Retry this host.".into())
+                    }
+                };
+                if let Some(error) = error {
+                    errors.lock().unwrap_or_else(|e| e.into_inner()).push((
+                        index,
+                        host.clone(),
+                        error,
+                    ));
+                }
+            }));
+        }
+        for worker in workers {
+            let _ = worker.join();
+        }
+    });
+    let mut errors = errors.into_inner().unwrap_or_else(|e| e.into_inner());
+    errors.sort_by_key(|item| item.0);
+    errors
+        .into_iter()
+        .map(|(_, host, error)| (host, error))
+        .collect()
 }
 
 /// Stores of enabled hosts that have been mirrored at least once, as
@@ -864,6 +901,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn remote_worker_pool_is_bounded_and_retains_ordered_failures() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let visited = AtomicUsize::new(0);
+        let hosts: Vec<String> = (0..9).map(|i| format!("host-{i}")).collect();
+        let errors = bounded_mirrors(&hosts, &|host| {
+            let busy = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(busy, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(5));
+            active.fetch_sub(1, Ordering::SeqCst);
+            visited.fetch_add(1, Ordering::SeqCst);
+            if host == "host-3" {
+                panic!("injected worker panic");
+            }
+            if host == "host-1" || host == "host-5" {
+                Err("offline".into())
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(visited.load(Ordering::SeqCst), 9);
+        assert!(peak.load(Ordering::SeqCst) <= 2);
+        assert_eq!(
+            errors
+                .iter()
+                .map(|(host, _)| host.as_str())
+                .collect::<Vec<_>>(),
+            vec!["host-1", "host-3", "host-5"]
+        );
+    }
+
+    #[test]
     fn parses_probe_output_and_ignores_noise() {
         let text = "Welcome to devbox!\nH\t/home/u\nR\tclaude\tjsonl\t/home/u/.claude\tprojects\nR\thermes\thermes\t/home/u/.hermes/\t.\nS\trsync\n";
         let (probe, rsync) = parse_probe("lx", text).unwrap();
@@ -1023,7 +1093,7 @@ mod tests {
         let ssh = bin.join("ssh");
         fs::write(
             &ssh,
-            "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) shift 2;; -*) shift;; *) break;; esac; done\nshift\nHOME=\"$FAKE_REMOTE_HOME\"; export HOME\nexec sh -c \"$*\"\n",
+            "#!/bin/sh\nif [ -n \"$HESSION_LOCAL_READY_FILE\" ] && [ ! -f \"$HESSION_LOCAL_READY_FILE\" ]; then echo 'Local import must finish before SSH' >&2; exit 1; fi\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) shift 2;; -*) shift;; *) break;; esac; done\nshift\nHOME=\"$FAKE_REMOTE_HOME\"; export HOME\nexec sh -c \"$*\"\n",
         )
         .unwrap();
         fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1079,7 +1149,20 @@ mod tests {
             remote_home.join(".claude")
         );
         eprintln!("fixture probe: {fixture_probe:?}");
-        let sync = || crate::importer::sync_all_with_progress(None, "incremental", &|_, _, _| {});
+        let local_project = local_home.join(".claude/projects/local");
+        fs::create_dir_all(&local_project).unwrap();
+        fs::write(local_project.join("local-session.jsonl"), "{\"type\":\"user\",\"sessionId\":\"local-reading-test\",\"cwd\":\"/local/project\",\"uuid\":\"local-u1\",\"message\":{\"role\":\"user\",\"content\":\"local refresh before SSH\"}}\n").unwrap();
+        let ready_file = root.join("local-import-ready");
+        std::env::set_var("HESSION_LOCAL_READY_FILE", &ready_file);
+        let sync = || {
+            crate::importer::sync_all_with_progress(None, "incremental", &|_, _, _| {
+                let conn = crate::db::open_db(&crate::db::db_path()).unwrap();
+                let imported: bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM entry WHERE search_text LIKE '%local refresh before SSH%')",[],|r|r.get(0)).unwrap();
+                if imported {
+                    fs::write(&ready_file, "local history committed").unwrap();
+                }
+            })
+        };
         let summary = sync();
         assert!(summary.errors.is_empty(), "{:?}", summary.errors);
 
@@ -1095,7 +1178,7 @@ mod tests {
         let conn = crate::db::open_db(&crate::db::db_path()).unwrap();
         let (host, cwd, workspace): (String, String, String) = conn
             .query_row(
-                "SELECT s.host, s.cwd, w.path FROM session s JOIN workspace w ON w.id=s.workspace_id",
+                "SELECT s.host, s.cwd, w.path FROM session s JOIN workspace w ON w.id=s.workspace_id WHERE s.host IS NOT NULL",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )

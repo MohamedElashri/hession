@@ -1,0 +1,52 @@
+/* Keep the reading surface mounted when surrounding panels are hidden. */
+.sidebar { flex-basis: min(var(--sidebar-w), 30vw); width: min(var(--sidebar-w), 30vw); }
+.sidebar-collapse { margin-left: auto; }
+.panel-resize { position: relative; flex: 0 0 6px; width: 6px; min-height: 0; cursor: col-resize; touch-action: none; user-select: none; background: var(--surface); }
+.panel-resize::after { content: ''; position: absolute; inset: 0 2px; background: var(--border); }
+.panel-resize:hover::after, .panel-resize:focus-visible::after { background: var(--accent); }
+.panel-resize:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sidebar-hidden > .nav-resize { display: none; }
+.browser-grid { grid-template-columns: min(var(--list-w), 40%) 6px minmax(0, 1fr); }
+.session-column { border-right: 0; }
+.reader-list-hidden .browser-grid, .reader-focus .browser-grid { grid-template-columns: minmax(0, 1fr); }
+.reader-list-hidden .session-column, .reader-list-hidden .list-resize,
+.reader-focus > .sidebar, .reader-focus > .nav-resize, .reader-focus .session-column, .reader-focus .list-resize,
+.reader-focus .sidebar-reopen, .reader-focus .toolbar, .reader-focus .active-filters, .reader-focus .metadata-indicators,
+.reader-filters-hidden .toolbar, .reader-filters-hidden .active-filters, .reader-filters-hidden .metadata-indicators,
+.reader-focus .detail-header, .reader-header-hidden .detail-header,
+.reader-focus:not(.reader-search-open) .session-search { display: none; }
+.reader-focus .transcript-toolbar > .segmented, .reader-tools-hidden .transcript-toolbar > .segmented { display: none; }
+.reader-focus.reader-single-page .transcript-toolbar, .reader-tools-hidden.reader-single-page .transcript-toolbar { display: none; }
+.reader-focus .transcript-toolbar, .reader-tools-hidden .transcript-toolbar { justify-content: flex-end; padding-top: 4px; padding-bottom: 4px; }
+.turn, .transcript-entry, .prompt-index, .transcript-end { max-width: var(--reading-w, 860px); }
+.reply-text .markdown-body { max-width: none; }
+.reading-bar { display: flex; align-items: center; gap: 6px; flex: none; min-height: 40px; padding: 4px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.reader-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 28px; padding: 4px 8px; border-radius: var(--radius); color: var(--text-2); font-size: var(--text-sm); white-space: nowrap; cursor: pointer; }
+.reader-button:hover { color: var(--text); background: var(--hover); }
+.reader-button[aria-pressed="true"] { color: var(--accent-text); background: var(--accent-soft); }
+.reading-title { flex: 1; min-width: 0; font-size: var(--text-sm); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reader-mobile-back { display: none; }
+.reading-layout-menu { position: relative; flex: none; }
+.reading-layout-menu > summary { list-style: none; }
+.reading-layout-menu > summary::-webkit-details-marker { display: none; }
+.reading-layout-menu > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.reading-layout-options { position: absolute; top: calc(100% + 8px); right: 0; z-index: 50; display: flex; flex-direction: column; gap: 10px; width: min(300px, calc(100vw - 32px)); max-height: min(75dvh, 600px); overflow-y: auto; padding: 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface); color: var(--text); box-shadow: var(--shadow); font-size: var(--text-sm); }
+.reading-layout-options > strong { font-weight: 600; }
+.reader-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.reader-width { display: flex; flex-direction: column; gap: 4px; }
+.reader-width > span { display: flex; justify-content: space-between; gap: 12px; }
+.reader-width output { color: var(--text-3); font-family: var(--font-mono); font-size: var(--text-xs); }
+.reader-width input { width: 100%; padding: 0; accent-color: var(--accent); cursor: ew-resize; }
+.reading-layout-options p { color: var(--warning); }
+@media (max-width: 1100px) {
+  .nav-resize, .sidebar-collapse { display: none; }
+  .sidebar { flex-basis: auto; width: min(var(--sidebar-w), 85vw); }
+}
+@media (max-width: 760px) {
+  .browser-grid { grid-template-columns: minmax(0, 1fr); }
+  .list-resize, .has-selected-session .session-column { display: none; }
+  .has-selected-session .detail-column { display: flex; }
+  .reader-mobile-back { display: inline-flex; }
+  .reader-list-toggle { display: none; }
+  .reading-bar { padding-inline: 6px; }
+}

@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-11-18
+
+### New
+
+- Read conversations in focus mode with **Cmd/Ctrl+Shift+F**, keeping the current
+  transcript page and scroll position. Exit with the focus button or Escape.
+- Drag or keyboard-resize navigation and the session list. Save panel visibility
+  and reading width in **Layout**, and return to the list on narrow windows.
+
+### Improved
+
+- Coalesce automatic, manual, and private-sync refreshes. Preserve unchanged
+  transcript content and defer UI polling while the window is hidden.
+- Skip unchanged private-sync histories, reuse query statements, and prepare
+  encrypted records outside the library write gate. Keep small encrypted
+  snapshots in bounded memory and spill larger ones to owner-only temporary files.
+- Import local histories before SSH transfers and limit remote refresh to two
+  simultaneous hosts. Preserve cached mirrors when a host is unavailable.
+- Read private-sync progress from memory instead of repeatedly scanning workspace
+  counts. Reduce duplicate serialization and download assembly allocations.
+
+### Fixed
+
+- Explicitly restore minimized Linux windows before presenting them when another
+  launcher activates the existing instance.
+- Keep the visible library and reading position after transient refresh failures,
+  invalidate cached transcripts after content/tool/tag changes, and handle deleted
+  sessions and reused row IDs safely.
+- Preserve actual published revision identities when equal content is recaptured.
+
+Synthetic warm Linux measurements show 10,000-event unchanged private capture at
+315 → 2.2 ms and unchanged page refresh at 51 → 2 ms. Large source-import timings
+remain variable and include integrity verification and additional change tracking.
+
 ## [0.5.3] - 2026-11-18
 
 ### Fixed
@@ -29,9 +63,7 @@
 - Reject malformed, mismatched, and expired search cursors before scanning
   history. Add repeatable catalog, append, browser, and failure-path probes.
 
-Measurements use warm synthetic Linux/Chrome workloads. See the
-[performance audit](https://github.com/MohamedElashri/hession/blob/v0.5.3/docs/performance-audit.md)
-for methodology, controls, index storage costs, and remaining latency spikes.
+Measurements use warm synthetic Linux/Chrome workloads.
 
 ## [0.5.2] - 2026-11-18
 

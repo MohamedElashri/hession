@@ -521,12 +521,17 @@ impl LocalCatalog {
             push_error(&mut summary, "index", error);
             return summary;
         }
+        let mut pricing = ImportPricing::new();
+        pricing.epoch = Some(epoch);
+        pricing.validate_contents = true;
         for (family, path) in files {
             if stop_requested() {
                 summary.cancelled = true;
                 break;
             }
-            match self.import_with_policy(conn, &family, &path, epoch, false) {
+            match native_source_uri(&family, &path)
+                .and_then(|uri| import_file_with_conn(conn, &uri, false, None, &mut pricing))
+            {
                 Ok(0) => summary.skipped += 1,
                 Ok(count) => summary.records += count,
                 Err(error) if stop_requested() => {
@@ -1751,7 +1756,7 @@ fn push_error(summary: &mut SyncSummary, file: &str, error: String) {
     });
 }
 
-/// Mirror remote hosts, then import all (or one family's) sources. `mode` is
+/// Import local sources, mirror remote hosts, then import refreshed mirrors. `mode` is
 /// `"incremental"` or `"full"`; `progress` receives `(done, total, records)`.
 /// The caller resets cancellation before making the run available to stop.
 pub fn sync_all_with_progress(
@@ -1779,15 +1784,33 @@ pub fn sync_all_with_progress(
         }
     };
 
-    let mut families: Vec<String> = match agent_filter {
-        Some(f) if !f.is_empty() => vec![f.to_string()],
-        _ => all_sources().iter().map(|s| s.family.to_string()).collect(),
-    };
+    let local = LocalCatalog::capture(agent_filter.filter(|f| !f.is_empty()));
+    let mut families: Vec<String> = local.0.iter().map(|s| s.family.to_string()).collect();
     families.sort();
     families.dedup();
-
-    // Refresh remote mirrors first; a host that fails keeps its last mirror,
-    // so its already-fetched sessions still import below.
+    let mut failed = HashSet::new();
+    if let Err(error) = crate::db::configure_bulk_writer(&conn) {
+        push_error(&mut summary, "sync", error.to_string());
+        return summary;
+    }
+    // Local history becomes available before any slow or unavailable SSH host.
+    let mut local_files = local.files();
+    sort_by_mtime_desc_vec(&mut local_files);
+    let imported: HashSet<PathBuf> = local_files.iter().map(|(_, path)| path.clone()).collect();
+    import_sync_batch(
+        &mut conn,
+        &local_files,
+        force,
+        &mut pricing,
+        &mut summary,
+        &mut failed,
+        progress,
+    );
+    if stop_requested() {
+        summary.cancelled = true;
+        return summary;
+    }
+    crate::sync::set_phase("mirroring");
     for (host, error) in crate::remote::mirror_enabled_hosts(&|_| {}) {
         if stop_requested() {
             summary.cancelled = true;
@@ -1795,141 +1818,33 @@ pub fn sync_all_with_progress(
         }
         push_error(&mut summary, &format!("{HOST_ERROR_PREFIX}{host}"), error);
     }
-
-    let mut files: Vec<(String, PathBuf)> = Vec::new();
-    for fam in &families {
-        if stop_requested() {
-            summary.cancelled = true;
-            return summary;
-        }
-        for path in discover_source_files(fam) {
-            files.push((fam.clone(), path));
-        }
-    }
     if stop_requested() {
         summary.cancelled = true;
         return summary;
     }
-    sort_by_mtime_desc_vec(&mut files);
-    // Progress units: a JSONL/transcript file imports atomically (one unit),
-    // while a SQLite database fans out into one unit per session row. Without
-    // this a single `opencode.db` holding hundreds of sessions sits at `0/1`
-    // until every session commits at once.
-    let mut units: Vec<usize> = Vec::with_capacity(files.len());
-    for (fam, path) in &files {
-        if stop_requested() {
-            summary.cancelled = true;
-            return summary;
-        }
-        units.push(if is_database_file(path) {
-            count_db_sessions(fam, path).unwrap_or(1)
-        } else {
-            1
-        });
+    // Capture discovery once after mirroring, including cached mirrors when a
+    // host fails and local files created during the remote phase.
+    let sources = all_sources();
+    let mut remote_files = Vec::new();
+    for family in &families {
+        remote_files.extend(
+            discover_from_sources(&sources, family)
+                .into_iter()
+                .filter(|path| !imported.contains(path))
+                .map(|path| (family.clone(), path)),
+        );
     }
-    if stop_requested() {
-        summary.cancelled = true;
-        return summary;
-    }
-    summary.files_total = units.iter().sum();
-    progress(0, summary.files_total, 0);
-
-    if let Err(error) = crate::db::configure_bulk_writer(&conn) {
-        push_error(&mut summary, "sync", error.to_string());
-        return summary;
-    }
-    let mut failed: HashSet<String> = HashSet::new();
-    for (index, (fam, path)) in files.iter().enumerate() {
-        if stop_requested() {
-            summary.cancelled = true;
-            break;
-        }
-        let uri = match native_source_uri(fam, path) {
-            Ok(uri) => uri,
-            Err(error) => {
-                failed.insert(fam.clone());
-                push_error(&mut summary, fam, error);
-                top_up_units(
-                    &mut summary,
-                    units.get(index).copied().unwrap_or(1),
-                    0,
-                    progress,
-                );
-                continue;
-            }
-        };
-        if is_database_file(path) {
-            // Progress counts committed batches; the current batch rolls back
-            // on a source error or cancellation, and checkpoints do not advance.
-            let expected = units.get(index).copied().unwrap_or(1);
-            let mut sessions_reported = 0usize;
-            let outcome = {
-                let mut tick = |records_added: usize| {
-                    sessions_reported += 1;
-                    summary.files_done += 1;
-                    summary.records += records_added;
-                    if summary.files_done > summary.files_total {
-                        summary.files_total = summary.files_done;
-                    }
-                    progress(summary.files_done, summary.files_total, summary.records);
-                };
-                import_file_with_conn(&mut conn, &uri, force, Some(&mut tick), &mut pricing)
-            };
-            match outcome {
-                Ok(n) => {
-                    if n == 0 {
-                        summary.skipped += 1;
-                    }
-                    // Records were already folded per session above; only
-                    // account units the import never iterated (file-level fast
-                    // path, empty database). Never top up a stopped run.
-                    if !stop_requested() {
-                        top_up_units(&mut summary, expected, sessions_reported, progress);
-                    }
-                }
-                Err(e) => {
-                    if stop_requested() {
-                        summary.cancelled = true;
-                        break;
-                    }
-                    failed.insert(fam.clone());
-                    push_error(
-                        &mut summary,
-                        path.file_name().and_then(|s| s.to_str()).unwrap_or(&uri),
-                        e,
-                    );
-                    top_up_units(&mut summary, expected, sessions_reported, progress);
-                }
-            }
-        } else {
-            match import_file_with_conn(&mut conn, &uri, force, None, &mut pricing) {
-                Ok(n) => {
-                    summary.records += n;
-                    if n == 0 {
-                        summary.skipped += 1;
-                    }
-                }
-                Err(e) => {
-                    if stop_requested() {
-                        summary.cancelled = true;
-                        break;
-                    }
-                    failed.insert(fam.clone());
-                    push_error(
-                        &mut summary,
-                        path.file_name().and_then(|s| s.to_str()).unwrap_or(&uri),
-                        e,
-                    );
-                }
-            }
-            summary.files_done += 1;
-            progress(summary.files_done, summary.files_total, summary.records);
-        }
-        if stop_requested() {
-            summary.cancelled = true;
-            break;
-        }
-    }
+    sort_by_mtime_desc_vec(&mut remote_files);
+    crate::sync::set_phase("importing");
+    import_sync_batch(
+        &mut conn,
+        &remote_files,
+        force,
+        &mut pricing,
+        &mut summary,
+        &mut failed,
+        progress,
+    );
 
     summary.cancelled |= stop_requested();
     if !summary.cancelled {
@@ -1950,6 +1865,123 @@ pub fn sync_all_with_progress(
         }
     }
     summary
+}
+
+#[allow(clippy::too_many_arguments)]
+fn import_sync_batch(
+    conn: &mut Connection,
+    files: &[(String, PathBuf)],
+    force: bool,
+    pricing: &mut ImportPricing,
+    summary: &mut SyncSummary,
+    failed: &mut HashSet<String>,
+    progress: &dyn Fn(usize, usize, usize),
+) {
+    let mut units: Vec<usize> = Vec::with_capacity(files.len());
+    for (fam, path) in files {
+        if stop_requested() {
+            summary.cancelled = true;
+            return;
+        }
+        units.push(if is_database_file(path) {
+            count_db_sessions(fam, path).unwrap_or(1)
+        } else {
+            1
+        });
+    }
+    if stop_requested() {
+        summary.cancelled = true;
+        return;
+    }
+    summary.files_total += units.iter().sum::<usize>();
+    progress(summary.files_done, summary.files_total, summary.records);
+
+    for (index, (fam, path)) in files.iter().enumerate() {
+        if stop_requested() {
+            summary.cancelled = true;
+            break;
+        }
+        let uri = match native_source_uri(fam, path) {
+            Ok(uri) => uri,
+            Err(error) => {
+                failed.insert(fam.clone());
+                push_error(summary, fam, error);
+                top_up_units(summary, units.get(index).copied().unwrap_or(1), 0, progress);
+                continue;
+            }
+        };
+        if is_database_file(path) {
+            // Progress counts committed batches; the current batch rolls back
+            // on a source error or cancellation, and checkpoints do not advance.
+            let expected = units.get(index).copied().unwrap_or(1);
+            let mut sessions_reported = 0usize;
+            let outcome = {
+                let mut tick = |records_added: usize| {
+                    sessions_reported += 1;
+                    summary.files_done += 1;
+                    summary.records += records_added;
+                    if summary.files_done > summary.files_total {
+                        summary.files_total = summary.files_done;
+                    }
+                    progress(summary.files_done, summary.files_total, summary.records);
+                };
+                import_file_with_conn(conn, &uri, force, Some(&mut tick), pricing)
+            };
+            match outcome {
+                Ok(n) => {
+                    if n == 0 {
+                        summary.skipped += 1;
+                    }
+                    // Records were already folded per session above; only
+                    // account units the import never iterated (file-level fast
+                    // path, empty database). Never top up a stopped run.
+                    if !stop_requested() {
+                        top_up_units(summary, expected, sessions_reported, progress);
+                    }
+                }
+                Err(e) => {
+                    if stop_requested() {
+                        summary.cancelled = true;
+                        break;
+                    }
+                    failed.insert(fam.clone());
+                    push_error(
+                        summary,
+                        path.file_name().and_then(|s| s.to_str()).unwrap_or(&uri),
+                        e,
+                    );
+                    top_up_units(summary, expected, sessions_reported, progress);
+                }
+            }
+        } else {
+            match import_file_with_conn(conn, &uri, force, None, pricing) {
+                Ok(n) => {
+                    summary.records += n;
+                    if n == 0 {
+                        summary.skipped += 1;
+                    }
+                }
+                Err(e) => {
+                    if stop_requested() {
+                        summary.cancelled = true;
+                        break;
+                    }
+                    failed.insert(fam.clone());
+                    push_error(
+                        summary,
+                        path.file_name().and_then(|s| s.to_str()).unwrap_or(&uri),
+                        e,
+                    );
+                }
+            }
+            summary.files_done += 1;
+            progress(summary.files_done, summary.files_total, summary.records);
+        }
+        if stop_requested() {
+            summary.cancelled = true;
+            break;
+        }
+    }
 }
 
 /// Whether this source file takes the SQLite path in [`import_file_with_conn`].
