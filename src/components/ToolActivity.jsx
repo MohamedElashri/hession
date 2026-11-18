@@ -62,7 +62,7 @@ function ToolArguments({ view }) {
 export default function ToolActivity({ tool, initiallyOpen = false }) {
   const [open, setOpen] = useState(initiallyOpen);
   const view = useMemo(() => toolPresentation(tool), [tool]);
-  const argumentsPanel = view.args && <ToolArguments view={view}/>;
+  const argumentsPanel = view.hasArguments && <ToolArguments view={view}/>;
   return <details className={`tool-activity ${view.failed ? 'tool-failed' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary className="tool-activity-head">
       <ChevronRight size={14} className="tool-chevron"/><span className="tool-activity-icon">{view.failed ? <AlertCircle size={15}/> : <Terminal size={15}/>}</span>

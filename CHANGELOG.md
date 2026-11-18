@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Improved
+
+- Defer formatting full tool arguments and detecting panel syntax until those
+  panels open, reducing conversation rendering time and retained memory.
+- Seek directly to the next transcript page and reuse per-entry SQL statements
+  when exporting large project archives.
+
 ## [0.5.1] - 2026-11-17
 
 ### Improved

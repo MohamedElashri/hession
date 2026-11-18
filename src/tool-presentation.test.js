@@ -61,3 +61,18 @@ test('only structured output gets an automatic syntax hint and valid JSON argume
   assert.equal(toolPresentation({ result_text: '--- a/file\n+++ b/file\n-old\n+new' }).resultLanguage, 'diff');
   assert.equal(toolPresentation({ arguments_json: '"a string"' }).args, '"a string"');
 });
+
+test('collapsed indexed commands defer argument serialization and cache it on demand', () => {
+  let serialized = 0;
+  const command = 'echo "recorded only"';
+  const input = { toJSON() { serialized++; return { cmd: command, workdir: '/synthetic' }; } };
+  const view = toolPresentation({ tool_name: 'exec_command', command_text: command, arguments_json: input });
+  assert.equal(view.summary, command);
+  assert.equal(view.action, 'Run command');
+  assert.equal(view.hasArguments, true);
+  assert.equal(serialized, 0);
+  const formatted = view.args;
+  assert.deepEqual(JSON.parse(formatted), { cmd: command, workdir: '/synthetic' });
+  assert.equal(view.args, formatted);
+  assert.equal(serialized, 1);
+});

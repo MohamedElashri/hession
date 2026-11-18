@@ -4,6 +4,19 @@ import ToolActivity, { TextPanel } from './ToolActivity.jsx';
 import { Conversation } from './Conversation.jsx';
 import { buildConversation } from '../transcript.js';
 
+test('collapsed tools and folded auxiliary arguments do not format their payloads', async () => {
+  const serialize = vi.fn(() => ({ cmd: 'echo synthetic', payload: 'x'.repeat(65536) }));
+  const tool = { tool_name: 'exec_command', command_text: 'echo synthetic', arguments_json: { toJSON: serialize } };
+  const { container } = render(<ToolActivity tool={tool}/>);
+  expect(serialize).not.toHaveBeenCalled();
+  fireEvent.click(container.querySelector('summary'));
+  await screen.findByRole('region', { name: 'Command' });
+  expect(serialize).not.toHaveBeenCalled();
+  fireEvent.click(container.querySelector('.tool-arguments summary'));
+  await screen.findByRole('region', { name: 'Arguments' });
+  expect(serialize).toHaveBeenCalledOnce();
+});
+
 test('tools have separate command, complete arguments and output with exact copy', async () => {
   const writeText = vi.fn().mockResolvedValue();
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });

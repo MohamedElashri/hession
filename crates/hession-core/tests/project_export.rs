@@ -523,3 +523,62 @@ fn redaction_expansion_is_included_in_the_entry_memory_budget() {
     assert!(!target.exists());
     f.unchanged();
 }
+
+#[test]
+fn transcript_pages_preserve_negative_gapped_ordinals_and_skip_hidden_pages() {
+    let f = Fixture::new();
+    let mut conn = db::open_db(&f.path).unwrap();
+    conn.execute("DELETE FROM entry WHERE session_id=10", [])
+        .unwrap();
+    let tx = conn.transaction().unwrap();
+    let mut expected = Vec::new();
+    for index in 0..225_i64 {
+        let ordinal = -1000 + index * 11;
+        // One complete page is omitted, including the last row of that page.
+        let hidden = (50..150).contains(&index) || index == 224;
+        let kind = if hidden { "reasoning" } else { "message" };
+        tx.execute(
+            "INSERT INTO entry(session_id,ordinal,kind,role) VALUES(10,?,?,'assistant')",
+            rusqlite::params![ordinal, kind],
+        )
+        .unwrap();
+        tx.execute("INSERT INTO content_part(entry_id,ordinal,kind,text) VALUES(last_insert_rowid(),0,'text',?)", [format!("page-event-{index:03}")]).unwrap();
+        if !hidden {
+            expected.push(ordinal);
+        }
+    }
+    tx.commit().unwrap();
+    drop(conn);
+    let files = write_fixture(&f, &f.request(), "pages.zip");
+    let json_name = files
+        .keys()
+        .find(|p| p.starts_with("sessions/") && p.ends_with(".json"))
+        .unwrap();
+    let transcript: Value = serde_json::from_slice(&files[json_name]).unwrap();
+    let entries = transcript["sessions"][0]["entries"].as_array().unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| e["ordinal"].as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    let markdown = files
+        .iter()
+        .find(|(p, _)| p.starts_with("sessions/") && p.ends_with(".md"))
+        .unwrap()
+        .1;
+    let markdown = std::str::from_utf8(markdown).unwrap();
+    let mut previous = 0;
+    for index in 0..225_i64 {
+        let marker = format!("page-event-{index:03}");
+        if (50..150).contains(&index) || index == 224 {
+            assert!(!markdown.contains(&marker));
+        } else {
+            let offset = markdown.find(&marker).unwrap();
+            assert!(offset >= previous);
+            previous = offset + marker.len();
+        }
+    }
+    f.unchanged();
+}
