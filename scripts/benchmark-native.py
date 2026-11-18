@@ -104,7 +104,13 @@ def main():
                 with (case / f'codex/sessions/{index}.jsonl').open('w') as stream:
                     stream.write(json.dumps({'type': 'session_meta', 'payload': {'id': f'idle-{index}', 'cwd': str(case / 'workspace')}}) + '\n')
                     for number in range(10): stream.write(event(number))
-            measure(['index', '--once', '--agent', 'codex', '--json'])
+            summary, _ = measure(['index', '--once', '--agent', 'codex', '--json'])
+            assert not summary['errors']
+            database = case / 'library/sessions.sqlite'
+            with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as conn:
+                assert conn.execute('SELECT count(*) FROM session').fetchone()[0] == 100
+                assert conn.execute('SELECT count(*) FROM entry').fetchone()[0] == 1100
+                assert conn.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
             with tempfile.TemporaryFile() as output:
                 child = subprocess.Popen([binary, 'index', '--watch', '--agent', 'codex', '--json'], cwd=root, env=env, stdout=output, stderr=output)
                 try:
