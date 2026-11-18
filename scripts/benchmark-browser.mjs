@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const { values: options } = parseArgs({ options: { ref: { type: 'string', default: 'working' }, output: { type: 'string' }, chrome: { type: 'string' }, unhappy: { type: 'boolean' }, 'worker-failures': { type: 'boolean' }, help: { type: 'boolean' } } });
-if (options.help) { console.log('Usage: node scripts/benchmark-browser.mjs [--ref COMMIT|working] [--output REPORT.json] [--chrome EXECUTABLE] [--unhappy] [--worker-failures]'); process.exit(0); }
+const { values: options } = parseArgs({ options: { ref: { type: 'string', default: 'working' }, output: { type: 'string' }, chrome: { type: 'string' }, unhappy: { type: 'boolean' }, 'worker-failures': { type: 'boolean' }, 'prompt-failures': { type: 'boolean' }, help: { type: 'boolean' } } });
+if (options.help) { console.log('Usage: node scripts/benchmark-browser.mjs [--ref COMMIT|working] [--output REPORT.json] [--chrome EXECUTABLE] [--unhappy] [--worker-failures] [--prompt-failures]'); process.exit(0); }
 const ref = options.ref || 'working';
 const scratch = mkdtempSync(join(tmpdir(), 'hession-browser-perf-'));
 const site = join(scratch, 'site');
@@ -42,6 +42,7 @@ import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import ToolActivity from './src/components/ToolActivity.jsx';
 import { createSyntaxClient } from './src/syntax-client.js';
+import { parsePrompt } from './src/transcript.js';
 import '@fontsource-variable/geist';
 import '@fontsource-variable/geist-mono';
 import './src/styles/base.css';
@@ -64,6 +65,18 @@ window.mountFixture = () => {
 };
 window.clearFixture = () => { flushSync(() => root.unmount()); root = createRoot(document.getElementById('root')); };
 await document.fonts.ready;
+window.runPromptFaults = () => {
+  const text = '<USER_REQUEST>x'.repeat(16000) + '</OTHER>', samples = [];
+  for (let run = 0; run < 10; run++) {
+    const start = performance.now();
+    const prompt = parsePrompt(text);
+    const elapsed = performance.now()-start;
+    if (prompt.text !== text) throw new Error('Truncated prompt source changed');
+    if (run >= 3) samples.push(elapsed);
+  }
+  samples.sort((a,b) => a-b);
+  return {characters:text.length,openers:16000,medianMs:samples[3],samplesMs:samples};
+};
 window.runWorkerFaults = async () => {
   let starts = 0;
   const url = URL.createObjectURL(new Blob(['self.onmessage = () => {};'], {type:'text/javascript'}));
@@ -101,7 +114,7 @@ window.benchmarkReady = true;
       buffer = buffer.subarray(boundary + 1);
       const request = pending.get(message.id);
       if (request) { pending.delete(message.id); clearTimeout(request.timer); message.error ? request.reject(new Error(JSON.stringify(message.error))) : request.resolve(message.result); }
-      if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.text);
+      if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text);
     }
   });
   const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
@@ -119,7 +132,8 @@ window.benchmarkReady = true;
     return response.result.value;
   };
   for (let attempt = 0; !await evaluate('!!window.benchmarkReady'); attempt++) {
-    assert(attempt < 100, 'Benchmark page failed to load');
+    assert.equal(errors.length, 0, errors.join('\n'));
+    assert(attempt < 300, 'Benchmark page failed to load within 30 seconds');
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   const cases = [];
@@ -146,7 +160,8 @@ window.benchmarkReady = true;
   }
   assert.equal(errors.length, 0, errors.join('\n'));
   const workerFailure = options['worker-failures'] ? await evaluate('window.runWorkerFaults()') : undefined;
-  const report = { ref, workerFailure, browser: await send('Browser.getVersion'), scenario: options.unhappy ? 'production component, collapsed failed/fallback calls' : 'production component, collapsed recorded commands', cases };
+  const promptFailure = options['prompt-failures'] ? await evaluate('window.runPromptFaults()') : undefined;
+  const report = { ref, workerFailure, promptFailure, browser: await send('Browser.getVersion'), scenario: options.unhappy ? 'production component, collapsed failed/fallback calls' : 'production component, collapsed recorded commands', cases };
   const output = JSON.stringify(report, null, 2) + '\n';
   if (options.output) writeFileSync(resolve(options.output), output);
   process.stdout.write(output);

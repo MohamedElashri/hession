@@ -25,6 +25,26 @@ for (const [scenario, tool] of [
   }
   reports.push({ scenario, cards: 50, argumentCharacters: tool.arguments_json.length, medianMs: median(samples), samplesMs: samples });
 }
+const { parsePrompt } = await import(new URL('transcript.js', source));
+const normalPrompt = '<USER_REQUEST>Help with the parser</USER_REQUEST><environment_context>synthetic context</environment_context>';
+const normalSamples = [];
+for (let run = 0; run < 10; run++) {
+  const start = performance.now();
+  for (let i = 0; i < 1000; i++) assert.equal(parsePrompt(normalPrompt).text, 'Help with the parser');
+  if (run >= 3) normalSamples.push(performance.now() - start);
+}
+reports.push({scenario:'normal-prompt-control',prompts:1000,medianMs:median(normalSamples),samplesMs:normalSamples});
+for (const count of [1000, 4000, 16000]) {
+  const text = '<USER_REQUEST>x'.repeat(count) + '</OTHER>';
+  const samples = [];
+  for (let run = 0; run < 10; run++) {
+    const start = performance.now();
+    const prompt = parsePrompt(text);
+    if (run >= 3) samples.push(performance.now() - start);
+    assert.equal(prompt.text, text);
+  }
+  reports.push({ scenario:'unclosed-prompt-wrappers', openers:count, characters:text.length, medianMs:median(samples), samplesMs:samples });
+}
 const deep = '['.repeat(12000) + '0' + ']'.repeat(12000);
 let formattingError = null, preserved = false;
 try { preserved = toolPresentation({ arguments_json: deep }).args === deep; }

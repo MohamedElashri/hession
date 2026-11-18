@@ -250,13 +250,14 @@ only generated timestamps to differ. `--samples` and `--sizes` shorten local run
 The optional idle probe measures one Linux watcher's CPU over 30 seconds.
 
 Use `node scripts/benchmark-unhappy.mjs [ARCHIVED_SRC_DIRECTORY]` for malformed
-arguments, repeated fallback results, duplicate highlighting, worker failures,
-and cancellation. Its timeout is scaled to 20 ms; operation counts show repeated
+arguments, truncated prompt wrappers, repeated fallback results, duplicate
+highlighting, worker failures, and cancellation. Its timeout is scaled to 20 ms; operation counts show repeated
 work independently of timer noise. Add `--unhappy --worker-failures` to the browser
 probe to measure failed/fallback cards and eight queued blocks against a stuck
 Web Worker using the production 2.5-second timeout. A failed worker drains queued work to plain text;
 new requests can retry after a five-second cooldown. Canceled active work releases
-its worker, and replacement jobs share any pending lazy startup.
+its worker, and replacement jobs share any pending lazy startup. Add
+`--prompt-failures` to measure repeated unclosed wrappers in the browser.
 
 The ignored `project_export` test `benchmark_failure_paths` measures export
 cancellation/cleanup, entry and field limits, invalid search, and oversized
