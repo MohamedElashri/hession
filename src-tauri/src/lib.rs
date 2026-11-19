@@ -44,14 +44,52 @@ fn show_main_window(app: &tauri::AppHandle) {
             // Tao can drop focus while its cached minimized state awaits a GTK
             // event. Present on the UI thread to restore and activate together.
             let main = window.clone();
+            let diagnostic =
+                std::env::var_os("HESSION_NATIVE_SMOKE_ISOLATED").is_some_and(|value| value == "1");
+            if diagnostic {
+                eprintln!("Native activation queued");
+            }
             let _ = window.run_on_main_thread(move || {
                 use gtk::prelude::GtkWindowExt;
                 if let Ok(window) = main.gtk_window() {
-                    // An IPC activation can arrive before GTK processes the
-                    // window-manager's iconify event. Request restoration even
-                    // when GTK's cached window state still says it is visible.
+                    use gtk::prelude::{Cast, WidgetExt};
+                    // A launcher request has no GTK input event timestamp.
+                    // CURRENT_TIME can become a stale cached user time; ask
+                    // X11 for a fresh timestamp for this explicit activation.
+                    let native = window.window();
+                    let timestamp = native
+                        .as_ref()
+                        .and_then(|native| native.downcast_ref::<gdkx11::X11Window>())
+                        .map(gdkx11::functions::x11_get_server_time)
+                        .unwrap_or(gtk::gdk::ffi::GDK_CURRENT_TIME as u32);
+                    // The WM can already be iconic while GTK still caches a
+                    // mapped window. Remap that same widget to bypass the stale
+                    // mapping state; hiding does not destroy its webview.
+                    let wm_state = native.as_ref().and_then(|native| {
+                        native.downcast_ref::<gdkx11::X11Window>()?;
+                        let atom = gtk::gdk::Atom::intern("WM_STATE");
+                        gtk::gdk::property_get(native, &atom, &atom, 0, 16, 0).and_then(
+                            |(_, format, bytes)| {
+                                (format == 32 && bytes.len() >= 4)
+                                    .then(|| u32::from_ne_bytes(bytes[..4].try_into().unwrap()))
+                            },
+                        )
+                    });
+                    if diagnostic {
+                        eprintln!(
+                            "Native activation running: WM state {wm_state:?}, GTK state {:?}",
+                            native.as_ref().map(|native| native.state())
+                        );
+                    }
+                    if wm_state == Some(3) {
+                        window.hide();
+                    }
                     window.deiconify();
-                    window.present_with_time(gtk::gdk::ffi::GDK_CURRENT_TIME as u32);
+                    window.present_with_time(timestamp);
+                    if let Some(native) = native {
+                        native.focus(timestamp);
+                        native.display().flush();
+                    }
                 }
             });
         }

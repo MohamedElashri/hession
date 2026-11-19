@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -40,6 +41,9 @@ class Desktop:
             'XFree': ([ctypes.c_void_p], ctypes.c_int),
             'XIconifyWindow': ([ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int], ctypes.c_int),
             'XFlush': ([ctypes.c_void_p], ctypes.c_int),
+            'XCreateSimpleWindow': ([ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint, ctypes.c_ulong, ctypes.c_ulong], ctypes.c_ulong),
+            'XMapWindow': ([ctypes.c_void_p, ctypes.c_ulong], ctypes.c_int),
+            'XDestroyWindow': ([ctypes.c_void_p, ctypes.c_ulong], ctypes.c_int),
             'XGetInputFocus': ([ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_int)], ctypes.c_int),
             'XSetInputFocus': ([ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong], ctypes.c_int),
             'XCloseDisplay': ([ctypes.c_void_p], ctypes.c_int),
@@ -96,6 +100,19 @@ class Desktop:
                 return True
             pending.extend(self.tree(child))
         return False
+
+    def wait_for_window_manager(self):
+        # _NET_SUPPORTING_WM_CHECK is advertised during WM initialization.
+        # A managed probe proves that its event loop can actually map clients.
+        probe = self.x.XCreateSimpleWindow(self.display, self.root, 0, 0, 32, 32, 0, 0, 0)
+        assert probe, 'Cannot create window-manager readiness probe'
+        try:
+            self.x.XMapWindow(self.display, probe)
+            self.x.XFlush(self.display)
+            until(lambda: self.property(probe, 'WM_STATE')[:1] == [1], 'Test window manager did not manage its readiness probe', timeout=60)
+        finally:
+            self.x.XDestroyWindow(self.display, probe)
+            self.x.XFlush(self.display)
 
     def iconify(self, window):
         assert self.x.XIconifyWindow(self.display, window, 0)
@@ -172,8 +189,8 @@ def main():
         assert result.returncode == 0
         assert primary.poll() is None, 'Primary process changed'
         if desktop:
-            assert desktop.windows(primary.pid) == [window], 'More than one main window'
             until(lambda: desktop.property(window, 'WM_STATE')[:1] == [1] and desktop.focused(window), 'Existing window was not restored and focused')
+            assert desktop.windows(primary.pid) == [window], 'More than one main window'
 
     try:
         command(['index', '--once', '--agent', 'codex', '--json'], headless=True)
@@ -186,11 +203,17 @@ def main():
             for key in ['LD_LIBRARY_PATH', 'XDG_DATA_DIRS']:
                 if os.environ.get('HESSION_TEST_WM_' + key):
                     wm_env[key] = os.environ['HESSION_TEST_WM_' + key]
-            wm = subprocess.Popen([os.environ.get('HESSION_TEST_WM', 'openbox'), '--sm-disable', '--config-file', str(config)], env=wm_env, cwd=root, stdout=log, stderr=log, start_new_session=True)
+            wm_ready = root / 'window-manager-ready'
+            startup = shlex.join([shutil.which('touch') or '/usr/bin/touch', str(wm_ready)])
+            wm = subprocess.Popen([os.environ.get('HESSION_TEST_WM', 'openbox'), '--sm-disable', '--config-file', str(config), '--startup', startup], env=wm_env, cwd=root, stdout=log, stderr=log, start_new_session=True)
             processes.append(wm)
             desktop = Desktop()
+            # Openbox publishes its owner property before installing event
+            # handling; its startup hook runs after that initialization.
+            until(wm_ready.is_file, 'Test window manager did not finish startup', timeout=60)
             until(lambda: desktop.property(desktop.root, '_NET_SUPPORTING_WM_CHECK'), 'Test window manager did not initialize')
             assert wm.poll() is None, 'Test window manager exited'
+            desktop.wait_for_window_manager()
         primary = start()
         if desktop:
             window = desktop.windows(primary.pid)[0]
@@ -207,7 +230,7 @@ def main():
             assert desktop.windows(primary.pid) == [window]
             # Repeat immediate minimize/relaunch to exercise activation while
             # GTK's cached window state can still lag the window manager.
-            for _ in range(3):
+            for _ in range(12):
                 desktop.iconify(window)
                 second(primary)
         for args in [['--version'], ['--help'], ['status', '--json'], ['sessions', 'list', '--json'], ['index', '--once', '--agent', 'codex', '--json']]:
@@ -251,6 +274,8 @@ def main():
                 if pid or state:
                     print('Owned display window:', item, 'pid:', pid, 'state:', state, flush=True)
                 pending.extend(desktop.tree(item))
+        if desktop and shutil.which('import'):
+            subprocess.run(['import', '-display', env['DISPLAY'], '-window', 'root', str(output / 'instance-failure.png')], env=env, cwd=root, timeout=15, check=False)
         raise
     finally:
         for process in reversed(processes):
