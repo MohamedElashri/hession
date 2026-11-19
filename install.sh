@@ -295,7 +295,7 @@ case "$METHOD" in
     LAUNCH="open -a '$APP_NAME'" ;;
   deb)
     info "Installing the package needs administrator rights; you may be asked for your password."
-    run_as_root apt-get install -y --allow-downgrades "$TMP/$ASSET" >/dev/null || die "apt-get could not install the package"
+    run_as_root apt-get install -y --allow-downgrades "$TMP/$ASSET" || die "apt-get could not install the package"
     ok "Installed the $APP_SLUG package"
     LAUNCH="$APP_SLUG" ;;
   rpm)
