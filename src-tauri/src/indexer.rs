@@ -17,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex, OnceLock,
+        mpsc, Arc, Mutex, OnceLock, RwLock,
     },
     thread,
     time::{Duration, Instant},
@@ -25,6 +25,9 @@ use std::{
 
 const POLL: Duration = Duration::from_secs(15);
 const AUDIT: Duration = Duration::from_secs(600);
+// Library-change notifications coalesce before the final desktop reads.
+// Leave those reads time to finish before returning their freed buffers too.
+const IDLE_RECLAIM: Duration = crate::memory::QUIET;
 const MAX_DIRECTORIES: usize = 4096;
 #[cfg(not(test))]
 const NATIVE_RETRY: Duration = Duration::from_secs(30);
@@ -45,6 +48,10 @@ pub struct Status {
     pub errors: Vec<String>,
     pub overflow_count: u64,
     pub may_be_stale: bool,
+    pub wakeups: u64,
+    pub discovery_passes: u64,
+    pub fingerprint_checks: u64,
+    pub import_attempts: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -55,7 +62,18 @@ pub struct LibraryChanged {
     pub source_kind: &'static str,
 }
 
+enum Notice {
+    Paths {
+        paths: Vec<PathBuf>,
+        structural: bool,
+    },
+    Wake,
+}
+
+type SourceKey = (String, PathBuf);
+
 struct Control {
+    wake: mpsc::SyncSender<Notice>,
     shutdown: AtomicBool,
     paused: AtomicBool,
     cancel: Arc<AtomicBool>,
@@ -93,7 +111,9 @@ impl Observer {
             .map_err(|e| {
                 format!("Another watcher may own this library. Stop it before watching here: {e}")
             })?;
+        let (sender, receiver) = mpsc::sync_channel(256);
         let control = Arc::new(Control {
+            wake: sender,
             shutdown: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -111,7 +131,7 @@ impl Observer {
             .spawn(move || {
                 let _leader = leader;
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run(&database, catalog, &worker_control, &*on_change)
+                    run(&database, catalog, &worker_control, receiver, &*on_change)
                 }));
                 if result.is_err() {
                     worker_control
@@ -145,9 +165,11 @@ impl Observer {
             s.phase = if paused { "paused" } else { "resuming" }.into();
             s.may_be_stale = true;
         });
+        let _ = self.control.wake.try_send(Notice::Wake);
     }
     pub fn interrupt(&self) {
         self.control.cancel.store(true, Ordering::SeqCst);
+        let _ = self.control.wake.try_send(Notice::Wake);
     }
 }
 impl Drop for Observer {
@@ -160,12 +182,41 @@ impl Drop for Observer {
     }
 }
 
+#[cfg(test)]
 fn directories(roots: &[PathBuf]) -> (BTreeSet<PathBuf>, bool) {
+    watch_directories(
+        &roots
+            .iter()
+            .cloned()
+            .map(|path| (path, 24))
+            .collect::<Vec<_>>(),
+    )
+}
+
+#[cfg(test)]
+fn watch_directories(roots: &[(PathBuf, usize)]) -> (BTreeSet<PathBuf>, bool) {
+    let (paths, truncated, _) = directory_plan(roots);
+    (paths, truncated)
+}
+
+fn directory_plan(
+    roots: &[(PathBuf, usize)],
+) -> (
+    BTreeSet<PathBuf>,
+    bool,
+    BTreeMap<PathBuf, hession_core::jsonl::Fingerprint>,
+) {
+    let mut stamps = BTreeMap::new();
     let mut found = BTreeSet::new();
-    let mut stack: Vec<_> = roots.iter().cloned().map(|p| (p, 0)).collect();
+    let mut visited = BTreeMap::<PathBuf, usize>::new();
+    let mut stack: Vec<_> = roots
+        .iter()
+        .cloned()
+        .map(|(path, limit)| (path, 0, limit))
+        .collect();
     let mut truncated = false;
     let mut examined = 0usize;
-    while let Some((path, depth)) = stack.pop() {
+    while let Some((path, depth, limit)) = stack.pop() {
         if found.len() >= MAX_DIRECTORIES {
             truncated = true;
             break;
@@ -180,10 +231,27 @@ fn directories(roots: &[PathBuf]) -> (BTreeSet<PathBuf>, bool) {
         if !directory || (depth > 0 && meta.file_type().is_symlink()) {
             continue;
         }
-        if !found.insert(path.clone()) {
+        let followed = if meta.file_type().is_symlink() {
+            std::fs::metadata(&path).ok()
+        } else {
+            None
+        };
+        stamps.entry(path.clone()).or_insert_with(|| {
+            hession_core::jsonl::Fingerprint::of(followed.as_ref().unwrap_or(&meta))
+        });
+        let remaining = limit.saturating_sub(depth);
+        if visited
+            .get(&path)
+            .is_some_and(|previous| *previous >= remaining)
+        {
             continue;
         }
+        visited.insert(path.clone(), remaining);
+        found.insert(path.clone());
         if let Ok(entries) = std::fs::read_dir(&path) {
+            if depth >= limit && limit < 24 {
+                continue;
+            }
             for (n, entry) in entries.take(100_001).enumerate() {
                 examined += 1;
                 if examined > 100_000 {
@@ -198,8 +266,8 @@ fn directories(roots: &[PathBuf]) -> (BTreeSet<PathBuf>, bool) {
                     continue;
                 };
                 if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                    if depth < 24 && stack.len() < MAX_DIRECTORIES {
-                        stack.push((entry.path(), depth + 1));
+                    if depth < limit && stack.len() < MAX_DIRECTORIES {
+                        stack.push((entry.path(), depth + 1, limit));
                     } else {
                         truncated = true;
                     }
@@ -212,35 +280,102 @@ fn directories(roots: &[PathBuf]) -> (BTreeSet<PathBuf>, bool) {
             break;
         }
     }
-    (found, truncated)
+    // Watch only the nearest existing ancestor of a missing root. Never walk
+    // that ancestor: it may be the user's home directory. Creation events let
+    // us attach to a newly installed agent without periodic whole-tree scans.
+    for (root, _) in roots.iter().filter(|(root, _)| !root.is_dir()) {
+        if let Some(parent) = root.ancestors().skip(1).find(|parent| parent.is_dir()) {
+            if found.len() < MAX_DIRECTORIES {
+                found.insert(parent.into());
+            } else {
+                truncated = true;
+            }
+        }
+    }
+    (found, truncated, stamps)
+}
+
+// FSEvents resolves aliases such as macOS /var -> /private/var; inotify
+// commonly reports the requested spelling. Resolve existing ancestors as well
+// so a deleted file or a not-yet-created SQLite WAL uses the same routing key.
+fn routing_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.into()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    for ancestor in absolute.ancestors() {
+        if let Ok(resolved) = std::fs::canonicalize(ancestor) {
+            return resolved.join(absolute.strip_prefix(ancestor).unwrap_or(Path::new("")));
+        }
+    }
+    absolute
+}
+
+fn directory_identity(root: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(root)
+        .ok()
+        .filter(|metadata| metadata.is_dir())
+        .map(|metadata| (metadata.dev(), metadata.ino()))
+}
+
+fn root_identities(roots: &[PathBuf]) -> Vec<Option<(u64, u64)>> {
+    roots.iter().map(|root| directory_identity(root)).collect()
 }
 
 fn affected(family: &str, source: &Path, event: &Path) -> bool {
+    let event = routing_path(event);
     importer::source_paths(family, source)
         .iter()
-        .any(|path| path == event || path.starts_with(event) || path.parent() == event.parent())
+        .any(|path| routing_path(path).starts_with(&event))
 }
 
 fn native_watcher(
-    sender: mpsc::SyncSender<PathBuf>,
+    roots: Arc<RwLock<Vec<PathBuf>>>,
+    sender: mpsc::SyncSender<Notice>,
     overflow: Arc<AtomicBool>,
     errors: Arc<Mutex<Option<String>>>,
 ) -> notify::Result<notify::RecommendedWatcher> {
     notify::recommended_watcher(move |result: notify::Result<Event>| match result {
         Ok(event) if !matches!(event.kind, EventKind::Access(_)) => {
-            if event.need_rescan() || event.paths.len() > 32 {
+            let rescan = event.need_rescan();
+            let roots = roots.read().unwrap_or_else(|error| error.into_inner());
+            let mut paths: Vec<_> = event
+                .paths
+                .into_iter()
+                .filter(|path| {
+                    roots
+                        .iter()
+                        .any(|root| path.starts_with(root) || root.starts_with(path))
+                })
+                .take(33)
+                .collect();
+            if rescan || paths.len() > 32 {
                 overflow.store(true, Ordering::SeqCst);
             }
-            for path in event.paths.into_iter().take(32) {
-                if sender.try_send(path).is_err() {
-                    overflow.store(true, Ordering::SeqCst);
-                }
+            paths.truncate(32);
+            if paths.is_empty() && !rescan {
+                return;
+            }
+            let structural = !matches!(
+                event.kind,
+                EventKind::Modify(
+                    notify::event::ModifyKind::Data(_) | notify::event::ModifyKind::Metadata(_)
+                )
+            );
+            if sender
+                .try_send(Notice::Paths { paths, structural })
+                .is_err()
+            {
+                overflow.store(true, Ordering::SeqCst);
             }
         }
         Err(error) => {
             *errors.lock().unwrap_or_else(|e| e.into_inner()) =
                 Some(error.to_string().chars().take(300).collect());
             overflow.store(true, Ordering::SeqCst);
+            let _ = sender.try_send(Notice::Wake);
         }
         _ => {}
     })
@@ -250,6 +385,7 @@ fn run(
     database: &Path,
     catalog: LocalCatalog,
     control: &Control,
+    receiver: mpsc::Receiver<Notice>,
     on_change: &dyn Fn(LibraryChanged),
 ) {
     let mut conn = match db::open_db(database) {
@@ -263,11 +399,18 @@ fn run(
         control.error(error.to_string());
         return;
     }
-    let (sender, receiver) = mpsc::sync_channel::<PathBuf>(256);
-    // Keep timeout-based polling asleep when the native backend cannot start.
-    let _keepalive = sender.clone();
+    let sender = control.wake.clone();
     let overflow = Arc::new(AtomicBool::new(false));
+    let roots = catalog.roots();
+    let event_roots = Arc::new(RwLock::new(
+        roots
+            .iter()
+            .flat_map(|root| [root.clone(), routing_path(root)])
+            .collect(),
+    ));
+    let mut root_ids = root_identities(&roots);
     let mut watcher = match native_watcher(
+        event_roots.clone(),
         sender.clone(),
         overflow.clone(),
         control.native_error.clone(),
@@ -281,29 +424,87 @@ fn run(
         }
     };
     let mut last_native_attempt = Instant::now();
-    let roots = catalog.roots();
-    let mut watched = BTreeSet::new();
+    let mut watched = BTreeSet::<PathBuf>::new();
+    let mut watched_ids = BTreeMap::<PathBuf, Option<(u64, u64)>>::new();
+    let mut watched_paths = BTreeSet::<PathBuf>::new();
     let mut seen_roots = BTreeSet::new();
     let mut pending = Pending::default();
-    let mut fingerprints = BTreeMap::<(String, PathBuf), String>::new();
+    let mut fingerprints = BTreeMap::<SourceKey, importer::SourceFingerprint>::new();
+    let mut known_files = Vec::<SourceKey>::new();
+    let mut dependencies = BTreeMap::<PathBuf, Vec<usize>>::new();
+    let mut failed_sources = BTreeSet::<SourceKey>::new();
+    let mut last_retry = Instant::now();
+    let mut topology_pending = false;
+    let mut observation_incomplete = true;
+    let mut truncated = false;
     let mut last_poll = Instant::now();
     let mut last_audit = Instant::now();
     let mut scan = true;
+    let mut coverage_scan = false;
     let mut was_suspended = false;
     let mut last_revision = library_revision::current(&conn).ok();
     let mut changed = BTreeSet::new();
     let mut last_emit = Instant::now();
+    let mut last_probe = Instant::now();
+    let mut reclaim_at: Option<Instant> = None;
+    let mut reclaim_ceiling: Option<Instant> = None;
     while !control.shutdown.load(Ordering::SeqCst) {
-        match receiver.recv_timeout(Duration::from_millis(100)) {
-            Ok(path) => pending.push(&path, Instant::now()),
+        let now = Instant::now();
+        // Periodic revision checks also observe writes from another process.
+        // Native observation does not need a 100ms timer or a 15s tree walk.
+        let mut wait = (last_probe + POLL).saturating_duration_since(now);
+        if control.paused.load(Ordering::SeqCst) || was_suspended {
+            wait = POLL;
+        } else {
+            wait = wait.min((last_audit + AUDIT).saturating_duration_since(now));
+            if scan {
+                wait = Duration::ZERO;
+            }
+            if coverage_scan {
+                wait = wait
+                    .min((last_poll + Duration::from_millis(400)).saturating_duration_since(now));
+            }
+            if let Some(delay) = pending.next_ready_in(now) {
+                wait = wait.min(delay);
+            }
+            if !failed_sources.is_empty() {
+                wait = wait.min((last_retry + POLL).saturating_duration_since(now));
+            }
+            if observation_incomplete {
+                wait = wait.min((last_poll + POLL).saturating_duration_since(now));
+            }
+            if watcher.is_none() {
+                wait =
+                    wait.min((last_native_attempt + NATIVE_RETRY).saturating_duration_since(now));
+            }
+        }
+        for deadline in [reclaim_at, reclaim_ceiling].into_iter().flatten() {
+            wait = wait.min(deadline.saturating_duration_since(now));
+        }
+        let mut receive = |notice| match notice {
+            Notice::Paths { paths, structural } => {
+                for path in paths {
+                    let path = routing_path(&path);
+                    topology_pending |= structural || watched_paths.contains(&path);
+                    pending.push(&path, Instant::now());
+                }
+            }
+            Notice::Wake => {}
+        };
+        match receiver.recv_timeout(wait) {
+            Ok(notice) => receive(notice),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {}
         }
         for _ in 0..256 {
             match receiver.try_recv() {
-                Ok(path) => pending.push(&path, Instant::now()),
+                Ok(notice) => receive(notice),
                 Err(_) => break,
             }
+        }
+        control.update(|s| s.wakeups = s.wakeups.saturating_add(1));
+        if control.shutdown.load(Ordering::SeqCst) {
+            break;
         }
         if overflow.swap(false, Ordering::SeqCst) {
             pending.overflow();
@@ -321,6 +522,8 @@ fn run(
             ));
             watcher = None;
             watched.clear();
+            watched_ids.clear();
+            watched_paths.clear();
             scan = true;
             last_native_attempt = Instant::now();
             control.update(|s| {
@@ -328,9 +531,25 @@ fn run(
                 s.watched_directories = 0;
             });
         }
+        if [reclaim_at, reclaim_ceiling]
+            .into_iter()
+            .flatten()
+            .any(|deadline| Instant::now() >= deadline)
+        {
+            reclaim_at = None;
+            reclaim_ceiling = None;
+            if let Err(error) = conn.execute_batch("PRAGMA shrink_memory") {
+                control.error(error.to_string());
+            }
+            crate::memory::release();
+        }
+        // Clear the preceding pass's cancellation before reading the manual
+        // sync gate. A manual starter holds that gate while interrupting us,
+        // so its new cancellation cannot be cleared after admission is checked.
+        control.cancel.store(false, Ordering::SeqCst);
         let suspended = control.paused.load(Ordering::SeqCst)
             || crate::sync::is_managing_data()
-            || crate::sync::get_status().running;
+            || crate::sync::is_running();
         if suspended {
             was_suspended = true;
             control.update(|s| {
@@ -348,9 +567,26 @@ fn run(
             scan = true;
             was_suspended = false;
         }
-        if watcher.is_none() && last_native_attempt.elapsed() >= NATIVE_RETRY {
+        // Native watches belong to inodes. Reattach after a root is replaced
+        // at the same path or an existing directory symlink is retargeted.
+        // Piggyback on structural events/revision checks, never a source walk.
+        let mut roots_replaced = false;
+        if topology_pending || last_probe.elapsed() >= POLL {
+            let current = root_identities(&roots);
+            if current != root_ids {
+                root_ids = current;
+                roots_replaced = true;
+                watcher = None;
+                watched.clear();
+                watched_ids.clear();
+                watched_paths.clear();
+                scan = true;
+            }
+        }
+        if watcher.is_none() && (roots_replaced || last_native_attempt.elapsed() >= NATIVE_RETRY) {
             last_native_attempt = Instant::now();
             match native_watcher(
+                event_roots.clone(),
                 sender.clone(),
                 overflow.clone(),
                 control.native_error.clone(),
@@ -364,75 +600,199 @@ fn run(
                 )),
             }
         }
-        control.cancel.store(false, Ordering::SeqCst);
         let now = Instant::now();
         let (events, recovery) = pending.take_ready(now);
         let audit = now.duration_since(last_audit) >= AUDIT;
-        let poll = now.duration_since(last_poll) >= POLL;
-        let do_scan = scan || recovery || audit || poll || !events.is_empty();
+        let poll = observation_incomplete && now.duration_since(last_poll) >= POLL;
+        let retry = !failed_sources.is_empty() && now.duration_since(last_retry) >= POLL;
+        let coverage = coverage_scan && now.duration_since(last_poll) >= Duration::from_millis(400);
+        let discover = scan
+            || coverage
+            || recovery
+            || audit
+            || poll
+            || (!events.is_empty() && topology_pending);
+        let do_scan = discover || retry || !events.is_empty();
         if do_scan {
-            let full_audit = scan || recovery || audit;
+            // Routine safety sweeps compare inode/size/mtime/ctime. Content
+            // verification still handles explicit scans, native gaps, and
+            // affected sources without rehashing every quiet store every 10m.
+            let full_audit = scan || recovery;
             scan = false;
+            coverage_scan = false;
             last_poll = now;
             if audit {
                 last_audit = now;
             }
-            let (desired, truncated) = directories(&roots);
-            if truncated {
-                control.error("Directory observation is incomplete; some sources may be stale. Check source permissions or narrow the configured roots.");
+            if !events.is_empty() {
+                topology_pending = false;
             }
-            if let Some(watcher) = watcher.as_mut() {
-                for path in watched.difference(&desired) {
-                    let _ = watcher.unwatch(path);
-                }
-                let mut actual = watched
-                    .intersection(&desired)
-                    .cloned()
-                    .collect::<BTreeSet<_>>();
-                for path in desired.difference(&watched) {
-                    match watcher.watch(path, RecursiveMode::NonRecursive) {
-                        Ok(()) => {
-                            actual.insert(path.clone());
-                        }
-                        Err(e) => {
-                            control.error(format!("Cannot watch {}; polling: {e}", path.display()))
+            if discover {
+                control.update(|s| s.discovery_passes = s.discovery_passes.saturating_add(1));
+                known_files =
+                    importer::with_cancellation(control.cancel.clone(), || catalog.files());
+                let mut scopes: BTreeMap<_, _> =
+                    importer::with_cancellation(control.cancel.clone(), || {
+                        catalog.observation_roots()
+                    })
+                    .into_iter()
+                    .collect();
+                for (family, path) in &known_files {
+                    for companion in importer::source_paths(family, path) {
+                        // Explicit parent scopes also cover directory aliases
+                        // used by profiles and companion stores outside roots.
+                        if let Some(parent) = companion.parent() {
+                            scopes.entry(parent.into()).or_insert(0);
                         }
                     }
                 }
-                watched = actual;
-            }
-            let unavailable = roots
-                .iter()
-                .filter(|root| !root.is_dir())
-                .cloned()
-                .collect::<Vec<_>>();
-            let missing_previously_available =
-                unavailable.iter().any(|root| seen_roots.contains(root));
-            seen_roots.extend(roots.iter().filter(|root| root.is_dir()).cloned());
-            let observation_incomplete = watcher.is_none()
-                || watched != desired
-                || (desired.is_empty() && !roots.is_empty())
-                || missing_previously_available;
-            control.update(|s| {
-                s.unavailable_roots = unavailable;
-                s.watched_directories = watched.len();
-                s.phase = if !observation_incomplete && !truncated {
-                    "active"
-                } else {
-                    "degraded"
+                let scopes: Vec<_> = scopes.into_iter().collect();
+                let interest: BTreeSet<_> = roots
+                    .iter()
+                    .cloned()
+                    .chain(scopes.iter().map(|(path, _)| path.clone()))
+                    .flat_map(|path| [path.clone(), routing_path(&path)])
+                    .collect();
+                *event_roots
+                    .write()
+                    .unwrap_or_else(|error| error.into_inner()) = interest.into_iter().collect();
+                let (desired, incomplete, directory_stamps) = directory_plan(&scopes);
+                truncated = incomplete;
+                if truncated {
+                    control.error("Directory observation is incomplete; some sources may be stale. Check source permissions or narrow the configured roots.");
                 }
-                .into();
-            });
+                if let Some(watcher) = watcher.as_mut() {
+                    let desired_ids: BTreeMap<_, _> = desired
+                        .iter()
+                        .map(|path| (path.clone(), directory_identity(path)))
+                        .collect();
+                    for path in &watched {
+                        if !desired.contains(path) || watched_ids.get(path) != desired_ids.get(path)
+                        {
+                            let _ = watcher.unwatch(path);
+                        }
+                    }
+                    let mut actual = watched
+                        .intersection(&desired)
+                        .filter(|path| watched_ids.get(*path) == desired_ids.get(*path))
+                        .cloned()
+                        .collect::<BTreeSet<_>>();
+                    let missing: Vec<_> = desired.difference(&actual).cloned().collect();
+                    for path in &missing {
+                        match watcher.watch(path, RecursiveMode::NonRecursive) {
+                            Ok(()) => {
+                                actual.insert(path.clone());
+                            }
+                            Err(e) => control
+                                .error(format!("Cannot watch {}; polling: {e}", path.display())),
+                        }
+                    }
+                    watched = actual;
+                    watched_ids = desired_ids
+                        .into_iter()
+                        .filter(|(path, _)| watched.contains(path))
+                        .collect();
+                    watched_paths = watched.iter().map(|path| routing_path(path)).collect();
+                }
+                // Close the list-before-subscribe gap. Directory cookies catch
+                // new empty subtrees during registration; rediscovery catches
+                // files created before their first watch was attached.
+                let directories_changed = directory_stamps.iter().any(|(path, stamp)| {
+                    std::fs::metadata(path).map_or(true, |metadata| {
+                        hession_core::jsonl::Fingerprint::of(&metadata) != *stamp
+                    })
+                }) || scopes
+                    .iter()
+                    .any(|(path, _)| path.is_dir() && !desired.contains(path));
+                let refreshed =
+                    importer::with_cancellation(control.cancel.clone(), || catalog.files());
+                let previous: BTreeSet<_> = known_files.iter().collect();
+                let current: BTreeSet<_> = refreshed.iter().collect();
+                // A capped or failed watch plan uses bounded fallback polling;
+                // it must not spin trying to attach unreachable directories.
+                coverage_scan = !incomplete
+                    && watched == desired
+                    && (directories_changed || previous != current);
+                known_files = refreshed;
+                let unavailable = roots
+                    .iter()
+                    .filter(|root| !root.is_dir())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let missing_previously_available =
+                    unavailable.iter().any(|root| seen_roots.contains(root));
+                seen_roots.extend(roots.iter().filter(|root| root.is_dir()).cloned());
+                observation_incomplete = truncated
+                    || watcher.is_none()
+                    || watched != desired
+                    || (!roots.is_empty() && unavailable.len() == roots.len())
+                    || missing_previously_available;
+                control.update(|s| {
+                    s.unavailable_roots = unavailable;
+                    s.watched_directories = watched.len();
+                    s.phase = if !observation_incomplete && !truncated {
+                        "active"
+                    } else {
+                        "degraded"
+                    }
+                    .into();
+                });
+                if known_files.iter().any(|(_, path)| {
+                    std::fs::symlink_metadata(path)
+                        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                }) {
+                    observation_incomplete = true;
+                    control.update(|s| s.phase = "degraded".into());
+                }
+                dependencies.clear();
+                for (index, key) in known_files.iter().enumerate() {
+                    for path in importer::source_paths(&key.0, &key.1) {
+                        dependencies
+                            .entry(routing_path(&path))
+                            .or_default()
+                            .push(index);
+                    }
+                }
+            }
             let epoch = match indexing::epoch(&conn) {
                 Ok(epoch) => epoch,
                 Err(e) => {
                     control.error(e.to_string());
+                    observation_incomplete = true;
+                    last_probe = now;
+                    last_poll = now;
+                    control.update(|s| s.phase = "degraded".into());
                     continue;
                 }
             };
-            let files = importer::with_cancellation(control.cancel.clone(), || catalog.files());
-            let mut live = BTreeSet::new();
-            let mut pass_failed = false;
+            let mut files = if discover {
+                known_files.clone()
+            } else {
+                events
+                    .iter()
+                    .filter_map(|event| dependencies.get(event))
+                    .flatten()
+                    .copied()
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .map(|index| known_files[index].clone())
+                    .collect()
+            };
+            if retry {
+                last_retry = now;
+                let selected: BTreeSet<_> = files
+                    .into_iter()
+                    .chain(failed_sources.iter().cloned())
+                    .collect();
+                files = selected.into_iter().collect();
+            }
+            let live = if discover {
+                Some(known_files.iter().cloned().collect::<BTreeSet<_>>())
+            } else {
+                None
+            };
+
+            let mut imported = false;
             let mut remaining_sources = files.len();
             control.update(|s| s.pending_sources = remaining_sources);
             for (family, path) in files {
@@ -446,16 +806,17 @@ fn run(
                 remaining_sources = remaining_sources.saturating_sub(1);
                 control.update(|s| s.pending_sources = remaining_sources);
                 let key = (family.clone(), path.clone());
-                live.insert(key.clone());
+                control.update(|s| s.fingerprint_checks = s.fingerprint_checks.saturating_add(1));
                 let stamp = match catalog.fingerprint(&family, &path) {
                     Ok(stamp) => stamp,
                     Err(e) => {
                         control.error(e);
-                        pass_failed = true;
+                        failed_sources.insert(key);
                         continue;
                     }
                 };
                 if !full_audit
+                    && !failed_sources.contains(&key)
                     && fingerprints.get(&key) == Some(&stamp)
                     && !events.iter().any(|event| affected(&family, &path, event))
                 {
@@ -474,6 +835,8 @@ fn run(
                         r.get::<_, i64>(0)
                     })
                     .unwrap_or(0);
+                imported = true;
+                control.update(|s| s.import_attempts = s.import_attempts.saturating_add(1));
                 let import_started = Instant::now();
                 let result = importer::with_cancellation(control.cancel.clone(), || {
                     if full_audit || events.iter().any(|event| affected(&family, &path, event)) {
@@ -484,6 +847,7 @@ fn run(
                 });
                 match result {
                     Ok(_) => {
+                        failed_sources.remove(&key);
                         fingerprints.insert(key, stamp);
                         control.update(|s| {
                             s.last_success = Some(chrono::Utc::now().to_rfc3339());
@@ -494,13 +858,16 @@ fn run(
                     }
                     Err(e) if !control.cancel.load(Ordering::SeqCst) => {
                         control.error(e);
-                        pass_failed = true;
+                        failed_sources.insert(key);
                     }
                     Err(_) => {
                         scan = true;
                         remaining_sources = remaining_sources.saturating_add(1);
                     }
                 }
+                // Initial indexing can span many sources: free old native
+                // allocations on the bounded background schedule during it too.
+                crate::memory::schedule();
                 if let Ok(mut stmt) = conn
                     .prepare("SELECT DISTINCT session_id FROM index_change WHERE seq>? LIMIT 128")
                 {
@@ -519,18 +886,29 @@ fn run(
             }
             // Never erase cache entries after a cancelled partial discovery.
             if !control.cancel.load(Ordering::SeqCst) {
-                fingerprints.retain(|key, _| live.contains(key));
+                if let Some(live) = live {
+                    fingerprints.retain(|key, _| live.contains(key));
+                    failed_sources.retain(|key| live.contains(key));
+                }
+            }
+            if imported {
+                let now = Instant::now();
+                reclaim_at = Some(now + IDLE_RECLAIM);
+                reclaim_ceiling.get_or_insert(now + crate::memory::MAX_DELAY);
             }
             control.update(|s| {
                 s.active_source = None;
                 s.pending_sources = remaining_sources;
-                s.may_be_stale = pass_failed
+                s.may_be_stale = !failed_sources.is_empty()
                     || truncated
                     || observation_incomplete
-                    || missing_previously_available;
+                    || coverage_scan;
             });
         }
-        emit(&conn, &mut last_revision, &mut changed, on_change);
+        if do_scan || last_probe.elapsed() >= POLL {
+            emit(&conn, &mut last_revision, &mut changed, on_change);
+            last_probe = Instant::now();
+        }
     }
 }
 
@@ -557,6 +935,12 @@ fn desktop() -> &'static Mutex<Option<Observer>> {
     static CELL: OnceLock<Mutex<Option<Observer>>> = OnceLock::new();
     CELL.get_or_init(|| Mutex::new(None))
 }
+pub(crate) fn wake_after_manual() {
+    if let Some(observer) = desktop().lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = observer.control.wake.try_send(Notice::Wake);
+    }
+}
+
 pub(crate) fn interrupt_for_manual() {
     if let Some(observer) = desktop().lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         observer.interrupt();
@@ -760,13 +1144,331 @@ mod tests {
         drop(replacement);
     }
     #[test]
+    fn quiet_observer_sleeps_and_single_append_does_not_touch_neighboring_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("codex");
+        let sessions = root.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        for n in 0..64 {
+            std::fs::write(sessions.join(format!("{n}.jsonl")), format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"isolated-{n}\",\"cwd\":\"/synthetic\"}}}}\n{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Initial history\"}}}}\n"
+            )).unwrap();
+        }
+        let database = dir.path().join("library.sqlite");
+        let observer = Observer::start(
+            database.clone(),
+            LocalCatalog::fixture(root),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let conn = db::open_db(&database).unwrap();
+        let count = || {
+            conn.query_row("SELECT count(*) FROM entry", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+        };
+        wait_until(|| {
+            count() == 128
+                && !observer.status().may_be_stale
+                && observer.status().active_source.is_none()
+        });
+        let before = observer.status();
+        // Cross the old unconditional 15s scan boundary. Idle status/revision
+        // monitoring may wake, but no source tree or fingerprint should be read.
+        thread::sleep(Duration::from_secs(16));
+        let quiet = observer.status();
+        assert_eq!(quiet.discovery_passes, before.discovery_passes);
+        assert_eq!(quiet.fingerprint_checks, before.fingerprint_checks);
+        assert_eq!(quiet.import_attempts, before.import_attempts);
+        assert!(
+            quiet.wakeups - before.wakeups <= 3,
+            "quiet observer must stay asleep"
+        );
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(sessions.join("0.jsonl"))
+            .unwrap();
+        writeln!(file, "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"One small continuation\"}}}}").unwrap();
+        wait_until(|| count() == 129 && observer.status().active_source.is_none());
+        let after = observer.status();
+        assert_eq!(after.discovery_passes, quiet.discovery_passes);
+        assert_eq!(after.fingerprint_checks - quiet.fingerprint_checks, 1);
+        assert_eq!(after.import_attempts - quiet.import_attempts, 1);
+        // Control messages must interrupt the long native receive timeout.
+        let start = Instant::now();
+        drop(observer);
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn native_discovery_tracks_nested_creation_atomic_replacement_and_failed_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("codex");
+        let sessions = root.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let good = sessions.join("good.jsonl");
+        std::fs::write(
+            &good,
+            include_str!("../tests/fixtures/codex-concurrency.jsonl"),
+        )
+        .unwrap();
+        let bad = sessions.join("bad.jsonl");
+        std::fs::write(&bad, "invalid json\n").unwrap();
+        let database = dir.path().join("library.sqlite");
+        let observer = Observer::start(
+            database.clone(),
+            LocalCatalog::fixture(root),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let conn = db::open_db(&database).unwrap();
+        wait_until(|| {
+            !observer.status().errors.is_empty() && observer.status().active_source.is_none()
+        });
+        assert!(observer.status().may_be_stale);
+        let nested = sessions.join("new/nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let new_file = nested.join("new.jsonl");
+        let original = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"new-session\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"New nested history\"}}\n";
+        std::fs::write(&new_file, original).unwrap();
+        let body_exists = |body: &str| {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM content_part WHERE text=?)",
+                [body],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap()
+        };
+        wait_until(|| {
+            body_exists("New nested history") && observer.status().active_source.is_none()
+        });
+        assert!(
+            observer.status().may_be_stale,
+            "another successful source must not hide the failed source"
+        );
+        let replacement = nested.join("replacement.tmp");
+        std::fs::write(
+            &replacement,
+            original.replace("New nested history", "Replaced history"),
+        )
+        .unwrap();
+        std::fs::rename(replacement, &new_file).unwrap();
+        wait_until(|| body_exists("Replaced history") && !body_exists("New nested history"));
+        std::fs::write(
+            &bad,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"repaired\"}}\n",
+        )
+        .unwrap();
+        wait_until(|| !observer.status().may_be_stale && observer.status().active_source.is_none());
+        let relocated = sessions.with_extension("old");
+        std::fs::rename(&sessions, &relocated).unwrap();
+        std::fs::create_dir(&sessions).unwrap();
+        let replacement = sessions.join("replacement.jsonl");
+        std::fs::write(
+            &replacement,
+            original
+                .replace("new-session", "root-replacement")
+                .replace("New nested history", "Replacement root"),
+        )
+        .unwrap();
+        wait_until(|| body_exists("Replacement root") && !observer.status().may_be_stale);
+        let mut output = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&replacement)
+            .unwrap();
+        writeln!(output, "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Append after root replacement\"}}}}").unwrap();
+        wait_until(|| body_exists("Append after root replacement"));
+        assert_eq!(
+            conn.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+    }
+
+    #[test]
+    fn directory_permission_changes_mark_observation_stale_and_recover_without_polling() {
+        use std::os::unix::fs::PermissionsExt;
+        struct Restore(PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("codex");
+        let sessions = root.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(
+            sessions.join("fixture.jsonl"),
+            include_str!("../tests/fixtures/codex-concurrency.jsonl"),
+        )
+        .unwrap();
+        let observer = Observer::start(
+            dir.path().join("library.sqlite"),
+            LocalCatalog::fixture(root),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        wait_until(|| !observer.status().may_be_stale && observer.status().active_source.is_none());
+        let _restore = Restore(sessions.clone());
+        let before = observer.status().discovery_passes;
+        std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o0)).unwrap();
+        // Privileged test runners can read mode-000 directories. They should
+        // still receive/reconcile metadata events, without claiming an IO error.
+        let inaccessible = std::fs::read_dir(&sessions).is_err();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while if inaccessible {
+            !observer.status().may_be_stale
+        } else {
+            observer.status().discovery_passes <= before
+        } {
+            assert!(
+                Instant::now() < deadline,
+                "directory permission event was ignored until a periodic poll"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o700)).unwrap();
+        wait_until(|| !observer.status().may_be_stale && observer.status().phase == "active");
+    }
+
+    #[test]
+    fn agent_package_trees_do_not_consume_history_watches_or_trigger_imports() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("hermes");
+        let packages = root.join(".venv/lib/packages");
+        std::fs::create_dir_all(&packages).unwrap();
+        for number in 0..100 {
+            std::fs::create_dir(packages.join(format!("package-{number}"))).unwrap();
+        }
+        let sessions = root.join("sessions");
+        let profile = root.join("profiles/default");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(profile.join(".venv/lib/cache")).unwrap();
+        let file = sessions.join("fixture.jsonl");
+        std::fs::write(
+            &file,
+            "{\"type\":\"message\",\"role\":\"user\",\"content\":\"Initial Hermes history\"}\n",
+        )
+        .unwrap();
+        let catalog = LocalCatalog::fixture_hermes(root.clone());
+        let (desired, truncated) = watch_directories(&catalog.observation_roots());
+        assert!(!truncated);
+        assert!(desired.contains(&sessions));
+        assert!(desired.contains(&profile));
+        assert!(!desired
+            .iter()
+            .any(|path| path.starts_with(root.join(".venv"))
+                || path.starts_with(profile.join(".venv"))));
+        let database = dir.path().join("library.sqlite");
+        let observer = Observer::start(database.clone(), catalog, Arc::new(|_| {})).unwrap();
+        let conn = db::open_db(&database).unwrap();
+        let count = || {
+            conn.query_row("SELECT count(*) FROM entry", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+        };
+        wait_until(|| {
+            count() == 1
+                && !observer.status().may_be_stale
+                && observer.status().active_source.is_none()
+        });
+        let before = observer.status();
+        std::fs::write(packages.join("package-0/cache.txt"), "Package cache noise").unwrap();
+        let mut source = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
+        writeln!(
+            source,
+            "{{\"type\":\"message\",\"role\":\"user\",\"content\":\"A real history change\"}}"
+        )
+        .unwrap();
+        wait_until(|| count() == 2 && observer.status().active_source.is_none());
+        let after = observer.status();
+        assert_eq!(after.discovery_passes, before.discovery_passes);
+        assert_eq!(after.import_attempts - before.import_attempts, 1);
+        assert!(!after.may_be_stale);
+    }
+
+    #[test]
+    fn exhausted_watch_budget_uses_fallback_without_a_reconciliation_spin() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("codex");
+        let sessions = root.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        for number in 0..MAX_DIRECTORIES {
+            std::fs::create_dir(sessions.join(format!("empty-{number}"))).unwrap();
+        }
+        let observer = Observer::start(
+            dir.path().join("library.sqlite"),
+            LocalCatalog::fixture(root),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        wait_until(|| {
+            let status = observer.status();
+            status.phase == "degraded" && status.discovery_passes > 0
+        });
+        let before = observer.status();
+        thread::sleep(Duration::from_millis(1200));
+        let after = observer.status();
+        assert!(after.may_be_stale);
+        assert_eq!(after.discovery_passes, before.discovery_passes);
+        assert!(after.wakeups - before.wakeups <= 1);
+    }
+
+    #[test]
+    #[ignore = "metadata-only diagnostic of explicitly selected installed source directories"]
+    fn installed_observation_watch_plan() {
+        let catalog = LocalCatalog::capture(None);
+        let start = Instant::now();
+        let (old, old_truncated) = directories(&catalog.roots());
+        let old_ms = start.elapsed().as_secs_f64() * 1000.;
+        let start = Instant::now();
+        let (new, new_truncated) = watch_directories(&catalog.observation_roots());
+        println!(
+            "{}",
+            serde_json::json!({"broadDirectoryCount":old.len(),"broadTruncated":old_truncated,
+            "broadMs":old_ms,"historyDirectoryCount":new.len(),"historyTruncated":new_truncated,
+            "historyMs":start.elapsed().as_secs_f64()*1000.})
+        );
+        assert!(!new_truncated, "installed history watch plan is incomplete");
+    }
+
+    #[test]
     fn directory_walk_is_bounded_and_does_not_follow_cycles() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("nested")).unwrap();
         std::os::unix::fs::symlink(dir.path(), dir.path().join("nested/cycle")).unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(dir.path().join("nested"), &alias).unwrap();
+        assert_eq!(
+            routing_path(&alias.join("missing.db-wal")),
+            routing_path(&dir.path().join("nested/missing.db-wal"))
+        );
+        assert!(affected(
+            "codex",
+            &alias.join("history.jsonl"),
+            &dir.path().join("nested/history.jsonl")
+        ));
         let (found, truncated) = directories(&[dir.path().into()]);
         assert_eq!(found.len(), 2);
         assert!(!truncated);
+        let (anchors, truncated) = directories(&[dir.path().join("missing/child")]);
+        assert_eq!(anchors, BTreeSet::from([dir.path().to_path_buf()]));
+        assert!(
+            !truncated,
+            "missing roots must not walk their existing parent"
+        );
+        assert!(!affected(
+            "codex",
+            Path::new("/store/one.jsonl"),
+            Path::new("/store/two.jsonl")
+        ));
+        assert!(!affected(
+            "hermes",
+            Path::new("/store/state.db"),
+            Path::new("/store/other.db-wal")
+        ));
         assert!(affected(
             "hermes",
             Path::new("/store/state.db"),
@@ -798,6 +1500,7 @@ mod tests {
         wait_until(|| observer.status().phase == "active");
         *observer.control.native_error.lock().unwrap() =
             Some("synthetic callback backend failure".into());
+        let _ = observer.control.wake.try_send(Notice::Wake);
         wait_until(|| observer.status().phase == "degraded");
         let failed = observer.status();
         assert!(failed.may_be_stale);

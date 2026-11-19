@@ -92,7 +92,7 @@ Unsupported/unreadable areas are reported as potentially stale.
 | --- | --- |
 | Notification queue / debounce sources | 256 / 512 |
 | Debounce / maximum continuous-write delay | 400 ms / 1 s |
-| Metadata reconciliation / full-prefix audit | 15 s / 10 min |
+| Degraded polling / healthy metadata safety audit | 15 s / 10 min |
 | Discovery depth / directories / source files | 24 / 4,096 / 100,000 |
 | Temporary staging / native line / session metadata | 4 GiB / 8 MiB / 16 MiB |
 | Delta page | 100 entries, 1 MiB |
@@ -342,3 +342,107 @@ Normal development builds need no signing key. Signed local builds use
 keys and files must never replace production artifacts. The installer workflow
 checks published downloads; do not rerun the publishing workflow over an already
 published release to retry only an installer check.
+
+### Background indexing performance gate for v0.6.0
+
+Use optimized binaries with other builds/tests stopped. Build the candidate with
+`make build` so the GUI embeds production assets; a bare `cargo build --release`
+uses the development URL and is unsuitable for the GUI probe. The Linux-only probe
+creates 160 synthetic Codex transcripts (about 251 MiB), waits for indexing to
+settle, samples 35 seconds of idle operation, appends to one transcript three
+times, verifies the saved library, and removes its disposable data. It records
+observer scheduler CPU, context switches, process read volume, RSS, and PSS.
+The benchmark never reads personal conversations.
+
+```sh
+python3 scripts/benchmark-idle.py --binary /path/to/v0.5.4/hession \
+  --output target/performance-v0.6.0/baseline.json
+python3 scripts/benchmark-idle.py --binary target/release/hession \
+  --baseline target/performance-v0.6.0/baseline.json \
+  --output target/performance-v0.6.0/candidate.json --require-improvement 50 \
+  --max-idle-rss-mib 64
+```
+
+The comparison requires identical corpus and sampling arguments. The 50× gate
+covers observer idle CPU, observer idle context switches, and append read
+amplification. Append CPU and RAM improvements are reported separately. Total
+measured background CPU must also stay below 0.07% of one logical CPU (the
+reported 3.5% divided by 50). This is an indexing performance gate, not a claim
+that every operation or the complete GUI becomes 50× faster or uses 50× less RAM.
+Memory budgets can be enforced independently with `--max-idle-rss-mib` and
+`--max-idle-pss-mib`. Observer wakeups are the energy-use proxy; whole-machine
+power and CPU C-state residency are not measured by this probe.
+
+For a full minimized-GUI measurement including WebKit children, add `--gui` to
+both runs inside a **private** Xvfb display and D-Bus session with Openbox
+available. Set `HESSION_NATIVE_SMOKE_ISOLATED=1` to acknowledge that isolation;
+reuse `.github/scripts/native-session-bus.conf`. Extracted window-manager tools
+can be configured with `HESSION_TEST_WM`, `HESSION_TEST_WM_LD_LIBRARY_PATH`, and
+`HESSION_TEST_WM_XDG_DATA_DIRS`. This mode isolates every source/config directory,
+starts and minimizes the real app, and includes its descendant processes. Add
+`--hermes-package-dirs 5000` to both full-corpus runs to reproduce an installed
+Hermes environment exceeding the old watch budget. The fixed GTK/WebKit footprint is measured separately with a tiny-library control
+(`--files 1 --entries 1 --text-bytes 1 --samples 1 --idle-seconds 30`). Use
+`--empty-gui-report CONTROL.json --max-native-overhead-mib 16
+--max-gui-overhead-mib 96` on the full corpus to gate added native RSS and total
+GUI PSS. The control must use the same production binary. These reference budgets
+include the selected transcript and library metadata; they separate application
+data from the engine's fixed footprint. RSS sums count shared mappings in each process; use PSS when assessing total physical
+memory. GUI comparisons must use the same display/compositing setup. Use paired
+`--idle-seconds 120` runs for the final GUI gate so it spans engine maintenance
+and minute timers; the default 35-second interval is a shorter diagnostic.
+Per-thread rows and new/retired thread counts identify remaining work. Observer
+CPU uses high-resolution scheduler runtime. The whole-GUI gate checks both those
+persistent-thread sums and process CPU-clock totals, which retain work by exited
+helper threads. POSIX process CPU clocks avoid coarse `/proc/stat` tick rounding.
+Any process churn during the idle interval requires another settled measurement.
+
+Native regression tests cross the former 15-second scan boundary, assert zero
+extra discovery/fingerprint/import work while quiet, and assert that a one-file
+append touches exactly one source. They also exercise nested source creation,
+atomic replacement, directory permission changes, watch-budget exhaustion without
+a busy retry loop, failed-source recovery,
+pause/resume, native watcher failure, and prompt shutdown. Event paths account for
+macOS directory aliases; source-root identity checks reattach replaced watches.
+Symlinked source files retain fallback polling because watching their logical
+parent does not observe every external target write. Periodic safety
+reconciliation compares device, inode,
+size, mtime, and ctime; explicit imports and native-gap recovery retain content
+verification. No source history is modified by automatic indexing.
+
+On Linux/glibc, completed transcript reads also schedule one coalesced idle
+memory reclamation, including when automatic indexing is disabled. The bounded
+memory worker blocks without a timer when there is no request. Three seconds of
+quiet triggers cleanup; a 30-second maximum delay prevents continuous imports or
+reads from postponing reclamation indefinitely. This returns freed
+native reply buffers after the final UI refresh; it does not remove displayed
+conversation content or change saved history.
+
+Desktop reading queries omit duplicate search text, native message payloads
+already represented by visible text/tools, and duplicate plain-text JSON parts
+before loading them from SQLite. Bookkeeping and empty-text fallbacks retain
+their native payloads. Full-fidelity queries and exports retain original fields;
+a regression checks both representations and confirms stored history is unchanged.
+
+Observation scopes follow each agent's history layout. Hermes environments and
+package installations, OpenCode caches, and Antigravity artifact trees are not
+recursively watched. Explicit source/SQLite companion parents are watched too.
+Discovery rechecks directory metadata and source membership after subscribing to
+close the list-before-watch race. The ignored metadata-only diagnostic
+`installed_observation_watch_plan` compares broad and history-scoped watch plans
+without opening transcripts or changing the library. On the development host,
+the old plan hit 4,096 directories and truncated; the scoped plan used 354
+directories without truncation. This avoids perpetual degraded polling caused by
+an agent installation's unrelated packages.
+
+The optimized v0.6.0 candidate passed the synthetic Linux gate against the
+published v0.5.4 binary: headless observer idle CPU 93× lower, context switches
+175× lower, append reads 160× lower, and retained RSS 49 MiB. With 5,000 synthetic
+Hermes package directories, paired 120-second minimized-GUI runs measured observer
+CPU 417× lower, context switches 155× lower, append reads 160× lower, and append
+CPU 53× lower. Measured GUI CPU was 0.052% of one logical core and PSS 263 MiB;
+added native RSS was 7.2 MiB and added GUI PSS 51.3 MiB above the same-binary tiny
+control. A preceding 35-second GUI sample measured 0.084% CPU and failed the
+0.07% budget; keep that diagnostic alongside the longer passing run. These are
+synthetic steady-state results, not measurements of personal-library startup,
+whole-machine energy, or a 50× improvement to the GUI's fixed engine footprint.

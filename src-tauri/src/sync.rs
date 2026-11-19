@@ -73,6 +73,7 @@ pub fn acquire_data_management_for(path: &Path) -> Result<DataManagementGuard, S
 impl Drop for DataManagementGuard {
     fn drop(&mut self) {
         MANAGING_DATA.store(false, Ordering::SeqCst);
+        crate::indexer::wake_after_manual();
         crate::analytics::request_refresh(&self.0, false);
     }
 }
@@ -164,6 +165,7 @@ pub fn start_sync(agent_filter: Option<String>, mode: &str) -> bool {
                 }
             }
             drop(state);
+            crate::indexer::wake_after_manual();
             crate::analytics::shared_state().clear_cache();
             crate::analytics::request_refresh(&crate::db::db_path(), false);
         });
@@ -174,6 +176,8 @@ pub fn start_sync(agent_filter: Option<String>, mode: &str) -> bool {
         state
             .errors
             .push(format!("Could not start session sync: {error}"));
+        drop(state);
+        crate::indexer::wake_after_manual();
         return false;
     }
     true

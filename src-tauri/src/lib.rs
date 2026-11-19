@@ -17,6 +17,7 @@ pub mod headless_index;
 pub mod importer;
 pub mod indexer;
 mod library_revision;
+mod memory;
 mod paths;
 pub mod pricing;
 pub mod project_activity;

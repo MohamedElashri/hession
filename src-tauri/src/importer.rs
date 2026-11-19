@@ -431,6 +431,7 @@ fn discover_from_sources(sources: &[Source], family: &str) -> Vec<PathBuf> {
 /// Environment overrides and known stores captured once per observer lifetime.
 /// No remote mirror discovery/SSH operation is part of automatic observation.
 pub(crate) struct LocalCatalog(Vec<Source>);
+pub(crate) type SourceFingerprint = Vec<Option<hession_core::jsonl::Fingerprint>>;
 
 impl LocalCatalog {
     #[cfg(test)]
@@ -443,6 +444,16 @@ impl LocalCatalog {
             kind: SourceKind::Jsonl,
         }])
     }
+    #[cfg(test)]
+    pub(crate) fn fixture_hermes(root: PathBuf) -> Self {
+        Self(vec![Source {
+            family: "hermes",
+            product: "Hermes Agent",
+            root,
+            sub: "",
+            kind: SourceKind::Hermes,
+        }])
+    }
     pub(crate) fn capture(family: Option<&str>) -> Self {
         Self(local_sources_filtered(family))
     }
@@ -451,6 +462,44 @@ impl LocalCatalog {
         roots.sort();
         roots.dedup();
         roots
+    }
+    /// Match discovery's directory scope. Agent installations often include
+    /// package trees; observing those can exhaust the watch budget forever.
+    pub(crate) fn observation_roots(&self) -> Vec<(PathBuf, usize)> {
+        let mut roots = std::collections::BTreeMap::<PathBuf, usize>::new();
+        for source in &self.0 {
+            let mut add = |path, depth| {
+                roots
+                    .entry(path)
+                    .and_modify(|old| *old = (*old).max(depth))
+                    .or_insert(depth);
+            };
+            match source.kind {
+                SourceKind::Jsonl | SourceKind::Cline => add(source.root.join(source.sub), 24),
+                SourceKind::OpenCodeDb => add(source.root.clone(), 0),
+                SourceKind::Hermes => {
+                    add(source.root.clone(), 0);
+                    add(source.root.join("profiles"), 1);
+                    add(source.root.join("sessions"), 24);
+                }
+                SourceKind::Antigravity => {
+                    add(source.root.clone(), 0);
+                    let brain = source.root.join("brain");
+                    add(brain.clone(), 1);
+                    if let Ok(entries) = fs::read_dir(brain) {
+                        for entry in entries.take(MAX_FILES).flatten() {
+                            if stop_requested() {
+                                break;
+                            }
+                            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                                add(entry.path().join(".system_generated/logs"), 0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        roots.into_iter().collect()
     }
     pub(crate) fn files(&self) -> Vec<(String, PathBuf)> {
         let mut families: Vec<_> = self.0.iter().map(|s| s.family).collect();
@@ -546,7 +595,11 @@ impl LocalCatalog {
         summary
     }
 
-    pub(crate) fn fingerprint(&self, family: &str, path: &Path) -> Result<String, String> {
+    pub(crate) fn fingerprint(
+        &self,
+        family: &str,
+        path: &Path,
+    ) -> Result<SourceFingerprint, String> {
         let mut stamp = Vec::new();
         for candidate in source_paths(family, path) {
             match fs::metadata(&candidate) {
@@ -557,7 +610,7 @@ impl LocalCatalog {
                 Err(e) => return Err(e.to_string()),
             }
         }
-        serde_json::to_string(&stamp).map_err(|e| e.to_string())
+        Ok(stamp)
     }
 }
 

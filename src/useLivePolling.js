@@ -9,6 +9,7 @@ export default function useLivePolling({ identity, enabled, load, interval = 200
     const current = state.current;
     current.timer = null; current.due = 0;
     if (!current.active || !current.enabled) return;
+    if (document.hidden) { current.dirty = true; return; }
     if (current.busy) { current.dirty = true; return; }
     current.busy = true; current.dirty = false;
     const generation = current.generation;
@@ -16,7 +17,7 @@ export default function useLivePolling({ identity, enabled, load, interval = 200
     try { more = await current.load(() => current.active && current.enabled && current.generation === generation); }
     finally {
       current.busy = false;
-      if (current.active && current.enabled) {
+      if (current.active && current.enabled && !document.hidden) {
         const delay = current.dirty ? 150 : more ? 100 : current.interval;
         clearTimeout(current.timer);
         current.due = Date.now() + delay;
@@ -28,7 +29,7 @@ export default function useLivePolling({ identity, enabled, load, interval = 200
     const current = state.current;
     if (!current.active || !current.enabled) return;
     current.dirty = true;
-    if (current.busy) return;
+    if (current.busy || document.hidden) return;
     const due = Date.now() + delay;
     if (current.timer && current.due <= due) return;
     clearTimeout(current.timer); current.due = due;
@@ -49,6 +50,15 @@ export default function useLivePolling({ identity, enabled, load, interval = 200
     }).catch(() => { if (active) setEventError('Live notifications are unavailable; polling continues.'); });
     return () => { active = false; unlisten?.(); };
   }, [enabled, refresh]);
-  useEffect(() => () => { state.current.active = false; }, []);
+  useEffect(() => {
+    const current = state.current;
+    const visible = () => {
+      if (document.hidden) {
+        clearTimeout(current.timer); current.timer = null; current.due = 0;
+      } else refresh(0);
+    };
+    document.addEventListener('visibilitychange', visible);
+    return () => { document.removeEventListener('visibilitychange', visible); current.active = false; };
+  }, [refresh]);
   return { refresh, eventError };
 }
