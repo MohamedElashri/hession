@@ -194,7 +194,7 @@ import { storageKey } from './src/brand.js';
 localStorage.setItem(storageKey('auto-sync'),'false');
 window.readingSavedLayout=()=>JSON.parse(localStorage.getItem(storageKey('reading-layout')));
 const session={id:1,title:'Synthetic reading performance',agent:'codex',cwd:'/synthetic/project',tags:[]};
-const entries=Array.from({length:500},(_,i)=>({id:i+1,ordinal:i,kind:'message',role:i%2?'assistant':'user',parts:[{kind:'text',text:'Recorded conversation '+i+'\\n\\n'+('A readable synthetic paragraph about the recorded work. ').repeat(20)}],tools:[]}));
+const entries=Array.from({length:1000},(_,i)=>({id:i+1,ordinal:i,kind:'message',role:i%2?'assistant':'user',parts:[{kind:'text',text:'Recorded conversation '+i+'\\n\\n'+('A readable synthetic paragraph about the recorded work. ').repeat(20)}],tools:[]}));
 const calls={}; let callback=0;
 window.readingCalls=calls;
 window.__TAURI_INTERNALS__={ transformCallback(){return ++callback;}, async invoke(command,args={}) {
@@ -209,7 +209,7 @@ window.__TAURI_INTERNALS__={ transformCallback(){return ++callback;}, async invo
   if(command==='get_facets')return {models:[],branches:[],tools:[]};
   if(command==='get_sync_status')return {running:false};
   if(command==='search_sessions')return {sessions:[session],total:1};
-  if(command==='get_session')return args.knownToken?{unchanged:true,readToken:'synthetic-token'}:{session,entries,total:1000,limit:500,offset:0,readToken:'synthetic-token'};
+  if(command==='get_session')return args.knownToken?{unchanged:true,readToken:'synthetic-token'}:{session,entries:entries.slice((Number(args.page)-1)*Number(args.limit),Number(args.page)*Number(args.limit)),total:1000,limit:Number(args.limit),offset:(Number(args.page)-1)*Number(args.limit),readToken:'synthetic-token'};
   throw new Error('Unexpected synthetic IPC '+command);
 }};
 window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener(){}};

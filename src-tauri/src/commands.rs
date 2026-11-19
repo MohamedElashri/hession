@@ -464,7 +464,7 @@ fn get_session_if_changed(
     let mut conn = open_db(db_path)?;
     let snapshot = conn.transaction().map_err(|e| e.to_string())?;
     let token = hession_core::session_changes::token(&snapshot, session_id)
-        .map(|token| format!("{token}:reading1:page:{}:limit:{limit}", page.max(1)));
+        .map(|token| format!("{token}:reading2:page:{}:limit:{limit}", page.max(1)));
     if token
         .as_deref()
         .is_some_and(|token| Some(token) == known_token)

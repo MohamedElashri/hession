@@ -174,6 +174,10 @@ impl Observer {
 }
 impl Drop for Observer {
     fn drop(&mut self) {
+        #[cfg(test)]
+        if std::thread::panicking() {
+            eprintln!("Observer status at failed assertion: {:?}", self.status());
+        }
         self.control.shutdown.store(true, Ordering::SeqCst);
         self.interrupt();
         if let Some(worker) = self.worker.take() {
@@ -240,13 +244,14 @@ fn directory_plan(
             hession_core::jsonl::Fingerprint::of(followed.as_ref().unwrap_or(&meta))
         });
         let remaining = limit.saturating_sub(depth);
+        let identity = routing_path(&path);
         if visited
-            .get(&path)
+            .get(&identity)
             .is_some_and(|previous| *previous >= remaining)
         {
             continue;
         }
-        visited.insert(path.clone(), remaining);
+        visited.insert(identity, remaining);
         found.insert(path.clone());
         if let Ok(entries) = std::fs::read_dir(&path) {
             if depth >= limit && limit < 24 {
@@ -617,7 +622,7 @@ fn run(
             // Routine safety sweeps compare inode/size/mtime/ctime. Content
             // verification still handles explicit scans, native gaps, and
             // affected sources without rehashing every quiet store every 10m.
-            let full_audit = scan || recovery;
+            let full_audit = recovery;
             scan = false;
             coverage_scan = false;
             last_poll = now;
@@ -630,7 +635,7 @@ fn run(
             if discover {
                 control.update(|s| s.discovery_passes = s.discovery_passes.saturating_add(1));
                 known_files =
-                    importer::with_cancellation(control.cancel.clone(), || catalog.files());
+                    importer::with_cancellation(control.cancel.clone(), || catalog.files(&conn));
                 let mut scopes: BTreeMap<_, _> =
                     importer::with_cancellation(control.cancel.clone(), || {
                         catalog.observation_roots()
@@ -657,6 +662,7 @@ fn run(
                     .write()
                     .unwrap_or_else(|error| error.into_inner()) = interest.into_iter().collect();
                 let (desired, incomplete, directory_stamps) = directory_plan(&scopes);
+                let desired: BTreeSet<_> = desired.iter().map(|path| routing_path(path)).collect();
                 truncated = incomplete;
                 if truncated {
                     control.error("Directory observation is incomplete; some sources may be stale. Check source permissions or narrow the configured roots.");
@@ -666,25 +672,46 @@ fn run(
                         .iter()
                         .map(|path| (path.clone(), directory_identity(path)))
                         .collect();
-                    for path in &watched {
-                        if !desired.contains(path) || watched_ids.get(path) != desired_ids.get(path)
-                        {
-                            let _ = watcher.unwatch(path);
-                        }
-                    }
+                    let removed: Vec<_> = watched
+                        .iter()
+                        .filter(|path| {
+                            !desired.contains(*path)
+                                || watched_ids.get(*path) != desired_ids.get(*path)
+                        })
+                        .cloned()
+                        .collect();
                     let mut actual = watched
                         .intersection(&desired)
                         .filter(|path| watched_ids.get(*path) == desired_ids.get(*path))
                         .cloned()
                         .collect::<BTreeSet<_>>();
                     let missing: Vec<_> = desired.difference(&actual).cloned().collect();
-                    for path in &missing {
-                        match watcher.watch(path, RecursiveMode::NonRecursive) {
-                            Ok(()) => {
-                                actual.insert(path.clone());
+                    if !removed.is_empty() || !missing.is_empty() {
+                        // FSEvents restarts its stream for each ordinary watch()
+                        // call. A batch registers the entire topology once and
+                        // avoids thousands of restarts and event-loss windows.
+                        let mut edits = watcher.paths_mut();
+                        for path in &removed {
+                            let _ = edits.remove(path);
+                        }
+                        for path in &missing {
+                            match edits.add(path, RecursiveMode::NonRecursive) {
+                                Ok(()) => {
+                                    actual.insert(path.clone());
+                                }
+                                Err(e) => control.error(format!(
+                                    "Cannot watch {}; polling: {e}",
+                                    path.display()
+                                )),
                             }
-                            Err(e) => control
-                                .error(format!("Cannot watch {}; polling: {e}", path.display())),
+                        }
+                        if let Err(error) = edits.commit() {
+                            actual.clear();
+                            *control
+                                .native_error
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+                            let _ = sender.try_send(Notice::Wake);
                         }
                     }
                     watched = actual;
@@ -703,9 +730,9 @@ fn run(
                     })
                 }) || scopes
                     .iter()
-                    .any(|(path, _)| path.is_dir() && !desired.contains(path));
+                    .any(|(path, _)| path.is_dir() && !desired.contains(&routing_path(path)));
                 let refreshed =
-                    importer::with_cancellation(control.cancel.clone(), || catalog.files());
+                    importer::with_cancellation(control.cancel.clone(), || catalog.files(&conn));
                 let previous: BTreeSet<_> = known_files.iter().collect();
                 let current: BTreeSet<_> = refreshed.iter().collect();
                 // A capped or failed watch plan uses bounded fallback polling;

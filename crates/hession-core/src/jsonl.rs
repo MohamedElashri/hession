@@ -108,6 +108,8 @@ pub struct Reader<'a> {
     ended: bool,
     failed: bool,
     cancelled: &'a dyn Fn() -> bool,
+    allow_final_record: bool,
+    completing_final_record: bool,
 }
 
 fn hash_prefix(
@@ -144,6 +146,29 @@ impl<'a> Reader<'a> {
         validation: Validation,
         cancelled: &'a dyn Fn() -> bool,
     ) -> Result<Option<Self>, ReadError> {
+        Self::open_policy(path, previous, parser_version, validation, false, cancelled)
+    }
+
+    /// Legacy JSONL stores permit a valid final object without a newline.
+    /// Invalid final JSON still fails the snapshot instead of committing a tail.
+    pub fn open_complete_snapshot(
+        path: &Path,
+        previous: Option<&Cursor>,
+        parser_version: u32,
+        validation: Validation,
+        cancelled: &'a dyn Fn() -> bool,
+    ) -> Result<Option<Self>, ReadError> {
+        Self::open_policy(path, previous, parser_version, validation, true, cancelled)
+    }
+
+    fn open_policy(
+        path: &Path,
+        previous: Option<&Cursor>,
+        parser_version: u32,
+        validation: Validation,
+        allow_final_record: bool,
+        cancelled: &'a dyn Fn() -> bool,
+    ) -> Result<Option<Self>, ReadError> {
         if parser_version == 0 {
             return Err(ReadError::InvalidParserVersion);
         }
@@ -166,6 +191,7 @@ impl<'a> Reader<'a> {
         let mut physical_lines = 0;
         let mut records = 0;
         let mut prefix = Sha256::new();
+        let mut completing_final_record = false;
         if let Some(previous) = previous {
             let valid = previous.offset <= previous.fingerprint.size
                 && previous.physical_lines <= previous.offset
@@ -188,13 +214,17 @@ impl<'a> Reader<'a> {
                 && previous.fingerprint.same_file(&fingerprint)
                 && previous.offset <= fingerprint.size
             {
+                let mut boundary_was_eof = false;
                 let boundary_valid = if previous.offset == 0 {
                     true
                 } else {
                     file.seek(SeekFrom::Start(previous.offset - 1))?;
                     let mut byte = [0];
                     file.read_exact(&mut byte)?;
-                    byte[0] == b'\n'
+                    boundary_was_eof = byte[0] != b'\n'
+                        && allow_final_record
+                        && previous.offset == previous.fingerprint.size;
+                    byte[0] == b'\n' || boundary_was_eof
                 };
                 if boundary_valid {
                     if validation == Validation::Metadata && previous.fingerprint == fingerprint {
@@ -207,6 +237,7 @@ impl<'a> Reader<'a> {
                         physical_lines = previous.physical_lines;
                         records = previous.records;
                         prefix = candidate;
+                        completing_final_record = boundary_was_eof;
                     }
                 } else {
                     mode = Mode::Full(ResetReason::InvalidCursor);
@@ -228,6 +259,8 @@ impl<'a> Reader<'a> {
             ended: false,
             failed: false,
             cancelled,
+            allow_final_record,
+            completing_final_record,
         }))
     }
 
@@ -285,7 +318,24 @@ impl<'a> Reader<'a> {
             }
             if !complete {
                 self.ended = true;
-                return Ok(None);
+                if !self.allow_final_record || line.is_empty() {
+                    return Ok(None);
+                }
+            }
+            if self.completing_final_record {
+                if !line.iter().all(u8::is_ascii_whitespace) {
+                    return Err(ReadError::InvalidLine {
+                        line: self.physical_lines,
+                        message: "Appending after a final object requires a newline".into(),
+                    });
+                }
+                self.offset += line.len() as u64;
+                self.prefix.update(&line);
+                if !complete {
+                    return Ok(None);
+                }
+                self.completing_final_record = false;
+                continue;
             }
             self.offset += line.len() as u64;
             self.physical_lines += 1;

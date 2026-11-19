@@ -108,8 +108,10 @@ def tree_delta(before, after, seconds, primary):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', required=True)
+    parser.add_argument('--tool-results', action='store_true', help='Use paired Codex calls/results to measure duplicate output and reading memory')
     parser.add_argument('--gui', action='store_true', help='Include the minimized GUI and WebKit children; requires a private X11 display and session bus')
     parser.add_argument('--output', required=True)
+    parser.add_argument('--screenshot', help='Capture the loaded synthetic GUI before minimizing (requires ImageMagick import)')
     parser.add_argument('--baseline', help='Compare a report from identical corpus/sampling parameters')
     parser.add_argument('--require-improvement', type=float, default=0,
                         help='Minimum factor for observer idle CPU, observer wakeups, and append read volume; RAM is reported separately')
@@ -128,6 +130,7 @@ def main():
     assert 1 <= args.files <= 10000 and 1 <= args.entries <= 10000 and 1 <= args.text_bytes <= 1024 * 1024
     assert 30 <= args.idle_seconds <= 600 and 1 <= args.samples <= 100
     assert 0 <= args.hermes_package_dirs <= 20000 and (args.gui or not args.hermes_package_dirs)
+    assert not args.screenshot or args.gui
     assert args.require_improvement >= 0 and (not args.require_improvement or args.baseline)
     assert not (args.max_native_overhead_mib or args.max_gui_overhead_mib) or (args.gui and args.empty_gui_report)
     binary = str(Path(args.binary).resolve(strict=True))
@@ -171,11 +174,17 @@ def main():
             with (source_dir / f'{number}.jsonl').open('w') as stream:
                 stream.write(json.dumps({'type': 'session_meta', 'payload': {'id': f'idle-{number}', 'cwd': '/synthetic/project'}}) + '\n')
                 for entry in range(args.entries):
-                    stream.write(json.dumps({'type': 'event_msg', 'payload': {'type': 'user_message', 'message': f'{entry}: ' + 'x' * args.text_bytes}}) + '\n')
+                    text = f'{entry}: ' + 'x' * args.text_bytes
+                    if args.tool_results:
+                        call = f'call-{number}-{entry}'
+                        stream.write(json.dumps({'type': 'response_item', 'payload': {'type': 'function_call', 'name': 'exec_command', 'arguments': '{"cmd":"echo synthetic"}', 'call_id': call}}) + '\n')
+                        stream.write(json.dumps({'type': 'response_item', 'payload': {'type': 'function_call_output', 'call_id': call, 'output': text}}) + '\n')
+                    else:
+                        stream.write(json.dumps({'type': 'event_msg', 'payload': {'type': 'user_message', 'message': text}}) + '\n')
             total_bytes += (source_dir / f'{number}.jsonl').stat().st_size
         report['sourceBytes'] = total_bytes
         database = root / 'library/sessions.sqlite'
-        expected = args.files * (args.entries + 1)
+        expected = args.files * (args.entries * (2 if args.tool_results else 1) + 1)
         with (root / 'stdout').open('w') as stdout, (root / 'stderr').open('w') as stderr:
             start = time.perf_counter()
             desktop = wm = None
@@ -224,6 +233,10 @@ def main():
                 if desktop:
                     assert wm.poll() is None, 'Private window manager exited before Hession appeared'
                     window = native.until(lambda: desktop.windows(process.pid), 'Hession window did not appear')[0]
+                    if args.screenshot:
+                        screenshot = Path(args.screenshot).resolve()
+                        screenshot.parent.mkdir(parents=True, exist_ok=True)
+                        subprocess.run(['/usr/bin/import', '-silent', '-window', str(window), str(screenshot)], check=True, timeout=15)
                     desktop.iconify(window)
                     time.sleep(2)
                 initial = tree_counters(process.pid)
@@ -276,7 +289,7 @@ def main():
             assert process.returncode in (0, 143, -signal.SIGTERM), (process.returncode, (root / 'stderr').read_text())
     if args.baseline:
         baseline = json.loads(Path(args.baseline).read_text())
-        for key in ['files', 'entries', 'text_bytes', 'idle_seconds', 'samples', 'gui', 'hermes_package_dirs']:
+        for key in ['files', 'entries', 'text_bytes', 'idle_seconds', 'samples', 'gui', 'hermes_package_dirs', 'tool_results']:
             assert baseline['parameters'].get(key, False) == report['parameters'].get(key, False), f'Baseline parameter mismatch: {key}'
         def factor(previous, current):
             return previous / current if current else None

@@ -17,6 +17,16 @@
   search text or native JSON copies. Preserve complete records for exports and
   bookkeeping fallbacks.
 - Stop hidden Live-view and indexing-monitor timers, then catch up on visibility.
+- Reuse persisted source fingerprints on restart and after sync. Stream Pi and
+  Command Code appends without rebuilding earlier entries, and coalesce local
+  source aliases while preserving their saved identity and annotations.
+- Share immutable parser text, consume native records instead of cloning them,
+  retain only token counters for OpenCode usage aggregation, and cap SQLite
+  batches by data weight as well as record count and time.
+- Read 100 entries per page. Send tool outputs once per reading page, preserve
+  standalone result pages, and omit unused native metadata from display replies.
+- Use WebKit's single-document cache policy on Linux and batch native watch
+  registration to avoid restarting the macOS event stream for every directory.
 
 ### Fixed
 

@@ -101,7 +101,7 @@ pub struct Checkpoint {
 pub struct NormalizedRecord {
     pub kind: String,
     pub role: Option<String>,
-    pub body: String,
+    pub body: Arc<String>,
     pub occurred_at: Option<String>,
     pub external_id: Option<String>,
     pub parent: Option<String>,
@@ -501,11 +501,11 @@ impl LocalCatalog {
         }
         roots.into_iter().collect()
     }
-    pub(crate) fn files(&self) -> Vec<(String, PathBuf)> {
+    pub(crate) fn files(&self, conn: &Connection) -> Vec<(String, PathBuf)> {
         let mut families: Vec<_> = self.0.iter().map(|s| s.family).collect();
         families.sort();
         families.dedup();
-        families
+        let candidates = families
             .into_iter()
             .flat_map(|family| {
                 discover_from_sources(&self.0, family)
@@ -513,7 +513,8 @@ impl LocalCatalog {
                     .map(move |path| (family.into(), path))
             })
             .take(MAX_FILES)
-            .collect()
+            .collect();
+        unique_local_sources(conn, candidates)
     }
     pub(crate) fn import(
         &self,
@@ -564,7 +565,7 @@ impl LocalCatalog {
                 return summary;
             }
         };
-        let files = self.files();
+        let files = self.files(conn);
         summary.files_total = files.len();
         if let Err(error) = hession_core::indexing::check_epoch(conn, epoch) {
             push_error(&mut summary, "index", error);
@@ -572,7 +573,7 @@ impl LocalCatalog {
         }
         let mut pricing = ImportPricing::new();
         pricing.epoch = Some(epoch);
-        pricing.validate_contents = true;
+        pricing.validate_contents = false;
         for (family, path) in files {
             if stop_requested() {
                 summary.cancelled = true;
@@ -639,6 +640,64 @@ pub(crate) fn source_paths(family: &str, file: &Path) -> Vec<PathBuf> {
     } else {
         vec![file.into()]
     }
+}
+
+/// Resolve aliases only within a local family and the complete dependency set.
+/// Keep an already indexed spelling so adding an alias cannot create a new
+/// session or abandon its annotations. Equal IDs/content alone never deduplicate
+/// distinct histories; remote hosts are discovered separately.
+fn unique_local_sources(
+    conn: &Connection,
+    candidates: Vec<(String, PathBuf)>,
+) -> Vec<(String, PathBuf)> {
+    let mut selected: Vec<(String, PathBuf)> = Vec::new();
+    let mut identities = std::collections::HashMap::new();
+    let indexed = |family: &str, path: &Path| {
+        let Ok(uri) = native_source_uri(family, path) else {
+            return false;
+        };
+        hession_core::indexing::excluded(conn, &uri).unwrap_or(true) || conn.query_row("SELECT EXISTS(SELECT 1 FROM session WHERE source_uri=?1 UNION ALL SELECT 1 FROM index_full_source WHERE source_uri=?1)",
+            [&uri], |row| row.get::<_, bool>(0)).unwrap_or(true)
+    };
+    for (family, path) in candidates {
+        if stop_requested() {
+            break;
+        }
+        let key = local_source_identity(&family, &path);
+        if let Some(&slot) = identities.get(&key) {
+            let previous: &(String, PathBuf) = &selected[slot];
+            let previous_is_link =
+                fs::symlink_metadata(&previous.1).is_ok_and(|meta| meta.file_type().is_symlink());
+            let next_is_link =
+                fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink());
+            if !indexed(&previous.0, &previous.1)
+                && (indexed(&family, &path) || (previous_is_link && !next_is_link))
+            {
+                selected[slot] = (family, path);
+            }
+        } else {
+            identities.insert(key, selected.len());
+            selected.push((family, path));
+        }
+    }
+    selected
+}
+
+fn local_source_identity(family: &str, path: &Path) -> (String, Option<String>, Vec<PathBuf>) {
+    let host = crate::remote::from_mirror(path).map(|(host, _)| host);
+    let paths = source_paths(family, path)
+        .into_iter()
+        .map(|candidate| {
+            candidate.canonicalize().unwrap_or_else(|_| {
+                candidate
+                    .parent()
+                    .and_then(|parent| parent.canonicalize().ok())
+                    .and_then(|parent| candidate.file_name().map(|name| parent.join(name)))
+                    .unwrap_or(candidate)
+            })
+        })
+        .collect();
+    (family.into(), host, paths)
 }
 
 fn native_source_uri(family: &str, path: &Path) -> Result<String, String> {
@@ -866,6 +925,26 @@ type RecordFields = (
 /// Normalize an agent record without truncating transcript content.
 /// Returns `None` for non-object lines.
 pub fn normalize_record(
+    family: &str,
+    obj: &serde_json::Value,
+    ordinal: i64,
+) -> Option<NormalizedRecord> {
+    let mut record = normalize_record_fields(family, obj, ordinal)?;
+    record.payload = obj.clone();
+    Some(record)
+}
+
+fn normalize_record_owned(
+    family: &str,
+    obj: serde_json::Value,
+    ordinal: i64,
+) -> Option<NormalizedRecord> {
+    let mut record = normalize_record_fields(family, &obj, ordinal)?;
+    record.payload = obj;
+    Some(record)
+}
+
+fn normalize_record_fields(
     family: &str,
     obj: &serde_json::Value,
     _ordinal: i64,
@@ -1128,20 +1207,7 @@ pub fn normalize_record(
         context.provider =
             first_str(&obj["modelInfo"], &["provider", "providerId"]).or(context.provider);
     }
-    let mut searchable = parts
-        .iter()
-        .filter_map(|p| p.text.clone())
-        .collect::<Vec<_>>();
-    for tool in &tools {
-        searchable.push(tool.arguments.to_string());
-        if let Some(command) = &tool.command {
-            searchable.push(command.clone());
-        }
-        if let Some(result) = &tool.result {
-            searchable.push(result.clone());
-        }
-    }
-    let body = searchable.join("\n");
+    let body = searchable_body(&parts, &tools);
     let role = match role.as_str() {
         "toolResult" | "tool_result" => Some("tool".to_string()),
         "" => None,
@@ -1159,8 +1225,35 @@ pub fn normalize_record(
         tools,
         results,
         context,
-        payload: obj.clone(),
+        payload: Value::Null,
     })
+}
+
+fn searchable_body(parts: &[ContentPart], tools: &[ToolCall]) -> Arc<String> {
+    let mut searchable = parts
+        .iter()
+        .filter_map(|p| p.text.clone())
+        .collect::<Vec<_>>();
+    for tool in tools {
+        searchable.push(Arc::new(tool.arguments.to_string()));
+        if let Some(command) = &tool.command {
+            searchable.push(Arc::new(command.clone()));
+        }
+        if let Some(result) = &tool.result {
+            searchable.push(Arc::new(result.clone()));
+        }
+    }
+    if searchable.len() == 1 {
+        searchable.pop().unwrap()
+    } else {
+        Arc::new(
+            searchable
+                .iter()
+                .map(|text| text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
 }
 
 // sync_state / sync_checkpoint helpers
@@ -1471,7 +1564,7 @@ fn import_file_with_conn(
         || (!pricing.automatic
             && hession_core::indexing::excluded(conn, source_uri).map_err(|e| e.to_string())?);
 
-    if matches!(family, "claude" | "codex") {
+    if matches!(family, "claude" | "codex" | "pi" | "commandcode") {
         return incremental::import(
             conn,
             family,
@@ -1643,7 +1736,7 @@ fn insert_record(
             "INSERT INTO entry(session_id,ordinal,external_entry_id,parent_entry_id,turn_id,occurred_at,kind,role,search_text,payload_json)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
         ).map_err(|e| e.to_string())?.execute(params![session_id,ordinal,record.external_id,record.parent,record.turn_id,record.occurred_at,
-                record.kind,record.role,record.body,record.payload.to_string()],
+                record.kind,record.role,record.body.as_str(),record.payload.to_string()],
         ).map_err(|e| format!("insert entry: {e}"))?;
     let entry_id = conn.last_insert_rowid();
     formats::insert_details(conn, session_id, entry_id, record)?;
@@ -1829,6 +1922,7 @@ pub fn sync_all_with_progress(
         }
     };
     let mut pricing = ImportPricing::new();
+    pricing.validate_contents = force;
     pricing.epoch = match hession_core::indexing::epoch(&conn) {
         Ok(epoch) => Some(epoch),
         Err(e) => {
@@ -1847,9 +1941,12 @@ pub fn sync_all_with_progress(
         return summary;
     }
     // Local history becomes available before any slow or unavailable SSH host.
-    let mut local_files = local.files();
+    let mut local_files = local.files(&conn);
     sort_by_mtime_desc_vec(&mut local_files);
-    let imported: HashSet<PathBuf> = local_files.iter().map(|(_, path)| path.clone()).collect();
+    let imported: HashSet<_> = local_files
+        .iter()
+        .map(|(family, path)| local_source_identity(family, path))
+        .collect();
     import_sync_batch(
         &mut conn,
         &local_files,
@@ -1883,10 +1980,11 @@ pub fn sync_all_with_progress(
         remote_files.extend(
             discover_from_sources(&sources, family)
                 .into_iter()
-                .filter(|path| !imported.contains(path))
+                .filter(|path| !imported.contains(&local_source_identity(family, path)))
                 .map(|path| (family.clone(), path)),
         );
     }
+    remote_files = unique_local_sources(&conn, remote_files);
     sort_by_mtime_desc_vec(&mut remote_files);
     crate::sync::set_phase("importing");
     import_sync_batch(

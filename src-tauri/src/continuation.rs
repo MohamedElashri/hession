@@ -965,7 +965,7 @@ mod tests {
             for (ordinal, raw) in records.into_iter().enumerate() {
                 let record =
                     crate::importer::normalize_record(family, &raw, ordinal as i64).unwrap();
-                conn.execute("INSERT INTO entry(session_id,ordinal,kind,role,search_text,payload_json) VALUES(1,?1,?2,?3,?4,?5)",params![ordinal as i64,record.kind,record.role,record.body,raw.to_string()]).unwrap();
+                conn.execute("INSERT INTO entry(session_id,ordinal,kind,role,search_text,payload_json) VALUES(1,?1,?2,?3,?4,?5)",params![ordinal as i64,record.kind,record.role,record.body.as_str(),raw.to_string()]).unwrap();
                 let entry = conn.last_insert_rowid();
                 for (index, part) in record.parts.into_iter().enumerate() {
                     conn.execute("INSERT INTO content_part(entry_id,ordinal,kind,text,data_json) VALUES(?1,?2,?3,?4,?5)",params![entry,index as i64,part.kind,part.text,part.data.map(|v|v.to_string())]).unwrap();

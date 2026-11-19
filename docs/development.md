@@ -451,3 +451,53 @@ measured 0.084% persistent-thread CPU and failed the 0.07% budget. A subsequent
 0.075%, prompting the precise process-wide clock check above. These are synthetic
 steady-state results, not measurements of personal-library startup, whole-machine
 energy, or a 50× improvement to the GUI's fixed engine footprint.
+
+### Memory and repeated-indexing checks
+
+Normal local scans use persisted inode/size/mtime/ctime receipts. Changed files,
+native notifications, explicit full imports, and observation gaps still verify
+content. Pi and Command Code now use the disk-staged append reader too; their
+older full-source receipts convert once while retaining session annotations.
+Complete final JSON objects without a newline remain supported, and subsequent
+appends must supply a delimiter. Malformed tails preserve the saved cursor and
+history.
+
+Local discovery coalesces canonical file/dependency aliases and retains an
+already indexed spelling. The post-mirror discovery uses the same identities;
+remote hosts and genuinely distinct files remain separate. Directory watches
+coalesce aliases and use one `paths_mut` commit, avoiding one FSEvents restart per
+directory. Registration errors remain degraded and recoverable.
+
+Normalized display/search text shares immutable allocations where identical.
+Private staging stores structured parts/tools instead of another full search
+body; insertion reconstructs that derived text. OpenCode usage aggregation keeps
+only message IDs/token counters. SQLite session batches also use an 8 MiB
+conservative data-weight budget; one oversized session is committed alone.
+
+Desktop pages default to 100 entries. Their projection omits unused native
+session metadata, duplicate tool-call JSON, and redundant result payloads. A
+result part can reference an identical tool output in the same page. `api.js`
+restores the full string for display/copy; missing references fail explicitly.
+Results outside the call's page and differing earlier result bodies retain their
+own text. Original stored fields and full-fidelity exports remain unchanged.
+Linux uses WebKit's document-viewer cache model without a page-history cache.
+
+Run the Linux peak-memory probe with frozen optimized binaries and synthetic
+histories. GNU time captures the child's peak RSS. It verifies canonical stored
+content, SQLite integrity, annotations, and append identity reuse:
+
+```sh
+python3 scripts/benchmark-import-memory.py --binary BEFORE --family pi \
+  --output target/performance-v0.6.0/memory-pi-before.json
+python3 scripts/benchmark-import-memory.py --binary AFTER --family pi \
+  --baseline target/performance-v0.6.0/memory-pi-before.json \
+  --output target/performance-v0.6.0/memory-pi-after.json \
+  --require-stable-append --max-peak-rss-mib 64
+```
+
+Repeat with `--family commandcode`. The default corpus is 1,000 records/about
+47 MiB, followed by an unchanged scan and a one-record append. For minimized GUI
+output-memory checks, use `benchmark-idle.py --gui --tool-results --files 1
+--entries 50 --text-bytes 262144 --idle-seconds 120` on both binaries. Add
+`--screenshot OUTPUT.png` to capture the loaded synthetic reader before it is
+minimized; inspect it to ensure a low-memory result is not an empty/error view.
