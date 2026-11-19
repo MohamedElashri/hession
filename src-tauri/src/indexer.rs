@@ -336,54 +336,143 @@ fn affected(family: &str, source: &Path, event: &Path) -> bool {
         .any(|path| routing_path(path).starts_with(&event))
 }
 
-fn native_watcher(
+fn native_watcher<W: Watcher>(
     roots: Arc<RwLock<Vec<PathBuf>>>,
     sender: mpsc::SyncSender<Notice>,
     overflow: Arc<AtomicBool>,
     errors: Arc<Mutex<Option<String>>>,
-) -> notify::Result<notify::RecommendedWatcher> {
-    notify::recommended_watcher(move |result: notify::Result<Event>| match result {
-        Ok(event) if !matches!(event.kind, EventKind::Access(_)) => {
-            let rescan = event.need_rescan();
-            let roots = roots.read().unwrap_or_else(|error| error.into_inner());
-            let mut paths: Vec<_> = event
-                .paths
-                .into_iter()
-                .filter(|path| {
-                    roots
-                        .iter()
-                        .any(|root| path.starts_with(root) || root.starts_with(path))
-                })
-                .take(33)
-                .collect();
-            if rescan || paths.len() > 32 {
-                overflow.store(true, Ordering::SeqCst);
+) -> notify::Result<W> {
+    W::new(
+        move |result: notify::Result<Event>| match result {
+            Ok(event) if !matches!(event.kind, EventKind::Access(_)) => {
+                let rescan = event.need_rescan();
+                let roots = roots.read().unwrap_or_else(|error| error.into_inner());
+                let mut paths: Vec<_> = event
+                    .paths
+                    .into_iter()
+                    .filter(|path| {
+                        roots
+                            .iter()
+                            .any(|root| path.starts_with(root) || root.starts_with(path))
+                    })
+                    .take(33)
+                    .collect();
+                if rescan || paths.len() > 32 {
+                    overflow.store(true, Ordering::SeqCst);
+                }
+                paths.truncate(32);
+                if paths.is_empty() && !rescan {
+                    return;
+                }
+                let structural = !matches!(
+                    event.kind,
+                    EventKind::Modify(
+                        notify::event::ModifyKind::Data(_) | notify::event::ModifyKind::Metadata(_)
+                    )
+                );
+                if sender
+                    .try_send(Notice::Paths { paths, structural })
+                    .is_err()
+                {
+                    overflow.store(true, Ordering::SeqCst);
+                }
             }
-            paths.truncate(32);
-            if paths.is_empty() && !rescan {
-                return;
-            }
-            let structural = !matches!(
-                event.kind,
-                EventKind::Modify(
-                    notify::event::ModifyKind::Data(_) | notify::event::ModifyKind::Metadata(_)
-                )
-            );
-            if sender
-                .try_send(Notice::Paths { paths, structural })
-                .is_err()
-            {
+            Err(error) => {
+                *errors.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(error.to_string().chars().take(300).collect());
                 overflow.store(true, Ordering::SeqCst);
+                let _ = sender.try_send(Notice::Wake);
+            }
+            _ => {}
+        },
+        notify::Config::default(),
+    )
+}
+
+// FSEvents may defer writes until an appender closes its file. Keep its scoped
+// directory observation for topology, and add kqueue only for exact source files.
+// Never give kqueue directories: notify's backend can recursively add children.
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct FileWatches {
+    watcher: Option<notify::KqueueWatcher>,
+    identities: BTreeMap<PathBuf, (u64, u64)>,
+}
+#[cfg(target_os = "macos")]
+impl FileWatches {
+    fn reconcile(
+        &mut self,
+        files: &[SourceKey],
+        capacity: usize,
+        roots: Arc<RwLock<Vec<PathBuf>>>,
+        sender: mpsc::SyncSender<Notice>,
+        overflow: Arc<AtomicBool>,
+        control: &Control,
+    ) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        let mut desired = BTreeMap::new();
+        let mut complete = true;
+        for (family, source) in files {
+            for path in importer::source_paths(family, source) {
+                let Ok(meta) = std::fs::metadata(&path) else {
+                    continue;
+                };
+                if !meta.is_file() {
+                    continue;
+                }
+                let path = routing_path(&path);
+                if desired.contains_key(&path) {
+                    continue;
+                }
+                if desired.len() >= capacity {
+                    complete = false;
+                    break;
+                }
+                desired.insert(path, (meta.dev(), meta.ino()));
+            }
+            if !complete {
+                break;
             }
         }
-        Err(error) => {
-            *errors.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(error.to_string().chars().take(300).collect());
-            overflow.store(true, Ordering::SeqCst);
-            let _ = sender.try_send(Notice::Wake);
+        if self.watcher.is_none() && !desired.is_empty() {
+            match native_watcher(roots, sender, overflow, control.native_error.clone()) {
+                Ok(watcher) => self.watcher = Some(watcher),
+                Err(error) => {
+                    control.error(format!("Cannot observe open appenders; polling: {error}"));
+                    return false;
+                }
+            }
         }
-        _ => {}
-    })
+        let Some(watcher) = self.watcher.as_mut() else {
+            return complete;
+        };
+        self.identities.retain(|path, identity| {
+            if desired.get(path) == Some(identity) {
+                true
+            } else {
+                let _ = watcher.unwatch(path);
+                false
+            }
+        });
+        for (path, identity) in desired {
+            if self.identities.contains_key(&path) {
+                continue;
+            }
+            match watcher.watch(&path, RecursiveMode::NonRecursive) {
+                Ok(()) => {
+                    self.identities.insert(path, identity);
+                }
+                Err(error) => {
+                    control.error(format!(
+                        "Cannot observe {}; polling: {error}",
+                        path.display()
+                    ));
+                    complete = false;
+                }
+            }
+        }
+        complete
+    }
 }
 
 fn run(
@@ -414,7 +503,7 @@ fn run(
             .collect(),
     ));
     let mut root_ids = root_identities(&roots);
-    let mut watcher = match native_watcher(
+    let mut watcher = match native_watcher::<notify::RecommendedWatcher>(
         event_roots.clone(),
         sender.clone(),
         overflow.clone(),
@@ -429,6 +518,8 @@ fn run(
         }
     };
     let mut last_native_attempt = Instant::now();
+    #[cfg(target_os = "macos")]
+    let mut file_watches = FileWatches::default();
     let mut watched = BTreeSet::<PathBuf>::new();
     let mut watched_ids = BTreeMap::<PathBuf, Option<(u64, u64)>>::new();
     let mut watched_paths = BTreeSet::<PathBuf>::new();
@@ -526,6 +617,10 @@ fn run(
                 "Native observation failed; polling until a successful retry: {error}"
             ));
             watcher = None;
+            #[cfg(target_os = "macos")]
+            {
+                file_watches = FileWatches::default();
+            }
             watched.clear();
             watched_ids.clear();
             watched_paths.clear();
@@ -582,6 +677,10 @@ fn run(
                 root_ids = current;
                 roots_replaced = true;
                 watcher = None;
+                #[cfg(target_os = "macos")]
+                {
+                    file_watches = FileWatches::default();
+                }
                 watched.clear();
                 watched_ids.clear();
                 watched_paths.clear();
@@ -590,7 +689,7 @@ fn run(
         }
         if watcher.is_none() && (roots_replaced || last_native_attempt.elapsed() >= NATIVE_RETRY) {
             last_native_attempt = Instant::now();
-            match native_watcher(
+            match native_watcher::<notify::RecommendedWatcher>(
                 event_roots.clone(),
                 sender.clone(),
                 overflow.clone(),
@@ -620,7 +719,7 @@ fn run(
         let do_scan = discover || retry || !events.is_empty();
         if do_scan {
             // Routine safety sweeps compare inode/size/mtime/ctime. Content
-            // verification still handles explicit scans, native gaps, and
+            // verification still handles native gaps and
             // affected sources without rehashing every quiet store every 10m.
             let full_audit = recovery;
             scan = false;
@@ -664,6 +763,18 @@ fn run(
                 let (desired, incomplete, directory_stamps) = directory_plan(&scopes);
                 let desired: BTreeSet<_> = desired.iter().map(|path| routing_path(path)).collect();
                 truncated = incomplete;
+                #[cfg(target_os = "macos")]
+                {
+                    truncated |= !file_watches.reconcile(
+                        &known_files,
+                        MAX_DIRECTORIES.saturating_sub(desired.len()),
+                        event_roots.clone(),
+                        sender.clone(),
+                        overflow.clone(),
+                        control,
+                    );
+                }
+
                 if truncated {
                     control.error("Directory observation is incomplete; some sources may be stale. Check source permissions or narrow the configured roots.");
                 }
@@ -845,7 +956,6 @@ fn run(
                 if !full_audit
                     && !failed_sources.contains(&key)
                     && fingerprints.get(&key) == Some(&stamp)
-                    && !events.iter().any(|event| affected(&family, &path, event))
                 {
                     continue;
                 }
@@ -1220,6 +1330,19 @@ mod tests {
         assert_eq!(after.discovery_passes, quiet.discovery_passes);
         assert_eq!(after.fingerprint_checks - quiet.fingerprint_checks, 1);
         assert_eq!(after.import_attempts - quiet.import_attempts, 1);
+        // Different native backends can report the same committed write again
+        // (for example kqueue on write and FSEvents when the writer closes).
+        observer
+            .control
+            .wake
+            .try_send(Notice::Paths {
+                paths: vec![sessions.join("0.jsonl")],
+                structural: false,
+            })
+            .unwrap();
+        wait_until(|| observer.status().fingerprint_checks > after.fingerprint_checks);
+        assert_eq!(observer.status().import_attempts, after.import_attempts);
+        assert_eq!(count(), 129);
         // Control messages must interrupt the long native receive timeout.
         let start = Instant::now();
         drop(observer);

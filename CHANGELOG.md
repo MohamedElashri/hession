@@ -26,7 +26,8 @@
 - Read 100 entries per page. Send tool outputs once per reading page, preserve
   standalone result pages, and omit unused native metadata from display replies.
 - Use WebKit's single-document cache policy on Linux and batch native watch
-  registration to avoid restarting the macOS event stream for every directory.
+  registration. Observe macOS appenders through bounded per-file kernel watches
+  so a writer can keep its transcript open.
 
 ### Fixed
 

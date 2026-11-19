@@ -45,6 +45,9 @@ tauri-plugin-single-instance = "2.5.5"
 gtk = { version = "0.18", default-features = false }
 webkit2gtk = { version = "=2.0.2", features = ["v2_16"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+notify = { version = "=8.2.0", features = ["macos_kqueue"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["process"] }
 rmcp = { version = "=3.10.0", default-features = false, features = ["client", "transport-io"] }

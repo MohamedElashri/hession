@@ -465,8 +465,11 @@ history.
 Local discovery coalesces canonical file/dependency aliases and retains an
 already indexed spelling. The post-mirror discovery uses the same identities;
 remote hosts and genuinely distinct files remain separate. Directory watches
-coalesce aliases and use one `paths_mut` commit, avoiding one FSEvents restart per
-directory. Registration errors remain degraded and recoverable.
+coalesce aliases and use one `paths_mut` commit. On macOS, kqueue watches exact
+source files alongside scoped FSEvents directory observation so open appenders
+are observed before close. Repeated notices for an already committed fingerprint
+do not import the source again. The combined watch budget is 4,096 paths; incomplete coverage uses degraded
+metadata polling. Registration errors remain degraded and recoverable.
 
 Normalized display/search text shares immutable allocations where identical.
 Private staging stores structured parts/tools instead of another full search
