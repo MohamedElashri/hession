@@ -1049,8 +1049,16 @@ mod tests {
         let root = match std::env::var_os("HESSION_TEST_REMOTE_FIXTURE_ROOT") {
             Some(root) => PathBuf::from(root),
             None => {
-                let tmp = tempfile::tempdir().unwrap();
-                // Physical path: macOS's temporary directory uses /var.
+                // openrsync stats excluded siblings along the absolute source
+                // path. Other tests delete system-temp siblings concurrently;
+                // keep this fixture under the stable build tree instead.
+                let scratch = std::env::var_os("CARGO_TARGET_DIR")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| std::env::current_dir().unwrap().join("target"))
+                    .join("remote-fixtures");
+                fs::create_dir_all(&scratch).unwrap();
+                let tmp = tempfile::tempdir_in(scratch).unwrap();
+                // Resolve any aliases in the checkout/build directory.
                 let root = fs::canonicalize(tmp.path()).unwrap();
                 let mut child = Command::new(std::env::current_exe().unwrap());
                 child

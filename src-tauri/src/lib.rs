@@ -47,18 +47,20 @@ fn show_main_window(app: &tauri::AppHandle) {
             let _ = window.run_on_main_thread(move || {
                 use gtk::prelude::GtkWindowExt;
                 if let Ok(window) = main.gtk_window() {
-                    // An IPC activation can arrive before GTK processes the
-                    // window-manager's iconify event. Request restoration even
-                    // when GTK's cached window state still says it is visible.
+                    use gtk::prelude::{Cast, WidgetExt};
+                    // A launcher request has no GTK input event timestamp.
+                    // CURRENT_TIME can become a stale cached user time; ask
+                    // X11 for a fresh timestamp for this explicit activation.
+                    let native = window.window();
+                    let timestamp = native
+                        .as_ref()
+                        .and_then(|native| native.downcast_ref::<gdkx11::X11Window>())
+                        .map(gdkx11::functions::x11_get_server_time)
+                        .unwrap_or(gtk::gdk::ffi::GDK_CURRENT_TIME as u32);
                     window.deiconify();
-                    window.present_with_time(gtk::gdk::ffi::GDK_CURRENT_TIME as u32);
-                    // GTK translates CURRENT_TIME to its cached user timestamp,
-                    // which can predate a minimize and be rejected by the WM.
-                    // This is an explicit launcher action: send current-time
-                    // activation directly, without a delayed focus-stealing retry.
-                    use gtk::prelude::WidgetExt;
-                    if let Some(native) = window.window() {
-                        native.focus(gtk::gdk::ffi::GDK_CURRENT_TIME as u32);
+                    window.present_with_time(timestamp);
+                    if let Some(native) = native {
+                        native.focus(timestamp);
                         native.display().flush();
                     }
                 }
