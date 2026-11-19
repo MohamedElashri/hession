@@ -9,6 +9,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub(super) fn source_roots(home: &Path) -> Vec<PathBuf> {
     let config = env_path("CLINE_DIR", home.join(".cline"));
@@ -424,8 +425,8 @@ pub(super) fn session_data(
                 .and_then(|index| records.get_mut(index))
             {
                 target.parts.extend(extra.parts);
-                target.body.push('\n');
-                target.body.push_str(&extra.body);
+                Arc::make_mut(&mut target.body).push('\n');
+                Arc::make_mut(&mut target.body).push_str(&extra.body);
                 target.tools.extend(extra.tools);
                 let events = target
                     .payload

@@ -52,7 +52,7 @@ const ProjectsView=lazy(()=>import('./ProjectsView.jsx'));
 const SettingsDialog=lazy(()=>import('./components/SettingsDialog.jsx'));
 const ContinuationDialog=lazy(()=>import('./components/ContinuationDialog.jsx'));
 const LiveView=lazy(()=>import('./components/LiveView.jsx'));
-const DETAIL_PAGE_SIZE=500; // transcript entries per page (the backend maximum)
+const DETAIL_PAGE_SIZE=100; // Bound retained transcript data; search jumps use this same window.
 // Maps the metadata endpoint suffix used by loadMeta to its Tauri command.
 const META_COMMANDS={
   agents:'get_agents',

@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### Improved
+
+- Let native background indexing sleep between file events and revision checks.
+  Reconcile source metadata periodically instead of walking every source every
+  15 seconds or waking the observer every 100 ms.
+- Watch agent history locations without recursively observing package installations
+  and cache trees that can exhaust native watches and force constant polling.
+- Route transcript and SQLite companion-file changes to their dependent sources.
+  Appending to one history no longer revalidates every history in its directory.
+- Release bulk-import database pages and unused Linux heap pages after imports
+  and transcript reads settle, with bounded cleanup during continuous work.
+- Send reading views their displayed text and tool fields without duplicate
+  search text or native JSON copies. Preserve complete records for exports and
+  bookkeeping fallbacks.
+- Stop hidden Live-view and indexing-monitor timers, then catch up on visibility.
+- Reuse persisted source fingerprints on restart and after sync. Stream Pi and
+  Command Code appends without rebuilding earlier entries, and coalesce local
+  source aliases while preserving their saved identity and annotations.
+- Share immutable parser text, consume native records instead of cloning them,
+  retain only token counters for OpenCode usage aggregation, and cap SQLite
+  batches by data weight as well as record count and time.
+- Read 100 entries per page. Send tool outputs once per reading page, preserve
+  standalone result pages, and omit unused native metadata from display replies.
+- Use WebKit's single-document cache policy on Linux and batch native watch
+  registration. Observe macOS appenders through bounded per-file kernel watches
+  so a writer can keep its transcript open.
+
+### Fixed
+
+- Keep failed sources marked stale until they recover and retry them without
+  rescanning healthy histories. Wake promptly for pause/resume, shutdown, and
+  completion of manual sync or data maintenance.
+- Watch the nearest existing parent of missing source roots without traversing
+  that parent, and discard unrelated parent events before queue admission.
+- Route native events consistently through directory aliases and reattach watches
+  when source directories are replaced. Keep polling for symlinked source files.
+
 ## [0.5.4] - 2026-11-18
 
 ### New

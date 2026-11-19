@@ -3,7 +3,7 @@ use serde_json::json;
 use std::fs::{File, FileTimes};
 
 fn legacy(text: &str) -> String {
-    json!({"type":"message","message":{"role":"user","content":[{"type":"text","text":text}]},"timestamp":"2026-01-01T12:00:00Z"}).to_string()
+    json!({"type":"message","role":"user","content":text,"message":{"role":"user","content":[{"type":"text","text":text}]},"timestamp":"2026-01-01T12:00:00Z"}).to_string()
 }
 fn open(dir: &Path) -> Connection {
     let conn = crate::db::open_db(&dir.join("library.sqlite")).unwrap();
@@ -25,7 +25,7 @@ fn body(conn: &Connection) -> String {
 }
 fn catalog(root: PathBuf) -> LocalCatalog {
     LocalCatalog(vec![Source {
-        family: "pi",
+        family: "hermes",
         product: "Pi",
         root,
         sub: "sessions",
@@ -39,7 +39,7 @@ fn legacy_same_stat_rewrite_is_imported_but_quiet_restart_and_audits_do_not_rebu
     let file = dir.path().join("source.jsonl");
     fs::write(&file, legacy("alpha")).unwrap();
     let modified = fs::metadata(&file).unwrap().modified().unwrap();
-    let uri = format!("pi://{}", file.display());
+    let uri = format!("hermes://{}", file.display());
     let mut conn = open(dir.path());
     assert_eq!(import(&mut conn, &uri).unwrap(), 1);
     assert_eq!(body(&conn), "alpha");
@@ -125,7 +125,7 @@ fn legacy_checkpoint_and_normalized_history_rollback_together_on_error_cancel_an
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("source.jsonl");
     fs::write(&file, legacy("alpha")).unwrap();
-    let uri = format!("pi://{}", file.display());
+    let uri = format!("hermes://{}", file.display());
     let mut conn = open(dir.path());
     import(&mut conn, &uri).unwrap();
     let revision = hession_core::library_revision::current(&conn).unwrap();
@@ -197,7 +197,7 @@ fn legacy_checkpoint_and_normalized_history_rollback_together_on_error_cancel_an
     );
     assert_eq!(body(&conn), "alpha");
     assert!(
-        hession_core::indexing::full_source(&conn, &uri, "pi:full-source-v1")
+        hession_core::indexing::full_source(&conn, &uri, "hermes:full-source-v1")
             .unwrap()
             .is_none()
     );
@@ -211,7 +211,7 @@ fn manual_local_pass_restores_an_explicitly_excluded_source_but_background_impor
     fs::create_dir(dir.path().join("sessions")).unwrap();
     let file = dir.path().join("sessions/source.jsonl");
     fs::write(&file, legacy("alpha")).unwrap();
-    let uri = format!("pi://{}", file.display());
+    let uri = format!("hermes://{}", file.display());
     let mut conn = open(dir.path());
     import(&mut conn, &uri).unwrap();
     hession_core::indexing::exclude(&conn, &uri).unwrap();
@@ -220,7 +220,7 @@ fn manual_local_pass_restores_an_explicitly_excluded_source_but_background_impor
     let epoch = hession_core::indexing::epoch(&conn).unwrap();
     assert_eq!(
         with_cancellation(Arc::new(AtomicBool::new(false)), || catalog
-            .import(&mut conn, "pi", &file, epoch))
+            .import(&mut conn, "hermes", &file, epoch))
         .unwrap(),
         0
     );
@@ -317,7 +317,7 @@ fn a_late_prepared_source_cannot_clear_invalidation_or_overwrite_another_writers
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("source.jsonl");
     fs::write(&file, legacy("alpha")).unwrap();
-    let uri = native_source_uri("pi", &file).unwrap();
+    let uri = native_source_uri("hermes", &file).unwrap();
     let mut conn = open(dir.path());
     import(&mut conn, &uri).unwrap();
     let mut pricing = ImportPricing::new();
@@ -329,14 +329,14 @@ fn a_late_prepared_source_cannot_clear_invalidation_or_overwrite_another_writers
     let paths = vec![file.clone()];
     let prepared = PreparedSource {
         uri: uri.clone(),
-        capability: "pi:full-source-v1".into(),
+        capability: "hermes:full-source-v1".into(),
         snapshot: hession_core::source::SourceSnapshot::capture(&paths, &|| false).unwrap(),
         paths,
     };
     let values = parse_jsonl_file(&file).unwrap();
     let stat = fs::metadata(&file).unwrap();
     let data = formats::session_data(
-        "pi",
+        "hermes",
         &uri,
         &file,
         values,
@@ -355,7 +355,7 @@ fn a_late_prepared_source_cannot_clear_invalidation_or_overwrite_another_writers
     assert!(
         with_cancellation(Arc::new(AtomicBool::new(false)), || commit_batch(
             &mut conn,
-            "pi",
+            "hermes",
             "Pi",
             "/fixture",
             &mut pricing,
@@ -366,7 +366,7 @@ fn a_late_prepared_source_cannot_clear_invalidation_or_overwrite_another_writers
     );
     assert_eq!(body(&conn), "other writer");
     assert!(
-        hession_core::indexing::full_source(&conn, &uri, "pi:full-source-v1")
+        hession_core::indexing::full_source(&conn, &uri, "hermes:full-source-v1")
             .unwrap()
             .is_none()
     );
@@ -380,7 +380,7 @@ fn content_audits_recheck_even_identical_metadata_without_rebuilding_quiet_sourc
     fs::create_dir(dir.path().join("sessions")).unwrap();
     let file = dir.path().join("sessions/source.jsonl");
     fs::write(&file, legacy("alpha")).unwrap();
-    let uri = native_source_uri("pi", &file).unwrap();
+    let uri = native_source_uri("hermes", &file).unwrap();
     let mut conn = open(dir.path());
     import(&mut conn, &uri).unwrap();
     let revision = hession_core::library_revision::current(&conn).unwrap();
@@ -388,7 +388,7 @@ fn content_audits_recheck_even_identical_metadata_without_rebuilding_quiet_sourc
     let epoch = hession_core::indexing::epoch(&conn).unwrap();
     assert_eq!(
         with_cancellation(Arc::new(AtomicBool::new(false)), || catalog
-            .import_with_policy(&mut conn, "pi", &file, epoch, true))
+            .import_with_policy(&mut conn, "hermes", &file, epoch, true))
         .unwrap(),
         0
     );
@@ -399,22 +399,23 @@ fn content_audits_recheck_even_identical_metadata_without_rebuilding_quiet_sourc
     fs::write(&file, legacy("bravo")).unwrap();
     // Simulate a coarse filesystem reporting exactly the saved metadata; the
     // event/audit policy must still compare bytes rather than trust that stamp.
-    let mut cached = hession_core::indexing::full_source(&conn, &uri, "pi:full-source-v1")
+    let mut cached = hession_core::indexing::full_source(&conn, &uri, "hermes:full-source-v1")
         .unwrap()
         .unwrap();
     cached.files[0].metadata = Some(hession_core::jsonl::Fingerprint::of(
         &fs::metadata(&file).unwrap(),
     ));
-    hession_core::indexing::save_full_source(&conn, &uri, "pi:full-source-v1", &cached).unwrap();
+    hession_core::indexing::save_full_source(&conn, &uri, "hermes:full-source-v1", &cached)
+        .unwrap();
     assert_eq!(
         with_cancellation(Arc::new(AtomicBool::new(false)), || catalog
-            .import(&mut conn, "pi", &file, epoch))
+            .import(&mut conn, "hermes", &file, epoch))
         .unwrap(),
         0
     );
     assert_eq!(
         with_cancellation(Arc::new(AtomicBool::new(false)), || catalog
-            .import_with_policy(&mut conn, "pi", &file, epoch, true))
+            .import_with_policy(&mut conn, "hermes", &file, epoch, true))
         .unwrap(),
         1
     );
@@ -435,7 +436,7 @@ fn native_non_utf8_paths_are_rejected_without_aliasing_but_unicode_paths_import(
         // URI validation runs before source reads. These paths need no native
         // directory entries, which some filesystems reject for invalid UTF-8.
         assert!(catalog
-            .import_with_policy(&mut conn, "pi", &file, epoch, false)
+            .import_with_policy(&mut conn, "hermes", &file, epoch, false)
             .unwrap_err()
             .contains("UTF-8"));
     }
@@ -448,7 +449,7 @@ fn native_non_utf8_paths_are_rejected_without_aliasing_but_unicode_paths_import(
     fs::write(&unicode, legacy("alpha")).unwrap();
     assert_eq!(
         with_cancellation(Arc::new(AtomicBool::new(false)), || catalog
-            .import_with_policy(&mut conn, "pi", &unicode, epoch, false))
+            .import_with_policy(&mut conn, "hermes", &unicode, epoch, false))
         .unwrap(),
         1
     );
@@ -609,6 +610,211 @@ fn remaining_legacy_adapters_import_and_reopen_without_rebuilding_quiet_history(
                 .unwrap(),
             original,
             "{family}"
+        );
+    }
+}
+
+#[test]
+fn discovery_coalesces_directory_and_file_aliases_without_changing_saved_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("pi");
+    let sessions = root.join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let original = sessions.join("original.jsonl");
+    fs::write(&original, legacy("Shared history")).unwrap();
+    let mut conn = open(dir.path());
+    let base = LocalCatalog(vec![Source {
+        family: "pi",
+        product: "Pi",
+        root: root.clone(),
+        sub: "sessions",
+        kind: SourceKind::Jsonl,
+    }]);
+    assert_eq!(base.manual_pass(&mut conn).records, 1);
+    let id: i64 = conn
+        .query_row("SELECT id FROM session", [], |row| row.get(0))
+        .unwrap();
+    conn.execute(
+        "INSERT INTO session_annotation(session_id,starred) VALUES(?,1)",
+        [id],
+    )
+    .unwrap();
+    let alias = sessions.join("000-alias.jsonl");
+    std::os::unix::fs::symlink(&original, &alias).unwrap();
+    let linked_root = dir.path().join("alias-root");
+    std::os::unix::fs::symlink(&root, &linked_root).unwrap();
+    let sources = LocalCatalog(vec![
+        Source {
+            family: "pi",
+            product: "Pi",
+            root: linked_root,
+            sub: "sessions",
+            kind: SourceKind::Jsonl,
+        },
+        Source {
+            family: "pi",
+            product: "Pi",
+            root,
+            sub: "sessions",
+            kind: SourceKind::Jsonl,
+        },
+    ]);
+    assert_eq!(sources.files(&conn), vec![("pi".into(), original.clone())]);
+    let repeated = sources.manual_pass(&mut conn);
+    assert!(repeated.errors.is_empty());
+    assert_eq!(
+        (repeated.files_total, repeated.skipped, repeated.records),
+        (1, 1, 0)
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM session", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT starred FROM session_annotation WHERE session_id=?",
+            [id],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    // Separate files remain separate even when their native IDs/content match.
+    fs::copy(&original, sessions.join("independent.jsonl")).unwrap();
+    assert_eq!(sources.files(&conn).len(), 2);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn quiet_streamed_passes_do_not_reread_native_bodies_and_rewrites_still_recover() {
+    fn read_chars() -> u64 {
+        fs::read_to_string("/proc/thread-self/io")
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("rchar: "))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+    for family in ["codex", "claude", "pi", "commandcode"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("native");
+        let sessions = root.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let file = sessions.join("history.jsonl");
+        let text = "a".repeat(65536);
+        let mut lines = Vec::new();
+        for number in 0..32 {
+            lines.push(if family == "codex" {
+                json!({"type":"event_msg","payload":{"type":"user_message","message":text}})
+            } else {
+                json!({"type":"user","uuid":number.to_string(),"sessionId":"quiet-history","message":{"role":"user","content":text}})
+            }.to_string());
+        }
+        let content = lines.join("\n") + "\n";
+        fs::write(&file, &content).unwrap();
+        let modified = fs::metadata(&file).unwrap().modified().unwrap();
+        let sources = LocalCatalog(vec![Source {
+            family,
+            product: "Fixture",
+            root,
+            sub: "sessions",
+            kind: SourceKind::Jsonl,
+        }]);
+        let mut conn = open(dir.path());
+        let initial = sources.manual_pass(&mut conn);
+        assert!(initial.errors.is_empty(), "{:?}", initial.errors);
+        assert_eq!(initial.records, 32);
+        let revision = hession_core::library_revision::current(&conn).unwrap();
+        let before = read_chars();
+        let quiet = sources.manual_pass(&mut conn);
+        let bytes = read_chars() - before;
+        assert!(quiet.errors.is_empty());
+        assert_eq!((quiet.records, quiet.skipped), (0, 1));
+        assert!(
+            bytes < 1024 * 1024,
+            "{family}: quiet indexing read {bytes} bytes for an unchanged 2 MiB source"
+        );
+        assert_eq!(
+            hession_core::library_revision::current(&conn).unwrap(),
+            revision
+        );
+        fs::write(&file, content.replace(&text, &"b".repeat(text.len()))).unwrap();
+        File::open(&file)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(modified))
+            .unwrap();
+        let rewritten = sources.manual_pass(&mut conn);
+        assert!(rewritten.errors.is_empty(), "{:?}", rewritten.errors);
+        assert_eq!(rewritten.records, 32);
+        assert_eq!(body(&conn), "b".repeat(65536));
+    }
+}
+
+#[test]
+fn streamed_pi_and_commandcode_append_without_replacing_existing_entries_or_usage() {
+    for family in ["pi", "commandcode"] {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("history.jsonl");
+        let first = json!({"type":"message","id":"first","message":{"role":"assistant","content":"First reply","usage":{"input":10,"output":5,"cacheRead":2}}});
+        fs::write(&file, first.to_string()).unwrap();
+        let uri = native_source_uri(family, &file).unwrap();
+        let mut conn = open(dir.path());
+        assert_eq!(import(&mut conn, &uri).unwrap(), 1);
+        let (session, entry): (i64, i64) = conn
+            .query_row("SELECT session_id,id FROM entry", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        conn.execute(
+            "INSERT INTO session_annotation(session_id,starred) VALUES(?,1)",
+            [session],
+        )
+        .unwrap();
+        let mut writer = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        use std::io::Write;
+        write!(writer,"\n{}",json!({"type":"message","id":"second","message":{"role":"assistant","content":"Second reply","usage":{"input":3,"output":4,"cacheRead":1}}})).unwrap();
+        assert_eq!(import(&mut conn, &uri).unwrap(), 1);
+        assert_eq!(
+            conn.query_row("SELECT id FROM entry WHERE ordinal=0", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            entry
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT starred FROM session_annotation WHERE session_id=?",
+                [session],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        let usage: String = conn
+            .query_row(
+                "SELECT token_usage_json FROM session WHERE id=?",
+                [session],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let usage: Value = serde_json::from_str(&usage).unwrap();
+        assert_eq!(usage["outputTokens"], 9);
+        assert_eq!(usage["cachedTokens"], 3);
+        assert_eq!(usage["inputTokens"], if family == "pi" { 16 } else { 13 });
+        let cursor = hession_core::indexing::checkpoint(&conn, &uri).unwrap();
+        let revision = hession_core::library_revision::current(&conn).unwrap();
+        write!(writer, "\n{{\"type\":").unwrap();
+        assert!(import(&mut conn, &uri).is_err());
+        assert_eq!(
+            hession_core::indexing::checkpoint(&conn, &uri).unwrap(),
+            cursor
+        );
+        assert_eq!(
+            hession_core::library_revision::current(&conn).unwrap(),
+            revision
         );
     }
 }

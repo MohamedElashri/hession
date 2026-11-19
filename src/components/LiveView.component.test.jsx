@@ -287,3 +287,41 @@ test('duplicate pages do not inflate pending counts or repaint identical snapsho
     expect(format).toHaveBeenCalledTimes(1);
   } finally { format.mockRestore(); }
 });
+
+test('hidden live views stop timers and IPC, coalesce events, and catch up on visibility', async () => {
+  let hidden = false;
+  const visibility = vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
+  try {
+    render(<LiveTail session={session()} available onSelectSession={vi.fn()}/>); await tick();
+    expect(api).toHaveBeenCalledOnce();
+    hidden = true;
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    act(() => { for (let i = 0; i < 100; i++) emit(); });
+    await tick(60000);
+    expect(api).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    hidden = false;
+    act(() => document.dispatchEvent(new Event('visibilitychange'))); await tick();
+    expect(api).toHaveBeenCalledTimes(2);
+    await tick(2000);
+    expect(api).toHaveBeenCalledTimes(3);
+  } finally { visibility.mockRestore(); }
+});
+
+test('a live request finishing while hidden does not restart the polling timer', async () => {
+  let hidden = false, finish;
+  const visibility = vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
+  api.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  try {
+    render(<LiveTail session={session()} available onSelectSession={vi.fn()}/>); await tick();
+    hidden = true;
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await act(async () => finish(delta([entry(1)], 1, { reset: true })));
+    await tick(60000);
+    expect(api).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    hidden = false;
+    act(() => document.dispatchEvent(new Event('visibilitychange'))); await tick();
+    expect(api).toHaveBeenCalledTimes(2);
+  } finally { visibility.mockRestore(); }
+});

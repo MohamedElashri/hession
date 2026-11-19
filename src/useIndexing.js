@@ -89,9 +89,13 @@ export default function useIndexing({ ready, onChanged }) {
         ownership.resume?.();
       }
     };
-    const visible = () => { if (!document.hidden) { dirty = true; poll(); } };
+    let interval = document.hidden ? null : setInterval(poll, 3000);
+    const visible = () => {
+      clearInterval(interval); interval = null;
+      if (document.hidden) { clearTimeout(timer); timer = null; }
+      else { dirty = true; poll(); interval = setInterval(poll, 3000); }
+    };
     document.addEventListener('visibilitychange', visible);
-    const interval = setInterval(poll, 3000);
     listen('library-changed', () => {
       if (!active) return;
       dirty = true;

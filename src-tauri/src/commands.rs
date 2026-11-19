@@ -464,7 +464,7 @@ fn get_session_if_changed(
     let mut conn = open_db(db_path)?;
     let snapshot = conn.transaction().map_err(|e| e.to_string())?;
     let token = hession_core::session_changes::token(&snapshot, session_id)
-        .map(|token| format!("{token}:page:{}:limit:{limit}", page.max(1)));
+        .map(|token| format!("{token}:reading2:page:{}:limit:{limit}", page.max(1)));
     if token
         .as_deref()
         .is_some_and(|token| Some(token) == known_token)
@@ -482,8 +482,12 @@ fn get_session_if_changed(
     {
         return Ok(json!({"deleted":true}));
     }
-    let mut result =
-        hession_core::sessions::get_session_from_conn(&snapshot, session_id, limit, &mut offset)?;
+    let mut result = hession_core::sessions::get_reading_session_from_conn(
+        &snapshot,
+        session_id,
+        limit,
+        &mut offset,
+    )?;
     result["readToken"] = json!(token);
     snapshot.commit().map_err(|e| e.to_string())?;
     Ok(result)
@@ -502,11 +506,18 @@ pub async fn get_session(
     let id = opt_str(&id).to_string();
     let limit = clamp_limit(limit.as_deref(), 100, 1, 500);
     let page = parse_i64(opt_str(&page), 1).max(1);
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         get_session_if_changed(&db_path, &id, limit, page, known_token.as_deref())
     })
     .await
-    .map_err(|e| format!("get_session failed: {e}"))?
+    .map_err(|e| format!("get_session failed: {e}"))?;
+    if result
+        .as_ref()
+        .is_ok_and(|value| value.get("entries").is_some())
+    {
+        crate::memory::schedule();
+    }
+    result
 }
 
 // Search the complete indexed transcript, independently of the displayed page.

@@ -27,8 +27,8 @@ beforeEach(() => {
     if (command === 'search_sessions') return { sessions, total: 2 };
     if (command === 'developer_search') return { results: [result], countLowerBound: 1, nextCursor: null };
     if (command === 'get_session') return { session: sessions.find(session => String(session.id) === args.id),
-      entries: args.id === '2' && args.page === '2' ? [{ id: 900, ordinal: 9000, kind: 'message', role: 'assistant', parts: [{ kind: 'text', text: 'Target matching passage' }], tools: [] }] : [],
-      total: 1000, limit: 500, offset: (Number(args.page) - 1) * 500 };
+      entries: args.id === '2' && args.page === '6' ? [{ id: 900, ordinal: 9000, kind: 'message', role: 'assistant', parts: [{ kind: 'text', text: 'Target matching passage' }], tools: [] }] : [],
+      total: 1000, limit: Number(args.limit), offset: (Number(args.page) - 1) * Number(args.limit) };
     if (command === 'update_session_annotations') return { starred: args.starred, tags: [] };
     throw new Error(`Unexpected IPC: ${command}`);
   });
@@ -41,16 +41,16 @@ test('developer result opens its exact entry using row position rather than ordi
   await user.click(await screen.findByRole('button', { name: /Matching passage.*Open matching entry 502 in full log/ }));
   await screen.findByText('Target matching passage');
   expect(screen.getByRole('tab', { name: 'Full log' }).getAttribute('aria-selected')).toBe('true');
-  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 2 of 2' })).toBeTruthy();
+  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 6 of 10' })).toBeTruthy();
   expect(document.getElementById('entry-900').classList.contains('search-target')).toBe(true);
-  expect(api.mock.calls).toContainEqual(['get_session', { id: '2', limit: '500', page: '2' }]);
-  expect(api.mock.calls.some(([command, args]) => command === 'get_session' && Number(args.page) > 2)).toBe(false);
+  expect(api.mock.calls).toContainEqual(['get_session', { id: '2', limit: '100', page: '6' }]);
+  expect(api.mock.calls.some(([command, args]) => command === 'get_session' && Number(args.page) > 6)).toBe(false);
   await user.click(screen.getByRole('button', { name: 'Legacy search', exact: true }));
   await user.click(await screen.findByRole('button', { name: /^Codex.*Initial history/ }));
   await screen.findByRole('heading', { name: 'Initial history' });
   await user.click(screen.getByRole('button', { name: /^Claude Code.*Other history/ }));
   await screen.findByRole('heading', { name: 'Other history' });
-  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 1 of 2' })).toBeTruthy();
+  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 1 of 10' })).toBeTruthy();
   expect(document.getElementById('entry-900')).toBeNull();
 }, 10000);
 

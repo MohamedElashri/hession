@@ -17,6 +17,7 @@ pub mod headless_index;
 pub mod importer;
 pub mod indexer;
 mod library_revision;
+mod memory;
 mod paths;
 pub mod pricing;
 pub mod project_activity;
@@ -82,6 +83,19 @@ pub fn run() {
         .setup(move |app| {
             use tauri::Manager;
             if let Some(w) = app.get_webview_window("main") {
+                #[cfg(target_os = "linux")]
+                let _ = w.with_webview(|webview| {
+                    use webkit2gtk::{SettingsExt, WebContextExt, WebViewExt};
+                    let view = webview.inner();
+                    // This app keeps one local document; browser navigation
+                    // caches retain resources we cannot navigate back to.
+                    if let Some(context) = view.context() {
+                        context.set_cache_model(webkit2gtk::CacheModel::DocumentViewer);
+                    }
+                    if let Some(settings) = view.settings() {
+                        settings.set_enable_page_cache(false);
+                    }
+                });
                 let _ = w.show();
             }
             // Initialize on a blocking worker; the frontend starts sync after its first library paint.

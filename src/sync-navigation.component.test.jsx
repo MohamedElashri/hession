@@ -37,7 +37,7 @@ beforeEach(() => {
     if (command === 'get_sync_status') return { running: false };
     if (command === 'search_sessions') return { sessions, total: 2 };
     if (command === 'get_session') return {
-      session: sessions.find(s => String(s.id) === args.id), entries: [], total: 1000, limit: 500,
+      session: sessions.find(s => String(s.id) === args.id), entries: [], total: 1000, limit: Number(args.limit),
     };
     if (command === 'get_device_sync_settings') return {
       configured: true, enabled: true, deviceName: 'Test device', relayUrl: 'https://relay.example.test',
@@ -121,19 +121,19 @@ test.each(['success', 'failure'])('a sync %s preserves the selected session and 
   await user.click(await screen.findByRole('button', { name: /^Claude Code.*Selected session/ }));
   await screen.findByRole('heading', { name: 'Selected session' });
   await user.click(screen.getByRole('button', { name: 'Next transcript page' }));
-  await screen.findByRole('textbox', { name: 'Go to transcript page, current page 2 of 2' });
+  await screen.findByRole('textbox', { name: 'Go to transcript page, current page 2 of 10' });
   await user.click(screen.getByRole('button', { name: 'Settings' }));
   await user.click(await screen.findByRole('tab', { name: 'Private sync' }));
   const callsBefore = api.mock.calls.length;
   await user.click(await screen.findByRole('button', { name: 'Sync now' }));
   await screen.findByText(outcome === 'failure' ? 'Could not reach the relay' : /Sync complete/);
   await waitFor(() => expect(api.mock.calls.slice(callsBefore)).toContainEqual([
-    'get_session', { id: '2', limit: '500', page: '2' },
+    'get_session', { id: '2', limit: '100', page: '2' },
   ]));
   expect(new URL(window.location.href).searchParams.get('session')).toBe('2');
   await user.click(screen.getByRole('button', { name: 'Done' }));
   expect(screen.getByRole('heading', { name: 'Selected session' })).toBeTruthy();
-  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 2 of 2' })).toBeTruthy();
+  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 2 of 10' })).toBeTruthy();
 });
 
 test('keyboard commands navigate sessions and transcript without hijacking typing or dialogs', async () => {
@@ -165,7 +165,7 @@ test('keyboard commands navigate sessions and transcript without hijacking typin
   const palette = await screen.findByRole('combobox');
   await user.type(palette, 'Next transcript page');
   await user.keyboard('{Enter}');
-  await screen.findByRole('textbox', { name: 'Go to transcript page, current page 2 of 2' });
+  await screen.findByRole('textbox', { name: 'Go to transcript page, current page 2 of 10' });
   await user.click(screen.getByRole('button', { name: 'Settings', exact: true }));
   await screen.findByRole('dialog');
   await user.keyboard('{Control>}k{/Control}');
@@ -298,9 +298,9 @@ test('file evidence opens its source session and true transcript page despite ga
   await user.click(screen.getByRole('button', { name: 'Files and Git' }));
   expect(new URL(window.location.href).searchParams.get('view')).toBe('projects');
   await user.click(await screen.findByRole('button', { name: 'Open session 2, event 9999' }));
-  await waitFor(() => expect(api).toHaveBeenCalledWith('get_session', { id: '2', limit: '500', page: '2' }));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('get_session', { id: '2', limit: '100', page: '8' }));
   await screen.findByRole('heading', { name: 'Selected session' });
-  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 2 of 2' })).toBeTruthy();
+  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 8 of 10' })).toBeTruthy();
   expect(new URL(window.location.href).searchParams.get('session')).toBe('2');
 }, 15000);
 
@@ -309,7 +309,7 @@ test('focus mode restores the surrounding layout and keeps the same transcript a
   render(boot.tree);
   await screen.findByRole('heading', { name: 'First session' });
   await user.click(screen.getByRole('button', { name: 'Next transcript page' }));
-  await screen.findByRole('textbox', { name: 'Go to transcript page, current page 2 of 2' });
+  await screen.findByRole('textbox', { name: 'Go to transcript page, current page 2 of 10' });
   const transcript = screen.getByRole('region', { name: 'Transcript' });
   transcript.scrollTop = 120;
   const reads = api.mock.calls.filter(([command]) => command === 'get_session').length;
@@ -317,7 +317,7 @@ test('focus mode restores the surrounding layout and keeps the same transcript a
   expect(document.querySelector('.app-shell').classList.contains('reader-focus')).toBe(true);
   expect(screen.getByRole('region', { name: 'Transcript' })).toBe(transcript);
   expect(transcript.scrollTop).toBe(120);
-  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 2 of 2' })).toBeTruthy();
+  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 2 of 10' })).toBeTruthy();
   await user.keyboard('{Escape}');
   expect(document.querySelector('.app-shell').classList.contains('reader-focus')).toBe(false);
   expect(screen.getByRole('region', { name: 'Transcript' })).toBe(transcript);
@@ -362,7 +362,7 @@ test('a background refresh reuses the selected transcript and retains the list o
   await user.click(await screen.findByRole('tab',{name:'Private sync'}));
   await user.click(await screen.findByRole('button',{name:'Sync now'}));
   await screen.findByText('Temporary query failure');
-  await waitFor(()=>expect(api.mock.calls).toContainEqual(['get_session',{id:'1',limit:'500',page:'1',knownToken:'same-session-page'}]));
+  await waitFor(()=>expect(api.mock.calls).toContainEqual(['get_session',{id:'1',limit:'100',page:'1',knownToken:'same-session-page'}]));
   await user.click(screen.getByRole('button',{name:'Done'}));
   expect(screen.getByRole('region',{name:'Transcript'})).toBe(transcript);
   expect(screen.getByRole('button',{name:/^Claude Code.*Selected session/})).toBeTruthy();

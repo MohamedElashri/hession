@@ -1,4 +1,4 @@
-//! Append normalization for Claude/Codex only. Parsed rows are staged on disk
+//! Streamed append normalization for Claude, Codex, Pi, and Command Code. Parsed rows are staged on disk
 //! outside the library write lock, then streamed into one atomic transaction.
 use super::*;
 use hession_core::{indexing, jsonl};
@@ -278,6 +278,12 @@ pub(super) fn import(
     force: bool,
     pricing: &mut ImportPricing,
 ) -> Result<usize, String> {
+    let legacy = matches!(family, "pi" | "commandcode");
+    if legacy && fs::metadata(file).map_err(|e| e.to_string())?.len() > MAX_LEGACY_BYTES {
+        return Err(
+            "Legacy JSONL exceeds 128 MiB read budget; previous history was preserved".into(),
+        );
+    }
     let epoch = pricing
         .epoch
         .unwrap_or(indexing::epoch(conn).map_err(|e| e.to_string())?);
@@ -315,11 +321,24 @@ pub(super) fn import(
             cursor = None;
         }
     }
-    let mut reader = match jsonl::Reader::open(
+    let open = if legacy {
+        jsonl::Reader::open_complete_snapshot
+    } else {
+        jsonl::Reader::open
+    };
+    let mut reader = match open(
         file,
         if force { None } else { cursor.as_ref() },
-        PARSER_VERSION,
-        jsonl::Validation::Content,
+        if legacy {
+            PARSER_VERSION + 1
+        } else {
+            PARSER_VERSION
+        },
+        if pricing.validate_contents {
+            jsonl::Validation::Content
+        } else {
+            jsonl::Validation::Metadata
+        },
         &stop_requested,
     )
     .map_err(|e| e.to_string())?
@@ -327,6 +346,11 @@ pub(super) fn import(
         Some(reader) => reader,
         None => return Ok(0),
     };
+    if legacy && reader.fingerprint().size > MAX_LEGACY_BYTES {
+        return Err(
+            "Legacy JSONL exceeds 128 MiB read budget; previous history was preserved".into(),
+        );
+    }
     let append = reader.mode() == jsonl::Mode::Append;
     let old_count = if append {
         cursor.as_ref().map_or(0, |c| c.records)
@@ -352,10 +376,16 @@ pub(super) fn import(
         BEGIN;").map_err(|e|e.to_string())?;
     let mut count = 0usize;
     let mut bytes = 0u64;
+    let mut decoded_remaining = MAX_DECODED_BYTES;
     while let Some(value) = reader.next_record().map_err(|e| e.to_string())? {
-        let data = formats::session_data(family, source_uri, file, vec![value.clone()], 0, 0.0)?;
-        let record = data.records.first().ok_or("Expected a normalized record")?;
-        summary_budget.observe(&mut summary, family, &data.metadata, record)?;
+        if legacy {
+            charge_value(&value, &mut decoded_remaining)?;
+            if old_count + count as u64 >= MAX_RECORDS as u64 {
+                return Err(
+                    "Legacy source exceeds 100000 records; previous history was preserved".into(),
+                );
+            }
+        }
         let ordinal = old_count
             .checked_add(count as u64)
             .and_then(|n| i64::try_from(n).ok())
@@ -367,7 +397,17 @@ pub(super) fn import(
                 .or_else(|| first_str(&value, &["id", "uuid"]))
                 .unwrap_or_else(|| ordinal.to_string())
         };
-        let text = serde_json::to_string(record).map_err(|e| e.to_string())?;
+        let data = formats::session_data(family, source_uri, file, vec![value], 0, 0.0)?;
+        let mut record = data
+            .records
+            .into_iter()
+            .next()
+            .ok_or("Expected a normalized record")?;
+        summary_budget.observe(&mut summary, family, &data.metadata, &record)?;
+        // Search text is derived from parts/tools. Do not write another full
+        // transcript copy to the private stage; rebuild it after deserialization.
+        record.body = Arc::default();
+        let text = serde_json::to_string(&record).map_err(|e| e.to_string())?;
         bytes = bytes.saturating_add(text.len() as u64);
         for call in record
             .tools
@@ -498,9 +538,10 @@ pub(super) fn import(
         if stop_requested() {
             return Err("Import stopped".into());
         }
-        let record: NormalizedRecord =
+        let mut record: NormalizedRecord =
             serde_json::from_str(&row.get::<_, String>(1).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
+        record.body = searchable_body(&record.parts, &record.tools);
         insert_record(&tx, id, row.get(0).map_err(|e| e.to_string())?, &record)?;
         if let Some(usage) = row.get::<_, Option<String>>(3).map_err(|e| e.to_string())? {
             merge_usage(
@@ -555,6 +596,15 @@ pub(super) fn import(
     .map_err(|e| e.to_string())?;
     crate::analytics::process_session(&tx, &pricing.state, id)?;
     set_file_state(&tx, source_uri, data.size, data.mtime).map_err(|e| e.to_string())?;
+    if legacy {
+        // Retire the older full-source receipt only in the successful atomic
+        // commit; the append cursor now owns this source's verification state.
+        tx.execute(
+            "DELETE FROM index_full_source WHERE source_uri=?",
+            [source_uri],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     indexing::save_checkpoint(
         &tx,
         source_uri,

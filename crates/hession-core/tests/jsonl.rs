@@ -227,3 +227,53 @@ fn fifo_sources_are_rejected_without_blocking() {
         Err(ReadError::NotRegular)
     ));
 }
+
+#[test]
+fn complete_snapshot_accepts_final_objects_and_requires_a_delimiter_before_appending() {
+    fn complete(
+        path: &std::path::Path,
+        previous: Option<&hession_core::jsonl::Cursor>,
+    ) -> (Vec<serde_json::Value>, hession_core::jsonl::Cursor) {
+        let mut reader =
+            Reader::open_complete_snapshot(path, previous, 1, Validation::Content, &|| false)
+                .unwrap()
+                .unwrap();
+        let mut values = Vec::new();
+        while let Some(value) = reader.next_record().unwrap() {
+            values.push(value);
+        }
+        (values, reader.finish().unwrap())
+    }
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("complete.jsonl");
+    std::fs::write(&file, "{\"text\":\"first\"}").unwrap();
+    let (values, first) = complete(&file, None);
+    assert_eq!(values.len(), 1);
+    assert_eq!(first.physical_lines, 1);
+    let mut writer = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&file)
+        .unwrap();
+    writer.write_all(b" \r\n{\"text\":\"second\"}").unwrap();
+    let (values, second) = complete(&file, Some(&first));
+    assert_eq!(values.len(), 1);
+    assert_eq!(values[0]["text"], "second");
+    assert_eq!((second.records, second.physical_lines), (2, 2));
+    writer
+        .write_all(b"{\"text\":\"missing delimiter\"}")
+        .unwrap();
+    let mut reader =
+        Reader::open_complete_snapshot(&file, Some(&second), 1, Validation::Content, &|| false)
+            .unwrap()
+            .unwrap();
+    assert!(reader.next_record().is_err());
+    assert!(reader.finish().is_err());
+    std::fs::write(&file, b"{\"text\":\"ok\"}\n{\"text\":").unwrap();
+    let mut reader = Reader::open_complete_snapshot(&file, None, 1, Validation::Content, &|| false)
+        .unwrap()
+        .unwrap();
+    assert!(reader.next_record().unwrap().is_some());
+    assert!(reader.next_record().is_err());
+    assert!(reader.finish().is_err());
+}

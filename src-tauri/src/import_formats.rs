@@ -1,16 +1,20 @@
 //! Lossless content extraction and read-only adapters for agent SQLite sources.
 
-use super::{first_str, iso_time, normalize_record, stop_requested, NormalizedRecord};
+use super::{
+    first_str, iso_time, normalize_record_fields, normalize_record_owned, stop_requested,
+    NormalizedRecord,
+};
 use rusqlite::{params, types::ValueRef, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentPart {
     pub kind: String,
-    pub text: Option<String>,
+    pub text: Option<Arc<String>>,
     pub data: Option<Value>,
 }
 
@@ -78,7 +82,7 @@ fn content_parts(value: &Value, parts: &mut Vec<ContentPart>) {
             if !s.is_empty() {
                 parts.push(ContentPart {
                     kind: "text".into(),
-                    text: Some(s.clone()),
+                    text: Some(Arc::new(s.clone())),
                     data: None,
                 });
             }
@@ -105,7 +109,8 @@ fn content_parts(value: &Value, parts: &mut Vec<ContentPart>) {
                 parts.push(ContentPart {
                     kind: kind.into(),
                     text: first_str(value, &["name", "toolName", "tool_name", "tool"])
-                        .or_else(|| first_str(&value["function"], &["name"])),
+                        .or_else(|| first_str(&value["function"], &["name"]))
+                        .map(Arc::new),
                     data: Some(value.clone()),
                 });
             } else if kind == "tool_result" {
@@ -116,14 +121,14 @@ fn content_parts(value: &Value, parts: &mut Vec<ContentPart>) {
                     .or_else(|| value.get("text"));
                 parts.push(ContentPart {
                     kind: kind.into(),
-                    text: output.map(value_text),
+                    text: output.map(value_text).map(Arc::new),
                     data: Some(value.clone()),
                 });
             } else if kind == "text" || typ.is_empty() {
                 if let Some(s) = value.get("text").and_then(Value::as_str) {
                     parts.push(ContentPart {
                         kind: "text".into(),
-                        text: Some(s.into()),
+                        text: Some(Arc::new(s.into())),
                         data: Some(value.clone()),
                     });
                 } else if let Some(nested) = value.get("content").or_else(|| value.get("output")) {
@@ -139,7 +144,7 @@ fn content_parts(value: &Value, parts: &mut Vec<ContentPart>) {
                 // Keep reasoning, media, and unfamiliar content types intact.
                 parts.push(ContentPart {
                     kind: kind.into(),
-                    text: first_str(value, &["text", "thinking"]),
+                    text: first_str(value, &["text", "thinking"]).map(Arc::new),
                     data: Some(value.clone()),
                 });
             }
@@ -296,7 +301,7 @@ pub(super) fn record_details(
             {
                 parts.push(ContentPart {
                     kind: "tool_call".into(),
-                    text: Some(tool.name.clone()),
+                    text: Some(Arc::new(tool.name.clone())),
                     data: Some(call),
                 });
                 tools.push(tool);
@@ -323,7 +328,12 @@ pub(super) fn record_details(
                     value,
                     &["tool_use_id", "tool_call_id", "call_id", "toolCallId"],
                 ),
-                text: p.text.clone().unwrap_or_default(),
+                text: p
+                    .text
+                    .as_deref()
+                    .map(|text| text.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
                 exit_code,
                 status: if is_error { "error" } else { "completed" }.into(),
             }
@@ -366,7 +376,7 @@ fn count(v: &Value, keys: &[&str]) -> Option<i64> {
 /// Muse batches its first records inside `retained_frame` wrappers whose real
 /// records live in `children[].record_json` (escaped JSON strings). Expand one
 /// JSONL line into its inner records so usage and timestamps see every event.
-fn expand_muse_values(values: &[Value]) -> Result<Vec<Value>, String> {
+fn expand_muse_values(values: Vec<Value>) -> Result<Vec<Value>, String> {
     let mut out = Vec::with_capacity(values.len());
     for value in values {
         if value.get("retained_frame").is_some() {
@@ -388,7 +398,7 @@ fn expand_muse_values(values: &[Value]) -> Result<Vec<Value>, String> {
                 }
             }
         }
-        out.push(value.clone());
+        out.push(value);
     }
     Ok(out)
 }
@@ -629,20 +639,21 @@ pub(super) fn session_data(
     // Unwrap muse `retained_frame` batches once so the record loop and the
     // usage rollup below both see the same inner events.
     let values = if family == "muse" {
-        expand_muse_values(&values)?
+        expand_muse_values(values)?
     } else {
         values
     };
+    let usage = reported_usage(family, &values);
     let mut metadata = Map::new();
     let mut records = Vec::with_capacity(values.len());
-    for (i, value) in values.iter().enumerate() {
+    for (i, value) in values.into_iter().enumerate() {
         if stop_requested() {
             return Err("Import stopped".into());
         }
         let meta = if family == "codex" && value["type"] == "session_meta" {
             &value["payload"]
         } else {
-            value
+            &value
         };
         let mut incoming = Map::new();
         // Message IDs must not overwrite the session identity.
@@ -679,13 +690,12 @@ pub(super) fn session_data(
         }
         merge_session_metadata(family, &mut metadata, &incoming);
         let record =
-            normalize_record(family, value, i as i64).ok_or("Expected an object record")?;
+            normalize_record_owned(family, value, i as i64).ok_or("Expected an object record")?;
         records.push(record);
     }
     if family == "antigravity" {
         metadata.extend(antigravity_metadata(file)?);
     }
-    let usage = reported_usage(family, &values);
     Ok(SessionData {
         uri: uri.into(),
         fallback_id: file
@@ -715,7 +725,7 @@ pub(super) fn insert_details(
 ) -> Result<(), String> {
     for (ordinal, part) in record.parts.iter().enumerate() {
         conn.prepare_cached("INSERT INTO content_part(entry_id,ordinal,kind,text,data_json) VALUES (?1,?2,?3,?4,?5)")
-            .map_err(|e| e.to_string())?.execute(params![entry_id,ordinal as i64,part.kind,part.text,part.data.as_ref().map(Value::to_string)]).map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?.execute(params![entry_id,ordinal as i64,part.kind,part.text.as_deref(),part.data.as_ref().map(Value::to_string)]).map_err(|e| e.to_string())?;
     }
     let context = &record.context;
     let model_id = match &context.model {
@@ -1014,6 +1024,66 @@ pub(super) struct DbSource<'a> {
     pub root: &'a str,
 }
 
+// This bounds retained normalized data across sessions, independently of
+// parsing speed. A single session can exceed the budget and is flushed alone.
+const DATABASE_BATCH_BYTES: usize = 8 * 1024 * 1024;
+
+fn session_memory_weight(data: &SessionData) -> usize {
+    let mut remaining = usize::MAX;
+    if super::charge_value(&data.metadata, &mut remaining).is_err() {
+        return usize::MAX;
+    }
+    for record in &data.records {
+        let strings = record
+            .parts
+            .iter()
+            .filter_map(|part| part.text.as_ref())
+            .map(|text| text.len())
+            .chain(record.results.iter().map(|result| result.text.len()))
+            .fold(record.body.len(), usize::saturating_add);
+        remaining = remaining
+            .saturating_sub(strings.saturating_add(std::mem::size_of::<NormalizedRecord>()));
+        let values = std::iter::once(&record.payload)
+            .chain(record.parts.iter().filter_map(|part| part.data.as_ref()))
+            .chain(record.tools.iter().map(|tool| &tool.arguments));
+        for value in values {
+            if super::charge_value(value, &mut remaining).is_err() {
+                return usize::MAX;
+            }
+        }
+        for tool in &record.tools {
+            remaining = remaining
+                .saturating_sub(tool.result.as_ref().map_or(0, String::len))
+                .saturating_sub(tool.command.as_ref().map_or(0, String::len));
+        }
+    }
+    usize::MAX - remaining
+}
+
+fn flush_database_batch(
+    dest: &mut Connection,
+    source: DbSource<'_>,
+    pricing: &mut super::ImportPricing,
+    batch: &mut Vec<SessionData>,
+    total: &mut usize,
+    on_session: &mut Option<&mut dyn FnMut(usize)>,
+) -> Result<(), String> {
+    for n in super::commit_batch(
+        dest,
+        source.family,
+        source.product,
+        source.root,
+        pricing,
+        std::mem::take(batch),
+    )? {
+        *total += n;
+        if let Some(report) = on_session.as_deref_mut() {
+            report(n);
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn import_database(
     dest: &mut Connection,
     source: DbSource<'_>,
@@ -1021,12 +1091,9 @@ pub(super) fn import_database(
     mut on_session: Option<&mut dyn FnMut(usize)>,
     pricing: &mut super::ImportPricing,
 ) -> Result<usize, String> {
+    let descriptor = source;
     let DbSource {
-        uri,
-        family,
-        file,
-        product,
-        root,
+        uri, family, file, ..
     } = source;
     if !matches!(family, "opencode" | "hermes") {
         return Err(format!("Unsupported database source: {family}"));
@@ -1058,6 +1125,7 @@ pub(super) fn import_database(
     let mut total = 0;
     let mut batch = Vec::new();
     let mut batch_records = 0;
+    let mut batch_bytes = 0usize;
     let mut batch_start = std::time::Instant::now();
     for session in sessions {
         if stop_requested() {
@@ -1100,29 +1168,41 @@ pub(super) fn import_database(
         } else {
             hermes_session(uri, session, &id, messages)?
         };
+        let bytes = session_memory_weight(&data);
+        if !batch.is_empty() && batch_bytes.saturating_add(bytes) > DATABASE_BATCH_BYTES {
+            flush_database_batch(
+                dest,
+                descriptor,
+                pricing,
+                &mut batch,
+                &mut total,
+                &mut on_session,
+            )?;
+            batch_records = 0;
+            batch_bytes = 0;
+            batch_start = std::time::Instant::now();
+        }
+        batch_bytes = batch_bytes.saturating_add(bytes);
         batch_records += data.records.len();
         batch.push(data);
         // Parse sources outside the writer gate. Bound both memory and time;
         // waiting interactive writes also trigger an early batch boundary.
         if batch.len() >= 16
+            || batch_bytes >= DATABASE_BATCH_BYTES
             || batch_records >= 5000
             || batch_start.elapsed() >= std::time::Duration::from_millis(40)
             || crate::db::user_write_pending()
         {
-            for count in super::commit_batch(
+            flush_database_batch(
                 dest,
-                family,
-                product,
-                root,
+                descriptor,
                 pricing,
-                std::mem::take(&mut batch),
-            )? {
-                total += count;
-                if let Some(report) = on_session.as_deref_mut() {
-                    report(count);
-                }
-            }
+                &mut batch,
+                &mut total,
+                &mut on_session,
+            )?;
             batch_records = 0;
+            batch_bytes = 0;
             batch_start = std::time::Instant::now();
         }
     }
@@ -1131,12 +1211,14 @@ pub(super) fn import_database(
     }
     snapshot.commit().map_err(|e| e.to_string())?;
     if !batch.is_empty() {
-        for count in super::commit_batch(dest, family, product, root, pricing, batch)? {
-            total += count;
-            if let Some(report) = on_session.as_deref_mut() {
-                report(count);
-            }
-        }
+        flush_database_batch(
+            dest,
+            descriptor,
+            pricing,
+            &mut batch,
+            &mut total,
+            &mut on_session,
+        )?;
     }
     let _writer = crate::db::background_write(dest).map_err(|e| e.to_string())?;
     if stop_requested() {
@@ -1184,9 +1266,9 @@ fn opencode_session(
     }
     let mut records = Vec::with_capacity(messages.len());
     let mut usage_values = Vec::new();
-    for message in &messages {
-        let message_id = source_id(message)?;
-        let data = source_json(message, "data", Value::Null)?;
+    for message in messages {
+        let message_id = source_id(&message)?;
+        let data = source_json(&message, "data", Value::Null)?;
         if !data.is_object() {
             return Err("OpenCode message data must be an object".into());
         }
@@ -1218,12 +1300,16 @@ fn opencode_session(
         normalized["provider"] = data.get("providerID").cloned().unwrap_or(Value::Null);
         normalized["content"] = json!(content);
         normalized["cwd"] = metadata.get("directory").cloned().unwrap_or(Value::Null);
-        let mut record = normalize_record("opencode", &normalized, records.len() as i64)
+        let mut record = normalize_record_fields("opencode", &normalized, records.len() as i64)
             .ok_or("Invalid OpenCode message")?;
-        record.payload = json!({"message": message, "parts": raw_parts});
+        record.payload = Value::Object(Map::from_iter([
+            ("message".into(), message),
+            ("parts".into(), Value::Array(raw_parts)),
+        ]));
         records.push(record);
-        normalized["id"] = json!(message_id);
-        usage_values.push(normalized);
+        // Usage aggregation needs only identity and token counters. Keeping
+        // normalized messages here retained a second complete transcript.
+        usage_values.push(json!({"id":message_id,"tokens":normalized.get("tokens")}));
     }
     metadata["cwd"] = metadata.get("directory").cloned().unwrap_or(Value::Null);
     let mtime = metadata["time_updated"]
@@ -1278,7 +1364,7 @@ fn hermes_session(
     let cwd = first_str(&metadata, &["cwd", "git_repo_root"])
         .map(Value::String)
         .unwrap_or(Value::Null);
-    for message in &messages {
+    for message in messages {
         let mut normalized = message.clone();
         normalized["type"] = json!("message");
         normalized["cwd"] = cwd.clone();
@@ -1288,7 +1374,7 @@ fn hermes_session(
             .cloned()
             .unwrap_or(Value::Null);
         normalized["branch"] = metadata.get("git_branch").cloned().unwrap_or(Value::Null);
-        let calls = source_json(message, "tool_calls", json!([]))?;
+        let calls = source_json(&message, "tool_calls", json!([]))?;
         if !calls.is_array() {
             return Err("Hermes tool_calls must be an array".into());
         }
@@ -1296,9 +1382,8 @@ fn hermes_session(
         normalized["timestamp"] = seconds_time(&message["timestamp"])
             .map(Value::String)
             .unwrap_or(Value::Null);
-        let mut record = normalize_record("hermes", &normalized, records.len() as i64)
+        let mut record = normalize_record_fields("hermes", &normalized, records.len() as i64)
             .ok_or("Invalid Hermes message")?;
-        record.payload = message.clone();
         // Tool results are linked by call ID without dropping their original entry.
         if record.role.as_deref() == Some("tool") {
             if let Some(result) = record.results.first_mut() {
@@ -1314,6 +1399,7 @@ fn hermes_session(
                 }
             }
         }
+        record.payload = message;
         records.push(record);
     }
     metadata["cwd"] = cwd;

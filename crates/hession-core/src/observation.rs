@@ -34,6 +34,20 @@ impl Pending {
     pub fn is_empty(&self) -> bool {
         self.paths.is_empty() && !self.reconcile
     }
+    /// Sleep until work is due; a quiet native observer needs no debounce tick.
+    pub fn next_ready_in(&self, now: Instant) -> Option<Duration> {
+        if self.reconcile {
+            return Some(Duration::ZERO);
+        }
+        self.paths
+            .values()
+            .map(|(first, last)| {
+                (*last + DEBOUNCE)
+                    .min(*first + MAX_DELAY)
+                    .saturating_duration_since(now)
+            })
+            .min()
+    }
     pub fn take_ready(&mut self, now: Instant) -> (Vec<PathBuf>, bool) {
         let mut ready = Vec::new();
         self.paths.retain(|path, (first, last)| {
@@ -57,11 +71,16 @@ mod tests {
     fn bursts_are_deduplicated_bounded_and_continuous_writes_cannot_starve() {
         let start = Instant::now();
         let mut queue = Pending::default();
+        assert_eq!(queue.next_ready_in(start), None);
         let path = Path::new("source");
         for tick in 0..10 {
             queue.push(path, start + Duration::from_millis(tick * 100));
         }
         assert_eq!(queue.len(), 1);
+        assert_eq!(
+            queue.next_ready_in(start + Duration::from_millis(900)),
+            Some(Duration::from_millis(100))
+        );
         assert!(queue
             .take_ready(start + Duration::from_millis(999))
             .0
@@ -78,5 +97,7 @@ mod tests {
         assert_eq!(paths.len(), MAX_PENDING);
         assert!(rescan);
         assert!(queue.is_empty());
+        queue.overflow();
+        assert_eq!(queue.next_ready_in(start), Some(Duration::ZERO));
     }
 }

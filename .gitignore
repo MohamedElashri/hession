@@ -16,3 +16,5 @@ deploy/relay/backups/
 deploy/relay/.env
 hession-relay-data/
 
+# Local Python benchmark and native-test bytecode.
+__pycache__/
