@@ -43,7 +43,7 @@ jobs:
         run: dnf install -y --setopt=install_weak_deps=False git tar findutils which
 
       - name: Refresh Ubuntu package lists
-        if: matrix.name == 'Ubuntu (deb)'
+        if: startsWith(matrix.name, 'Ubuntu (')
         run: |
           # Hosted regional mirrors can stall large WebKit dependency downloads.
           # Use Ubuntu's signed archive for this disposable validation host.
@@ -53,7 +53,6 @@ jobs:
       - name: Prepare the AppImage host graphics runtime
         if: matrix.name == 'Ubuntu (AppImage)'
         run: |
-          sudo apt-get update
           sudo apt-get install -y --no-install-recommends libegl1 libgles2 libgl1 libgbm1
 
       - name: Check out
