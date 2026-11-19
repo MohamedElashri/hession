@@ -189,8 +189,8 @@ def main():
         assert result.returncode == 0
         assert primary.poll() is None, 'Primary process changed'
         if desktop:
-            assert desktop.windows(primary.pid) == [window], 'More than one main window'
             until(lambda: desktop.property(window, 'WM_STATE')[:1] == [1] and desktop.focused(window), 'Existing window was not restored and focused')
+            assert desktop.windows(primary.pid) == [window], 'More than one main window'
 
     try:
         command(['index', '--once', '--agent', 'codex', '--json'], headless=True)
