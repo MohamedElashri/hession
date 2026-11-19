@@ -37,8 +37,8 @@ peak import memory while preserving complete conversations and exports.
 ### Fixed
 
 - Restore and focus a minimized Linux window when a launcher activates it before
-  GTK has consumed the window manager's minimize event. Retry once after event
-  delivery, without adding idle polling.
+  GTK has consumed the window manager's minimize event. Use current-time native
+  activation without adding idle polling or delayed focus changes.
 - Ignore repeated notifications for an already indexed fingerprint, and preserve
   regular-file paths when resolving observation aliases.
 - Keep failed sources marked stale until they recover and retry them without

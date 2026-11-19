@@ -52,23 +52,15 @@ fn show_main_window(app: &tauri::AppHandle) {
                     // when GTK's cached window state still says it is visible.
                     window.deiconify();
                     window.present_with_time(gtk::gdk::ffi::GDK_CURRENT_TIME as u32);
-                    // The WM can acknowledge iconification before GTK consumes
-                    // that state event. Retry once after its event queue settles;
-                    // this source exists only for an explicit launcher action.
-                    gtk::glib::timeout_add_local_once(
-                        std::time::Duration::from_millis(100),
-                        move || {
-                            use gtk::prelude::WidgetExt;
-                            if window.is_visible()
-                                && (window.window().is_some_and(|native| {
-                                    native.state().contains(gtk::gdk::WindowState::ICONIFIED)
-                                }) || !window.is_active())
-                            {
-                                window.deiconify();
-                                window.present_with_time(gtk::gdk::ffi::GDK_CURRENT_TIME as u32);
-                            }
-                        },
-                    );
+                    // GTK translates CURRENT_TIME to its cached user timestamp,
+                    // which can predate a minimize and be rejected by the WM.
+                    // This is an explicit launcher action: send current-time
+                    // activation directly, without a delayed focus-stealing retry.
+                    use gtk::prelude::WidgetExt;
+                    if let Some(native) = window.window() {
+                        native.focus(gtk::gdk::ffi::GDK_CURRENT_TIME as u32);
+                        native.display().flush();
+                    }
                 }
             });
         }
