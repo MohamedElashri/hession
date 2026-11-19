@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -202,9 +203,14 @@ def main():
             for key in ['LD_LIBRARY_PATH', 'XDG_DATA_DIRS']:
                 if os.environ.get('HESSION_TEST_WM_' + key):
                     wm_env[key] = os.environ['HESSION_TEST_WM_' + key]
-            wm = subprocess.Popen([os.environ.get('HESSION_TEST_WM', 'openbox'), '--sm-disable', '--config-file', str(config)], env=wm_env, cwd=root, stdout=log, stderr=log, start_new_session=True)
+            wm_ready = root / 'window-manager-ready'
+            startup = shlex.join([shutil.which('touch') or '/usr/bin/touch', str(wm_ready)])
+            wm = subprocess.Popen([os.environ.get('HESSION_TEST_WM', 'openbox'), '--sm-disable', '--config-file', str(config), '--startup', startup], env=wm_env, cwd=root, stdout=log, stderr=log, start_new_session=True)
             processes.append(wm)
             desktop = Desktop()
+            # Openbox publishes its owner property before installing event
+            # handling; its startup hook runs after that initialization.
+            until(wm_ready.is_file, 'Test window manager did not finish startup', timeout=60)
             until(lambda: desktop.property(desktop.root, '_NET_SUPPORTING_WM_CHECK'), 'Test window manager did not initialize')
             assert wm.poll() is None, 'Test window manager exited'
             desktop.wait_for_window_manager()
