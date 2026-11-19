@@ -311,7 +311,14 @@ fn routing_path(path: &Path) -> PathBuf {
     };
     for ancestor in absolute.ancestors() {
         if let Ok(resolved) = std::fs::canonicalize(ancestor) {
-            return resolved.join(absolute.strip_prefix(ancestor).unwrap_or(Path::new("")));
+            let suffix = absolute.strip_prefix(ancestor).unwrap_or(Path::new(""));
+            // Joining an empty path adds a trailing slash. That is harmless
+            // for directory routing, but makes opening a regular file fail.
+            return if suffix.as_os_str().is_empty() {
+                resolved
+            } else {
+                resolved.join(suffix)
+            };
         }
     }
     absolute
@@ -1594,6 +1601,12 @@ mod tests {
         assert_eq!(
             routing_path(&alias.join("missing.db-wal")),
             routing_path(&dir.path().join("nested/missing.db-wal"))
+        );
+        let history = alias.join("history.jsonl");
+        std::fs::write(&history, "Complete existing source").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(routing_path(&history)).unwrap(),
+            "Complete existing source"
         );
         assert!(affected(
             "codex",
