@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-11-19
+
+Performance patch that reduces idle indexing, repeated source processing, and
+peak import memory while preserving complete conversations and exports.
+
 ### Improved
 
 - Let native background indexing sleep between file events and revision checks.
@@ -31,6 +36,8 @@
 
 ### Fixed
 
+- Ignore repeated notifications for an already indexed fingerprint, and preserve
+  regular-file paths when resolving observation aliases.
 - Keep failed sources marked stale until they recover and retry them without
   rescanning healthy histories. Wake promptly for pause/resume, shutdown, and
   completion of manual sync or data maintenance.
@@ -38,6 +45,16 @@
   that parent, and discard unrelated parent events before queue admission.
 - Route native events consistently through directory aliases and reattach watches
   when source directories are replaced. Keep polling for symlinked source files.
+
+Synthetic Linux checks against v0.5.4 measured 405× lower background-observer
+idle CPU and 160× fewer append reads. The minimized GUI process tree used 0.061%
+of one core over 120 seconds. Separate 47 MiB Pi/Command Code fixtures peaked at
+about 52 MiB indexing RAM; one-record appends preserved existing entry IDs and
+normalized only the new record. These are synthetic workload measurements.
+
+Retained GUI memory remains work in progress: the large-tool-output fixture used
+285 MiB PSS and the native-memory overhead exceeded its benchmark target. Further
+GUI memory reductions remain planned for v0.6.0.
 
 ## [0.5.4] - 2026-11-18
 
@@ -300,6 +317,8 @@ Initial release for macOS (universal) and Linux.
 - Light/dark themes and bundled Geist fonts.
 - Download installer with SHA-256 verification.
 
+[0.5.5]: https://github.com/MohamedElashri/hession/compare/v0.5.4...v0.5.5
+[0.5.4]: https://github.com/MohamedElashri/hession/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/MohamedElashri/hession/compare/v0.5.2...v0.5.3
 [0.4.0]: https://github.com/MohamedElashri/hession/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/MohamedElashri/hession/compare/v0.2.1...v0.3.0
