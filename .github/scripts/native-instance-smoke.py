@@ -207,7 +207,7 @@ def main():
             assert desktop.windows(primary.pid) == [window]
             # Repeat immediate minimize/relaunch to exercise activation while
             # GTK's cached window state can still lag the window manager.
-            for _ in range(3):
+            for _ in range(12):
                 desktop.iconify(window)
                 second(primary)
         for args in [['--version'], ['--help'], ['status', '--json'], ['sessions', 'list', '--json'], ['index', '--once', '--agent', 'codex', '--json']]:
