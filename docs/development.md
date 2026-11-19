@@ -438,11 +438,16 @@ an agent installation's unrelated packages.
 The optimized v0.6.0 candidate passed the synthetic Linux gate against the
 published v0.5.4 binary: headless observer idle CPU 93× lower, context switches
 175× lower, append reads 160× lower, and retained RSS 49 MiB. With 5,000 synthetic
-Hermes package directories, paired 120-second minimized-GUI runs measured observer
-CPU 417× lower, context switches 155× lower, append reads 160× lower, and append
-CPU 53× lower. Measured GUI CPU was 0.052% of one logical core and PSS 263 MiB;
-added native RSS was 7.2 MiB and added GUI PSS 51.3 MiB above the same-binary tiny
-control. A preceding 35-second GUI sample measured 0.084% CPU and failed the
-0.07% budget; keep that diagnostic alongside the longer passing run. These are
-synthetic steady-state results, not measurements of personal-library startup,
-whole-machine energy, or a 50× improvement to the GUI's fixed engine footprint.
+Hermes package directories, the final paired 120-second minimized-GUI comparison
+measured observer CPU 391× lower, context switches 138× lower, append reads 160×
+lower, and append CPU 57× lower. Precise process-wide GUI CPU was 0.068% of one
+logical core and PSS 279 MiB; added native RSS was 9.4 MiB and added GUI PSS
+67.3 MiB above the same-binary tiny control. All stored-library integrity and
+source-preservation checks passed.
+
+Keep the preceding diagnostics alongside the final run: a 35-second GUI sample
+measured 0.084% persistent-thread CPU and failed the 0.07% budget. A subsequent
+120-second scheduler-only run passed at 0.052%; coarse process ticks then read
+0.075%, prompting the precise process-wide clock check above. These are synthetic
+steady-state results, not measurements of personal-library startup, whole-machine
+energy, or a 50× improvement to the GUI's fixed engine footprint.
