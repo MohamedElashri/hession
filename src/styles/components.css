@@ -153,8 +153,18 @@
 @media (max-width: 400px) { .appearance-selects { grid-template-columns: 1fr; } }
 .data-dialog.settings-dialog { width: min(980px, calc(100vw - 40px)); height: min(740px, calc(100dvh - 48px)); max-height: calc(100dvh - 48px); padding: 0; overflow: hidden; }
 .settings-dialog[open] { display: flex; flex-direction: column; }
-.settings-heading { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 18px 22px; border-bottom: 1px solid var(--border); }
+.settings-heading { flex: none; display: flex; align-items: center; gap: 8px; padding: 18px 22px; border-bottom: 1px solid var(--border); }
 .settings-heading h2 { display: flex; gap: 10px; align-items: center; font-size: var(--text-lg); }
+.settings-heading .settings-tip { margin-inline-start: auto; color: var(--text-2); }
+.settings-heading .settings-tip[data-in-about="true"] {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent-text) 42%, var(--border));
+  background: color-mix(in srgb, var(--accent-text) 10%, var(--surface-2));
+  font-weight: 650;
+}
+.settings-heading .settings-tip[data-in-about="true"]:hover { border-color: var(--accent-text); }
+.settings-heading .settings-tip[data-in-about="false"]:not(:hover) { background: transparent; border-color: transparent; }
+.settings-tip-error { margin: 8px 22px; }
 .settings-layout { flex: 1; display: grid; grid-template-columns: 196px minmax(0, 1fr); min-height: 0; }
 .settings-navigation { display: flex; flex-direction: column; gap: 24px; padding: 18px 12px; border-right: 1px solid var(--border); background: var(--surface-2); overflow-y: auto; }
 .settings-navigation [role="tablist"] { display: flex; flex-direction: column; gap: 3px; }
@@ -176,9 +186,8 @@
 .settings-about-brand h3 { font-size: var(--text-xl); margin-bottom: 4px; }
 .settings-about-brand p { margin: 0; }
 .settings-about-links, .settings-about-credits { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.settings-about-credits { margin-top: 16px; }
+.settings-about-credits { margin: 16px 0 24px; }
 .settings-about-credits p { margin: 0; }
-.settings-about-support { margin: 16px 0 24px; }
 .settings-update-dot { width: 6px; height: 6px; margin-left: auto; border-radius: 50%; background: var(--accent); }
 .settings-entry small { display: block; font-size: var(--text-xs); color: var(--accent-text); margin-top: 2px; }
 @media (max-width: 700px) {

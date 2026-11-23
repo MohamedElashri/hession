@@ -34,10 +34,7 @@ export default function AboutSettings({ syncRunning }) {
       <p>Maintained by {BRAND.author}</p>
       <button type="button" className="btn" onClick={() => openLink('license')}>MIT license</button>
     </div>
-    <div className="settings-about-support">
-      <button type="button" className="btn" onClick={() => openLink('support')}>Support on Ko-fi</button>
-      {linkError && <p className="data-error" role="alert">{linkError}</p>}
-    </div>
+    {linkError && <p className="data-error" role="alert">{linkError}</p>}
     <SoftwareUpdate syncRunning={syncRunning} showVersion={false}/>
   </>;
 }

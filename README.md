@@ -9,6 +9,8 @@ Search, read, analyze, and resume your coding-agent sessions on macOS and Linux.
 Keep local and SSH histories in one offline library, optionally sync between
 devices through your own encrypted relay, or continue a task in another harness.
 
+[![Leave a tip on Ko-fi](https://img.shields.io/badge/Ko--fi-Leave%20a%20tip-913F51?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/melashri)
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/sessions-dark.png">
   <img alt="Hession session library" src="docs/screenshots/sessions-light.png">
@@ -101,8 +103,12 @@ backups and project ZIPs contain plaintext. Review archive previews before shari
 - [Development](docs/development.md): architecture, checks, and releases.
 - [Sync protocol](docs/sync-protocol.md) · [Changelog](CHANGELOG.md).
 
-MIT licensed; see [LICENSE](LICENSE).
-
 ## Support
 
-Visit the [project website](https://melashri.net/soft/hession/) for downloads and links. [Support on Ko-fi](https://ko-fi.com/melashri) if you’d like to leave an optional tip.
+Tips are optional and help maintain the project.
+
+**[Leave a tip on Ko-fi](https://ko-fi.com/melashri)** · [Project website](https://melashri.net/software/hession/)
+
+## License
+
+MIT licensed. See [LICENSE](LICENSE).
