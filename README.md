@@ -102,3 +102,7 @@ backups and project ZIPs contain plaintext. Review archive previews before shari
 - [Sync protocol](docs/sync-protocol.md) · [Changelog](CHANGELOG.md).
 
 MIT licensed; see [LICENSE](LICENSE).
+
+## Support
+
+Visit the [project website](https://melashri.net/soft/hession/) for downloads and links. [Support on Ko-fi](https://ko-fi.com/melashri) if you’d like to leave an optional tip.

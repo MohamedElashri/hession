@@ -60,7 +60,21 @@ pub fn restart_after_update(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn open_release_page() -> Result<(), String> {
-    let url = format!("https://github.com/{}/releases", crate::brand::REPOSITORY);
+    open_project_link("releases")
+}
+
+#[tauri::command]
+pub fn open_project_link(target: &str) -> Result<(), String> {
+    let repo = crate::brand::REPOSITORY;
+    let url = match target {
+        "website" => "https://melashri.net/soft/hession/".to_owned(),
+        "source" => format!("https://github.com/{repo}"),
+        "issues" => format!("https://github.com/{repo}/issues"),
+        "releases" => format!("https://github.com/{repo}/releases"),
+        "license" => format!("https://github.com/{repo}/blob/main/LICENSE"),
+        "support" => "https://ko-fi.com/melashri".to_owned(),
+        _ => return Err("Unknown project link.".to_owned()),
+    };
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else {
@@ -70,7 +84,7 @@ pub fn open_release_page() -> Result<(), String> {
         .arg(&url)
         .spawn()
         .map(|_| ())
-        .map_err(|e| format!("Could not open the releases page: {e}"))
+        .map_err(|e| format!("Could not open the project link: {e}"))
 }
 
 #[cfg(test)]

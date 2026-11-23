@@ -61,7 +61,7 @@ test('one Settings entry opens About and its updater inside the same window', as
   // a bounded wait without changing the production loading behavior.
   await user.click(await screen.findByRole('tab', { name: 'About' }, { timeout: 10000 }));
   expect(screen.getAllByRole('dialog')).toHaveLength(1);
-  await screen.findByText('Hession · Version 0.3.0');
+  await screen.findByText('Version 0.3.0');
   expect(screen.getByRole('button', { name: 'Check for updates' })).toBeTruthy();
   expect(api.mock.calls.filter(([command]) => command.includes('update') || command === 'app_version'))
     .toEqual([['app_version']]);

@@ -175,6 +175,10 @@
 .settings-about-brand .brand-mark { flex: none; width: 48px; height: 48px; border-radius: 12px; }
 .settings-about-brand h3 { font-size: var(--text-xl); margin-bottom: 4px; }
 .settings-about-brand p { margin: 0; }
+.settings-about-links, .settings-about-credits { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.settings-about-credits { margin-top: 16px; }
+.settings-about-credits p { margin: 0; }
+.settings-about-support { margin: 16px 0 24px; }
 .settings-update-dot { width: 6px; height: 6px; margin-left: auto; border-radius: 50%; background: var(--accent); }
 .settings-entry small { display: block; font-size: var(--text-xs); color: var(--accent-text); margin-top: 2px; }
 @media (max-width: 700px) {
