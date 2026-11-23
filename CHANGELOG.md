@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-11-23
+
+### Changed
+
+- Refresh About with project links and an optional Ko-fi tip link.
+
 ## [0.5.5] - 2026-11-19
 
 Performance patch that reduces idle indexing, repeated source processing, and

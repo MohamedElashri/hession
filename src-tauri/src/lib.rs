@@ -225,6 +225,7 @@ pub fn run() {
             updates::app_version,
             updates::restart_after_update,
             updates::open_release_page,
+            updates::open_project_link,
             data_management::preview_saved_data,
             data_management::export_saved_data,
             data_management::preview_data_import,

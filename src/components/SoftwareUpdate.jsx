@@ -8,7 +8,7 @@ import { updates } from '../updates.js';
 
 const working = new Set(['checking', 'downloading', 'verifying', 'installing', 'restarting']);
 
-export default function SoftwareUpdate({ syncRunning }) {
+export default function SoftwareUpdate({ syncRunning, showVersion = true }) {
   const state = useSyncExternalStore(updates.subscribe, updates.getSnapshot);
   const [linkError, setLinkError] = useState('');
   useEffect(() => { void updates.loadInfo(); }, []);
@@ -52,7 +52,7 @@ export default function SoftwareUpdate({ syncRunning }) {
   const Icon = busy ? LoaderCircle : ['current', 'ready'].includes(phase) ? Check : Download;
 
   return <section aria-label="Software update">
-    <p className="about-version">{BRAND.name} · Version {info?.version || '…'}</p>
+    {showVersion && <p className="about-version">{BRAND.name} · Version {info?.version || '…'}</p>}
     <section className={`update-status-card${failed ? ' has-error' : ''}`} aria-busy={busy}>
       <span className="update-status-icon"><Icon size={24} className={busy ? 'spin' : undefined}/></span>
       <div className="update-status-content">
