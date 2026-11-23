@@ -38,7 +38,7 @@ test('About contains the updater without opening another dialog or checking for 
   expect(screen.getByRole('button', { name: 'Check for updates' })).toBeTruthy();
   expect(screen.getAllByRole('dialog')).toHaveLength(1);
   expect(api.mock.calls.map(([command]) => command)).toEqual(['get_optional_features', 'app_version']);
-  await user.click(screen.getByRole('button', { name: 'Support on Ko-fi' }));
+  await user.click(screen.getByRole('button', { name: 'Leave a tip on Ko-fi' }));
   expect(api).toHaveBeenCalledWith('open_project_link', { target: 'support' });
 }, 15000);
 

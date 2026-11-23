@@ -67,7 +67,7 @@ pub fn open_release_page() -> Result<(), String> {
 pub fn open_project_link(target: &str) -> Result<(), String> {
     let repo = crate::brand::REPOSITORY;
     let url = match target {
-        "website" => "https://melashri.net/soft/hession/".to_owned(),
+        "website" => "https://melashri.net/software/hession/".to_owned(),
         "source" => format!("https://github.com/{repo}"),
         "issues" => format!("https://github.com/{repo}/issues"),
         "releases" => format!("https://github.com/{repo}/releases"),

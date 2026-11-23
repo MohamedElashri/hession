@@ -35,6 +35,7 @@ export default function SettingsDialog({ initialTab = 'appearance', onClose, onS
   const [features, setFeatures] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [tipError, setTipError] = useState('');
   const [help, setHelp] = useState(null);
   const [message, setMessage] = useState('');
   const section = sections.find(item => item.id === tab);
@@ -68,11 +69,18 @@ export default function SettingsDialog({ initialTab = 'appearance', onClose, onS
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
   };
+  const openTipLink = async () => {
+    setTipError('');
+    try { await api('open_project_link', { target: 'support' }); }
+    catch (e) { setTipError(e.message); }
+  };
   return <dialog ref={dialog} className="data-dialog settings-dialog" aria-labelledby="settings-title"
     onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
     <div className="settings-heading"><h2 id="settings-title"><Settings size={18}/>Settings</h2>
-      <button type="button" className="icon-button" aria-label="Close settings" disabled={busy} onClick={onClose}><X size={18}/></button>
+      <button type="button" className="btn settings-tip" data-in-about={tab === 'about'} disabled={busy} onClick={openTipLink}><span aria-hidden="true">♥</span> Leave a tip on Ko-fi</button>
+      <button type="button" className="icon-button" aria-label="Close settings" disabled={busy} autoFocus onClick={onClose}><X size={18}/></button>
     </div>
+    {tipError && <p className="data-error settings-tip-error" role="alert">{tipError}</p>}
     <div className="settings-layout">
     <nav className="settings-navigation" aria-label="Settings sections">
       <div role="tablist" aria-label="Settings sections" aria-orientation="vertical" onKeyDown={navigateSections}>
