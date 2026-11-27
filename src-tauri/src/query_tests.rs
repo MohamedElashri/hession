@@ -186,6 +186,39 @@ fn session_search_handles_punctuation_and_sql_wildcards_literally() {
     );
 }
 
+#[test]
+fn session_search_counts_sparse_positions_without_repeated_prefix_scans() {
+    let mut conn = library();
+    conn.execute_batch(
+        "WITH RECURSIVE numbers(n) AS (
+           VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<25000
+         )
+         INSERT INTO entry(session_id,ordinal,kind,search_text)
+            SELECT 1,n*10,'message',CASE WHEN n>=24600 AND n%2=0
+              THEN 'late needle' ELSE 'other entry' END FROM numbers;",
+    )
+    .unwrap();
+
+    let mut budget = 350;
+    conn.progress_handler(
+        1000,
+        Some(move || {
+            budget -= 1;
+            budget == 0
+        }),
+    )
+    .unwrap();
+    let results = search_session_entries_from_conn(&conn, 1, "needle", 50, 100).unwrap();
+    assert_eq!(results["total"], 201);
+    let entries = results["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 50);
+    for (index, entry) in entries.iter().enumerate() {
+        let source_index = 24800 + 2 * index;
+        assert_eq!(entry["ordinal"], source_index * 10);
+        assert_eq!(entry["position"], source_index - 1);
+    }
+}
+
 fn library() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
