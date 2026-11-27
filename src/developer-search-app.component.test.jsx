@@ -90,8 +90,12 @@ test('refreshing a search result page keeps the reader at their scroll position'
   await user.click(await screen.findByRole('button', { name: 'Sync now' }));
   await screen.findByText('A newly indexed reply');
   expect(scrollsToHit()).toHaveLength(scrollsOnOpen);
-  await user.click(screen.getByRole('button', { name: 'Done' }));
-  await user.click(await screen.findByRole('button', { name: /Matching passage.*Open matching entry 502 in full log/ }));
+  const done = screen.getByRole('button', { name: 'Done' });
+  await waitFor(() => expect(done.disabled).toBe(false));
+  await user.click(done);
+  const refreshedHit = await screen.findByRole('button', { name: /Matching passage.*Open matching entry 502 in full log/ });
+  await waitFor(() => expect(refreshedHit.getAttribute('aria-disabled')).toBe('false'));
+  await user.click(refreshedHit);
   expect(scrollsToHit()).toHaveLength(scrollsOnOpen + 1);
 });
 
