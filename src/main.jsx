@@ -318,10 +318,27 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
   const detailCache=useRef(null);
   const detailForeground=useRef(null);
   const loadDetail=useCallback(async({silent=false,page=detailPage}={})=>{
-    if(silent&&detailForeground.current===detailRequest.current)return true;
+    const pending=detailForeground.current;
+    if(silent&&pending?.id===detailRequest.current){
+      // The in-flight read may have opened its snapshot before this refresh.
+      // Let it finish, then conditionally reload unless navigation superseded it.
+      await pending.settled;
+      if(pending.id!==detailRequest.current)return true;
+    }
     const id=++detailRequest.current;
+    if(!silent){
+      // Release refreshes waiting for a superseded read, even if its IPC
+      // response is still pending.
+      pending?.settle();
+      detailForeground.current=null;
+    }
     if(!selected||view!=='sessions'){setDetail(null);setDetailError('');setDetailLoading(false);detailCache.current=null;return true;}
-    if(!silent){detailForeground.current=id;setDetailLoading(true);setDetailError('');}
+    let settle;
+    if(!silent){
+      const settled=new Promise(resolve=>{settle=resolve;});
+      detailForeground.current={id,settled,settle};
+      setDetailLoading(true);setDetailError('');
+    }
     try{
       const detailParams={id:String(selected),limit:String(DETAIL_PAGE_SIZE),page:String(page)};
       const cached=detailCache.current;
@@ -335,8 +352,9 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
     }
     catch(e){if(id===detailRequest.current&&!silent)setDetailError(e.message||'Could not load this session.');return false;}
     finally{
-      if(detailForeground.current===id)detailForeground.current=null;
+      if(detailForeground.current?.id===id)detailForeground.current=null;
       if(id===detailRequest.current)setDetailLoading(false);
+      settle?.();
     }
   },[selected,detailPage,view]);
   // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching shows a loading state

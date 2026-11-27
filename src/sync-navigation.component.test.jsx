@@ -406,3 +406,49 @@ test('a background refresh reuses the selected transcript and retains the list o
   expect(screen.getByRole('region',{name:'Transcript'})).toBe(transcript);
   expect(screen.getByRole('button',{name:/^Claude Code.*Selected session/})).toBeTruthy();
 });
+
+test('a library update during a pending Last page read refreshes that page once it loads', async () => {
+  const user = userEvent.setup();
+  const handler = api.getMockImplementation();
+  let finishLast;
+  let synced = false;
+  let listRefreshed = false;
+  const lastPage = (text, total, offset, readToken) => ({
+    session: sessions[0], total, offset, limit: 100, readToken,
+    entries: [{ id: total, ordinal: total - 1, kind: 'message', role: 'assistant',
+      parts: [{ kind: 'text', text }], tools: [] }],
+  });
+  api.mockImplementation(async (command, args) => {
+    if (command === 'run_device_sync') {
+      synced = true;
+      return { status: { uploaded: 0, downloaded: 1 } };
+    }
+    if (command === 'search_sessions' && synced) listRefreshed = true;
+    if (command === 'get_session' && args.page === 'last') {
+      if (args.knownToken === 'old-tail') {
+        return lastPage('New reply on the last page', 12_501, 12_500, 'new-tail');
+      }
+      return new Promise(resolve => {
+        finishLast = () => resolve(lastPage('Earlier reply', 12_500, 12_400, 'old-tail'));
+      });
+    }
+    return handler(command, args);
+  });
+  render(boot.tree);
+  await screen.findByRole('heading', { name: 'First session' });
+  await user.click(transcriptPages().getByRole('button', { name: 'Last transcript page' }));
+  await waitFor(() => expect(finishLast).toBeDefined());
+  await user.click(screen.getByRole('button', { name: 'Settings' }));
+  await user.click(await screen.findByRole('tab', { name: 'Private sync' }));
+  await user.click(await screen.findByRole('button', { name: 'Sync now' }));
+  await waitFor(() => expect(listRefreshed).toBe(true));
+  finishLast();
+
+  await screen.findByText('New reply on the last page');
+  expect(transcriptPages().getByText('Page 126 of 126')).toBeTruthy();
+  expect(api.mock.calls.filter(([command, args]) => command === 'get_session' && args.page === 'last'))
+    .toEqual([
+      ['get_session', { id: '1', limit: '100', page: 'last' }],
+      ['get_session', { id: '1', limit: '100', page: 'last', knownToken: 'old-tail' }],
+    ]);
+});
