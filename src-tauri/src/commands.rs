@@ -528,7 +528,16 @@ fn search_session_entries_from_conn(
     limit: i64,
     offset: i64,
 ) -> Result<Value, String> {
-    get_session_metadata(conn, session_id)?;
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM session WHERE id=?)",
+            [session_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !exists {
+        return Err("Session not found".into());
+    }
     let q = q.trim();
     if q.is_empty() {
         return Ok(json!({"entries": [], "total": 0}));
@@ -550,13 +559,38 @@ fn search_session_entries_from_conn(
     let total = query_one(conn, &format!("SELECT COUNT(*) n {base}"), &params)?
         .and_then(|v| v["n"].as_i64())
         .unwrap_or(0);
+    if offset >= total {
+        return Ok(json!({"entries": [], "total": total}));
+    }
     let mut list_params = params.to_vec();
     list_params.extend([SqlValue::Integer(limit), SqlValue::Integer(offset)]);
-    let entries = query_all(conn, &format!(
-        "SELECT e.id,e.ordinal,e.role,e.kind,{excerpt} AS excerpt, \
-         (SELECT COUNT(*) FROM entry p WHERE p.session_id=e.session_id AND p.ordinal<e.ordinal) AS position \
+    let mut entries = query_all(
+        conn,
+        &format!(
+            "SELECT e.id,e.ordinal,e.role,e.kind,{excerpt} AS excerpt \
          {base} ORDER BY e.ordinal LIMIT ? OFFSET ?"
-    ), &list_params)?;
+        ),
+        &list_params,
+    )?;
+    // Search jumps use row positions in the full transcript, even when
+    // ordinals have gaps. Count disjoint ranges for the returned hits so
+    // each earlier entry contributes at most once per results page.
+    let mut count = conn
+        .prepare_cached(
+            "SELECT COUNT(*) FROM entry WHERE session_id=? AND ordinal>=? AND ordinal<?",
+        )
+        .map_err(|error| error.to_string())?;
+    let mut previous = i64::MIN;
+    let mut position = 0i64;
+    for entry in &mut entries {
+        let ordinal = entry["ordinal"].as_i64().ok_or("Invalid entry ordinal")?;
+        let intervening: i64 = count
+            .query_row([session_id, previous, ordinal], |row| row.get(0))
+            .map_err(|error| error.to_string())?;
+        position += intervening;
+        entry["position"] = json!(position);
+        previous = ordinal;
+    }
     Ok(json!({"entries": entries, "total": total}))
 }
 
