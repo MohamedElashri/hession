@@ -100,6 +100,27 @@ test('out-of-order results attach by ID across tool groups without crossing turn
   assert.equal(second.items[0].calls[0].result, 'new turn');
 });
 
+test('a result from an earlier page does not replace another call on the current page', () => {
+  for (const key of ['tool_use_id', 'call_id', 'tool_call_id', 'toolCallId']) {
+    const result = (callId, text) => ({ role: 'tool', parts: [
+      { kind: 'tool_result', text, data_json: JSON.stringify({ [key]: callId }) },
+    ] });
+    const [turn] = buildConversation([
+      { id: 101, role: 'assistant', tools: [{ id: 5, call_id: 'this-page', tool_name: 'Read' }], parts: [] },
+      result('previous-page', 'Result from the previous page'),
+      result('previous-page', 'Second result from the previous page'),
+      result('this-page', 'Result for this Read call'),
+    ]);
+    const calls = turn.items.flatMap(group => group.calls || []);
+    assert.deepEqual(calls.map(call => [call.name, call.result]), [
+      ['Read', 'Result for this Read call'],
+      ['Output', 'Result from the previous page'],
+      ['Output', 'Second result from the previous page'],
+    ]);
+    assert.equal(new Set(calls.map(call => call.key)).size, calls.length);
+  }
+});
+
 test('anonymous results fill pending calls in reverse order within the latest group', () => {
   const [turn] = buildConversation([
     text(1, 'user', 'go'),
