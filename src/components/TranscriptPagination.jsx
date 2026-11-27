@@ -9,7 +9,7 @@ export default function TranscriptPagination({ page, totalPages, busy, onPageCha
     ['First', ChevronFirst, 1, page === 1],
     ['Previous', ChevronLeft, page - 1, page === 1],
     ['Next', ChevronRight, page + 1, page === totalPages],
-    ['Last', ChevronLast, 'last', page === totalPages],
+    ['Last', ChevronLast, 'last', false],
   ];
   const navigate = (destination) => {
     setDraft('');

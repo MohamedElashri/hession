@@ -86,6 +86,37 @@ test('a 126-page transcript opens either end and jumps to a numbered page with o
     .toEqual(['1', 'last', '125', '73', '1']);
 });
 
+test('Last reaches the end from a numbered final page and can be used again', async () => {
+  const user = userEvent.setup();
+  const handler = api.getMockImplementation();
+  api.mockImplementation(async (command, args) => {
+    if (command === 'get_session' && args.page === 'last') {
+      return handler(command, { ...args, page: '10' });
+    }
+    return handler(command, args);
+  });
+  render(boot.tree);
+  await screen.findByRole('heading', { name: 'First session' });
+  await user.type(transcriptPages().getByRole('textbox', { name: 'Transcript page number' }), '10');
+  await user.click(transcriptPages().getByRole('button', { name: 'Go to transcript page' }));
+  await transcriptPages().findByText('Page 10 of 10');
+
+  const transcript = screen.getByRole('region', { name: 'Transcript' });
+  Object.defineProperty(transcript, 'scrollHeight', { value: 750 });
+  transcript.scrollTop = 20;
+  const last = transcriptPages().getByRole('button', { name: 'Last transcript page' });
+  await user.click(last);
+  await waitFor(() => expect(api.mock.calls).toContainEqual(
+    ['get_session', { id: '1', limit: '100', page: 'last' }],
+  ));
+  await waitFor(() => expect(transcript.scrollTop).toBe(750));
+
+  transcript.scrollTop = 10;
+  await user.click(last);
+  expect(transcript.scrollTop).toBe(750);
+  expect(api.mock.calls.filter(([command, args]) => command === 'get_session' && args.page === 'last')).toHaveLength(1);
+});
+
 test('one Settings entry opens About and its updater inside the same window', async () => {
   const user = userEvent.setup();
   const handler = api.getMockImplementation();

@@ -647,7 +647,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
     {id:'transcript.first',title:'First transcript page',disabled:()=>sessionUnavailable()||(detailSafePage<=1?'Already on the first page.':null),run:()=>gotoDetailPage(1)},
     {id:'transcript.previous',title:'Previous transcript page',disabled:()=>sessionUnavailable()||(detailSafePage<=1?'Already on the first page.':null),run:()=>gotoDetailPage(detailSafePage-1)},
     {id:'transcript.next',title:'Next transcript page',disabled:()=>sessionUnavailable()||(detailSafePage>=detailTotalPages?'Already on the last page.':null),run:()=>gotoDetailPage(detailSafePage+1)},
-    {id:'transcript.last',title:'Last transcript page',disabled:()=>sessionUnavailable()||(detailSafePage>=detailTotalPages?'Already on the last page.':null),run:()=>gotoDetailPage('last')},
+    {id:'transcript.last',title:'Last transcript page',disabled:()=>sessionUnavailable()||(detailTotalPages===1?'This transcript has one page.':null),run:()=>gotoDetailPage('last')},
     {id:'session.star',title:detail?.session.starred?'Unstar selected session':'Star selected session',disabled:()=>sessionUnavailable()||(starPending.has(detail?.session.id)?'Saving bookmark…':null),run:()=>toggleSessionStar(detail.session)},
     {id:'export.open',title:'Export sessions',disabled:()=>exportBusy?'An export is already running.':null,run:()=>setExportOpen(true)},
     {id:'session.resume',title:'Resume selected session',disabled:sessionUnavailable,run:openResume},
