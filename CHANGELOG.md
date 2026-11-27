@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-11-28
+
+### Added
+
+- Jump directly to the first, last, or a numbered transcript page. Last opens
+  at the bottom and follows the final page as new entries arrive.
+- Show session names recorded by supported agents and pick up renames during
+  history refresh. Use the first prompt when an agent has saved no name.
+
+### Improved
+
+- Load pages near the end of long conversations faster by counting entries
+  through an index and reading from the nearer end of the transcript.
+- Speed up search within long conversations by bounding full-text scans when
+  possible and avoiding repeated scans to locate each matching entry.
+
+### Fixed
+
+- Keep Last available after a numbered jump to the final page, and apply
+  library updates that arrive while a transcript page is loading.
+- Preserve the reader’s scroll position when a search result page refreshes.
+- Keep tool output linked to the correct call across page boundaries.
+
 ## [0.5.7] - 2026-11-23
 
 ### Changed
@@ -333,6 +356,7 @@ Initial release for macOS (universal) and Linux.
 - Light/dark themes and bundled Geist fonts.
 - Download installer with SHA-256 verification.
 
+[0.5.8]: https://github.com/MohamedElashri/hession/compare/v0.5.7...v0.5.8
 [0.5.5]: https://github.com/MohamedElashri/hession/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/MohamedElashri/hession/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/MohamedElashri/hession/compare/v0.5.2...v0.5.3
