@@ -128,7 +128,9 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
   const setTranscriptView=v=>{setTranscriptViewState(v);try{localStorage.setItem(storageKey('transcript-view'),v);}catch{/* preference only */}};
   const [detailPage,setDetailPage]=useState(1); // A 1-based page number or 'last'.
   const transcriptRef=useRef(null),pageScroll=useRef(null);
-  const [searchEntry,setSearchEntry]=useState(null);
+  const [searchTarget,setSearchTarget]=useState(null);
+  const searchEntry=searchTarget?.entryId??null;
+  const scrolledTarget=useRef(null);
   const [collapsedEntries,setCollapsedEntries]=useState(()=>new Set());
   const [copiedEntry,setCopiedEntry]=useState(null);
   const [settingsOpen,setSettingsOpen]=useState(false),[settingsTab,setSettingsTab]=useState('appearance');
@@ -158,7 +160,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
     setContinuationOpen(false);
     setResumeOpen(false);setResumeInfo(null);setResumeError('');setResumeCopied(false);setResumeTerminals([]);setResumeTerminal('');
     const target=sourceJump&&String(sourceJump.sessionId)===String(selected)?sourceJump:null;
-    setSearchEntry(target?.entryId??null);setCollapsedEntries(new Set());setDetailPage(target?Math.floor(target.position/DETAIL_PAGE_SIZE)+1:1);setTagDraft('');
+    setSearchTarget(target?{entryId:target.entryId}:null);setCollapsedEntries(new Set());setDetailPage(target?Math.floor(target.position/DETAIL_PAGE_SIZE)+1:1);setTagDraft('');
   }
   // Back to the first page whenever the filters change.
   const developerSearchActive=searchEngine==='developer'&&Boolean(query.trim());
@@ -514,15 +516,19 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
       return true;
     });
   },[detail,entryFilter,searchEntry]);
-  useEffect(()=>{
-    if(!detailLoading&&searchEntry)document.getElementById(`entry-${searchEntry}`)?.scrollIntoView({block:'center'});
-  },[detail,detailLoading,searchEntry]);
+  useLayoutEffect(()=>{
+    if(detailLoading||!searchTarget||scrolledTarget.current===searchTarget)return;
+    const target=document.getElementById(`entry-${searchTarget.entryId}`);
+    if(target){
+      scrolledTarget.current=searchTarget;
+      target.scrollIntoView({block:'center'});
+    }
+  },[detail,detailLoading,searchTarget,transcriptView]);
   const openSearchEntry=entry=>{
     pageScroll.current=null;
-    setEntryFilter('all');setTranscriptView('log');setSearchEntry(entry.id);
+    setEntryFilter('all');setTranscriptView('log');setSearchTarget({entryId:entry.id});
     setCollapsedEntries(previous=>{const next=new Set(previous);next.delete(entry.id);return next;});
     setDetailPage(Math.floor(entry.position/DETAIL_PAGE_SIZE)+1);
-    requestAnimationFrame(()=>document.getElementById(`entry-${entry.id}`)?.scrollIntoView({block:'center'}));
   };
   // Shared with search and project/file sources: positions are row offsets, not ordinals.
   const openSessionSource=(sessionId,source)=>{
@@ -530,10 +536,9 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
     if(!source||!Number.isInteger(source.entryId)||!Number.isInteger(source.position)||source.position<0)return;
     pageScroll.current=null;
     setSourceJump({sessionId,entryId:source.entryId,position:source.position});
-    setEntryFilter('all');setTranscriptView('log');setSearchEntry(source.entryId);
+    setEntryFilter('all');setTranscriptView('log');setSearchTarget({entryId:source.entryId});
     setCollapsedEntries(previous=>{const next=new Set(previous);next.delete(source.entryId);return next;});
     setDetailPage(Math.floor(source.position/DETAIL_PAGE_SIZE)+1);
-    requestAnimationFrame(()=>document.getElementById(`entry-${source.entryId}`)?.scrollIntoView({block:'center'}));
   };
   const openDeveloperResult=result=>openSessionSource(result.sessionId,{entryId:result.entryId,position:result.position});
   const turns=useMemo(()=>buildConversation(detail?.entries),[detail?.entries]);
@@ -546,7 +551,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
   const hasSelectedDetail=Boolean(detail)&&String(detail.session.id)===String(selected);
   const isDetailLoading=detailLoading||(!hasSelectedDetail&&!detailError&&(Boolean(selected)||loading));
   const gotoDetailPage=page=>{
-    setSearchEntry(null);setSourceJump(null);
+    setSearchTarget(null);setSourceJump(null);
     if(page===detailPage){
       if(detailError)loadDetail();
       else if(transcriptRef.current)transcriptRef.current.scrollTop=page==='last'?transcriptRef.current.scrollHeight:0;
