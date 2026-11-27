@@ -533,20 +533,38 @@ fn search_session_entries_from_conn(
     if q.is_empty() {
         return Ok(json!({"entries": [], "total": 0}));
     }
-    let expression = fts_expression(q);
-    let (base, excerpt, term) = match expression {
-        Some(term) => (
-            "FROM entry_fts JOIN entry e ON e.id=entry_fts.rowid WHERE e.session_id=? AND entry_fts MATCH ?",
-            "snippet(entry_fts,0,char(1),char(2),' … ',40)",
-            term,
-        ),
-        None => (
+    let mut params = vec![SqlValue::Integer(session_id)];
+    let (base, excerpt) = if let Some(term) = fts_expression(q) {
+        params.push(SqlValue::Text(term));
+        let (first, last, count): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT COALESCE(MIN(id),0),COALESCE(MAX(id),0),COUNT(*) FROM entry WHERE session_id=?",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|error| error.to_string())?;
+        if count == 0 {
+            return Ok(json!({"entries": [], "total": 0}));
+        }
+        // SQLite can otherwise restart FTS for each transcript entry. Read
+        // postings once when the row-ID interval bounds the other sessions'
+        // entries, and keep the planner's choice for heavily interleaved IDs.
+        let span = last.saturating_sub(first).saturating_add(1);
+        let base = if span <= count.saturating_mul(4) {
+            params.extend([SqlValue::Integer(first), SqlValue::Integer(last)]);
+            "FROM entry_fts CROSS JOIN entry e ON e.id=entry_fts.rowid
+             WHERE e.session_id=? AND entry_fts MATCH ? AND entry_fts.rowid BETWEEN ? AND ?"
+        } else {
+            "FROM entry_fts JOIN entry e ON e.id=entry_fts.rowid WHERE e.session_id=? AND entry_fts MATCH ?"
+        };
+        (base, "snippet(entry_fts,0,char(1),char(2),' … ',40)")
+    } else {
+        params.push(SqlValue::Text(format!("%{}%", escape_like(q))));
+        (
             "FROM entry e WHERE e.session_id=? AND e.search_text LIKE ? ESCAPE '\\'",
             "substr(e.search_text,1,600)",
-            format!("%{}%", escape_like(q)),
-        ),
+        )
     };
-    let params = [SqlValue::Integer(session_id), SqlValue::Text(term)];
     let total = query_one(conn, &format!("SELECT COUNT(*) n {base}"), &params)?
         .and_then(|v| v["n"].as_i64())
         .unwrap_or(0);

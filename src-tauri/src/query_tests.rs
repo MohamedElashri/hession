@@ -206,6 +206,33 @@ fn library() -> Connection {
 }
 
 #[test]
+fn session_search_scopes_fts_with_dense_and_interleaved_entry_ids() {
+    let conn = library();
+    conn.execute_batch(
+        "INSERT INTO entry(id,session_id,ordinal,kind,search_text) VALUES
+          (10,1,100,'message','earlier text'),
+          (11,2,0,'message','needle from another session'),
+          (12,1,200,'message','first needle'),
+          (14,1,500,'message','last needle');",
+    )
+    .unwrap();
+    let dense = search_session_entries_from_conn(&conn, 1, "needle", 20, 0).unwrap();
+    assert_eq!(dense["total"], 2);
+    assert_eq!(dense["entries"][0]["position"], 1);
+    assert_eq!(dense["entries"][1]["position"], 2);
+    assert_eq!(dense["entries"][0]["id"], 12);
+    assert_eq!(dense["entries"][1]["id"], 14);
+    conn.execute(
+        "INSERT INTO entry(id,session_id,ordinal,kind,search_text)
+         VALUES(10000,1,600,'message','later text')",
+        [],
+    )
+    .unwrap();
+    let interleaved = search_session_entries_from_conn(&conn, 1, "needle", 20, 0).unwrap();
+    assert_eq!(interleaved, dense);
+}
+
+#[test]
 fn paged_transcripts_keep_parts_tools_and_session_boundaries() {
     let mut conn = library();
     let tx = conn.transaction().unwrap();
