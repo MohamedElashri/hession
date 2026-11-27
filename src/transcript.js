@@ -108,7 +108,7 @@ export function parsePrompt(raw) {
 }
 
 const partData = part => { try { return JSON.parse(part.data_json || '{}'); } catch { return {}; } };
-const resultId = part => { const d = partData(part); return d.tool_use_id || d.call_id || null; };
+const resultId = part => { const d = partData(part); return d.tool_use_id || d.call_id || d.tool_call_id || d.toolCallId || null; };
 const firstLine = text => { const end = text.indexOf('\n'); return end < 0 ? text : text.slice(0, end); };
 
 /** One-line description of a tool call: its command, path, or first argument. */
@@ -166,10 +166,10 @@ export function buildConversation(entries) {
   const addResult = (id, text) => {
     // Completed calls are removed lazily, once each, when anonymous output arrives.
     while (pendingCalls.at(-1)?.result) pendingCalls.pop();
-    const call = (id && callsById.get(id)) || (lastToolGroup && pendingCalls.at(-1));
+    const call = id ? callsById.get(id) : lastToolGroup && pendingCalls.at(-1);
     if (call) { if (!call.result) call.result = text; return; }
     const group = toolGroup();
-    addCall({ key: `result-${id ?? group.calls.length}`, name: 'Output', summary: '', result: text });
+    addCall({ key: `result-${group.calls.length}`, name: 'Output', summary: '', result: text });
   };
 
   for (const entry of entries || []) {
