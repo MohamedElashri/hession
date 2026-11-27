@@ -818,3 +818,156 @@ fn streamed_pi_and_commandcode_append_without_replacing_existing_entries_or_usag
         );
     }
 }
+
+#[test]
+fn recorded_claude_and_pi_names_take_precedence_over_prompt_titles() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open(dir.path());
+    let session_id = "01900000-1234-7000-8000-123456789012";
+    let claude_file = dir.path().join(format!("{session_id}.jsonl"));
+    let pi_file = dir.path().join("pi.jsonl");
+    fs::write(
+        &claude_file,
+        format!("{}\n", [
+            json!({"type":"user","sessionId":session_id,"message":{"role":"user","content":"Original prompt"}}),
+            json!({"type":"ai-title","sessionId":session_id,"aiTitle":"Generated title"}),
+            json!({"type":"custom-title","sessionId":session_id,"customTitle":"First manual name"}),
+            json!({"type":"custom-title","sessionId":session_id,"customTitle":"Current manual name"}),
+            json!({"type":"custom-title","sessionId":"01900000-1234-7000-8000-123456789999","customTitle":"Inherited title"}),
+            json!({"type":"ai-title","sessionId":session_id,"aiTitle":"Later generated title"}),
+        ].iter().map(Value::to_string).collect::<Vec<_>>().join("\n")),
+    ).unwrap();
+    fs::write(
+        &pi_file,
+        format!("{}\n", [
+        json!({"type":"session","id":"pi-session-id","cwd":"/fixture"}),
+        json!({"type":"message","id":"message-id","message":{"role":"user","content":"Pi prompt"}}),
+        json!({"type":"session_info","id":"name-entry","name":"Old Pi name"}),
+        json!({"type":"session_info","id":"rename-entry","name":"Pi session name"}),
+    ].iter().map(Value::to_string).collect::<Vec<_>>().join("\n")),
+    )
+    .unwrap();
+    for (family, file, title) in [
+        ("claude", claude_file, "Current manual name"),
+        ("pi", pi_file, "Pi session name"),
+    ] {
+        let uri = native_source_uri(family, &file).unwrap();
+        import(&mut conn, &uri).unwrap();
+        let actual: String = conn
+            .query_row(
+                "SELECT title FROM session WHERE source_uri=?",
+                [&uri],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(actual, title);
+    }
+    let pi_id: String = conn
+        .query_row(
+            "SELECT external_id FROM session WHERE title='Pi session name'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pi_id, "pi-session-id");
+}
+
+#[test]
+fn command_code_sidecar_renames_and_muse_name_records_become_session_titles() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open(dir.path());
+    let command = dir.path().join("command.jsonl");
+    let sidecar = command.with_extension("meta.json");
+    fs::write(&command, legacy("First Command Code prompt")).unwrap();
+    let uri = native_source_uri("commandcode", &command).unwrap();
+    let title = |conn: &Connection, uri: &str| {
+        conn.query_row(
+            "SELECT title FROM session WHERE source_uri=?",
+            [uri],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(import(&mut conn, &uri).unwrap(), 1);
+    assert_eq!(title(&conn, &uri), "First Command Code prompt");
+    for name in ["Command Code name", "Command Code rename"] {
+        fs::write(&sidecar, json!({"title":name}).to_string()).unwrap();
+        assert_eq!(import(&mut conn, &uri).unwrap(), 0);
+        assert_eq!(title(&conn, &uri), name);
+    }
+    fs::remove_file(sidecar).unwrap();
+    assert_eq!(import(&mut conn, &uri).unwrap(), 0);
+    assert_eq!(title(&conn, &uri), "First Command Code prompt");
+
+    let muse = dir.path().join("muse.jsonl");
+    let record = json!({"payload_type":"session.name.changed","stream":{"kind":"session","id":"muse-id"},
+        "payload":{"session_id":"muse-id","new_name":"Muse session name","source":"user"}});
+    fs::write(
+        &muse,
+        json!({"retained_frame":1,"children":[{"record_json":record.to_string()}]}).to_string(),
+    )
+    .unwrap();
+    let uri = native_source_uri("muse", &muse).unwrap();
+    assert_eq!(import(&mut conn, &uri).unwrap(), 1);
+    assert_eq!(title(&conn, &uri), "Muse session name");
+}
+
+#[test]
+fn codex_renames_refresh_existing_sessions_without_rebuilding_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("codex");
+    let sessions = root.join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let file = sessions.join("rollout.jsonl");
+    fs::write(&file, concat!(
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"native-id\"}}\n",
+        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"Original prompt\"}}\n",
+    )).unwrap();
+    let mut conn = open(dir.path());
+    let catalog = LocalCatalog::fixture(root.clone());
+    let snapshot =
+        |conn: &Connection| {
+            conn.query_row(
+        "SELECT s.title,e.id, (SELECT COUNT(*) FROM session_analytics WHERE session_id=s.id)
+         FROM session s JOIN entry e ON e.session_id=s.id WHERE e.ordinal=0",
+        [], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+    ).unwrap()
+        };
+    let initial = catalog.manual_pass(&mut conn);
+    assert!(initial.errors.is_empty(), "{:?}", initial.errors);
+    let (prompt, entry_id, _) = snapshot(&conn);
+    assert_eq!(prompt, "Original prompt");
+
+    let index = root.join(codex_titles::INDEX_FILE);
+    fs::write(
+        &index,
+        concat!(
+            "{\"id\":\"native-id\",\"thread_name\":\"Old name\"}\n",
+            "{\"id\":\"native-id\",\"thread_name\":\"Current index name\"}\n",
+            "{\"id\":\"unrelated\",\"thread_name\":\"Unrelated name\"}\n",
+        ),
+    )
+    .unwrap();
+    let refresh = catalog.manual_pass(&mut conn);
+    assert!(refresh.errors.is_empty(), "{:?}", refresh.errors);
+    assert_eq!(refresh.records, 0);
+    assert_eq!(snapshot(&conn), ("Current index name".into(), entry_id, 1));
+
+    let state = Connection::open(root.join("state_5.sqlite")).unwrap();
+    state
+        .execute_batch(
+            "CREATE TABLE threads(id TEXT PRIMARY KEY,name TEXT);
+        INSERT INTO threads VALUES('native-id','Name from state');",
+        )
+        .unwrap();
+    let refresh = catalog.manual_pass(&mut conn);
+    assert!(refresh.errors.is_empty(), "{:?}", refresh.errors);
+    assert_eq!(refresh.records, 0);
+    assert_eq!(snapshot(&conn), ("Name from state".into(), entry_id, 1));
+
+    state.execute("UPDATE threads SET name=NULL", []).unwrap();
+    fs::remove_file(index).unwrap();
+    let refresh = catalog.manual_pass(&mut conn);
+    assert!(refresh.errors.is_empty(), "{:?}", refresh.errors);
+    assert_eq!(snapshot(&conn), (prompt, entry_id, 1));
+}

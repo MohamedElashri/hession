@@ -108,8 +108,8 @@ fn get_session_projected(
         .get("all")
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
-    if *offset >= total && total > 0 {
-        *offset = ((total + limit - 1) / limit - 1).max(0) * limit;
+    if *offset >= total && (reading || total > 0) {
+        *offset = (total - 1).max(0) / limit * limit;
     }
 
     let entries = if reading {

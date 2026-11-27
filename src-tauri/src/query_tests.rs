@@ -701,6 +701,38 @@ fn conditional_transcript_reads_track_parts_tools_annotations_pages_and_deletion
 }
 
 #[test]
+fn last_transcript_page_tracks_the_final_entries_within_the_read_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("last-page.sqlite");
+    let conn = open_db(&path).unwrap();
+    conn.execute_batch("INSERT INTO agent(id,family,product) VALUES(1,'codex','Codex');
+        INSERT INTO session(id,agent_id,source_uri) VALUES(1,1,'fixture://1'),(2,1,'fixture://empty');
+        WITH RECURSIVE numbers(n) AS (
+          VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<12501
+        ) INSERT INTO entry(id,session_id,ordinal,kind,role)
+          SELECT n,1,n*10,'message','assistant' FROM numbers;").unwrap();
+    let first = get_session_inner(&path, "1", 100, 1).unwrap();
+    assert_eq!(first["entries"][0]["id"], 1);
+    let last = get_session_inner(&path, "1", 100, i64::MAX).unwrap();
+    assert_eq!(last["offset"], 12500);
+    assert_eq!(last["total"], 12501);
+    assert_eq!(last["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(last["entries"][0]["id"], 12501);
+    let empty = get_session_inner(&path, "2", 100, i64::MAX).unwrap();
+    assert_eq!(empty["offset"], 0);
+    assert_eq!(empty["entries"], json!([]));
+
+    let token = last["readToken"].as_str();
+    assert_eq!(
+        get_session_if_changed(&path, "1", 100, i64::MAX, token).unwrap()["unchanged"],
+        true
+    );
+    conn.execute_batch("INSERT INTO entry(id,session_id,ordinal,kind,role) VALUES(12502,1,125020,'message','assistant');").unwrap();
+    let updated = get_session_if_changed(&path, "1", 100, i64::MAX, token).unwrap();
+    assert_eq!(updated["entries"][1]["id"], 12502);
+}
+
+#[test]
 #[ignore = "synthetic full-page versus unchanged refresh probe; run release and serial"]
 fn conditional_transcript_performance() {
     use std::time::Instant;

@@ -352,6 +352,10 @@ fn transfers(root: &RemoteRoot) -> Vec<Transfer> {
             .into_iter()
     };
     match root.kind.as_str() {
+        "jsonl" if root.family == "codex" => vec![
+            Transfer::Dir(format!("{r}/{}", root.sub)),
+            Transfer::File(format!("{r}/{}", crate::importer::codex_titles::INDEX_FILE)),
+        ],
         "opencode" => with_sidecars(format!("{r}/opencode.db")).collect(),
         "hermes" => with_sidecars(format!("{r}/state.db"))
             .chain([

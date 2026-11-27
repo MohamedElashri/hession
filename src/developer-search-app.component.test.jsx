@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 import { api } from './api.js';
@@ -41,7 +41,7 @@ test('developer result opens its exact entry using row position rather than ordi
   await user.click(await screen.findByRole('button', { name: /Matching passage.*Open matching entry 502 in full log/ }));
   await screen.findByText('Target matching passage');
   expect(screen.getByRole('tab', { name: 'Full log' }).getAttribute('aria-selected')).toBe('true');
-  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 6 of 10' })).toBeTruthy();
+  expect(within(screen.getByRole('navigation', { name: 'Transcript pages' })).getByText('Page 6 of 10')).toBeTruthy();
   expect(document.getElementById('entry-900').classList.contains('search-target')).toBe(true);
   expect(api.mock.calls).toContainEqual(['get_session', { id: '2', limit: '100', page: '6' }]);
   expect(api.mock.calls.some(([command, args]) => command === 'get_session' && Number(args.page) > 6)).toBe(false);
@@ -50,7 +50,7 @@ test('developer result opens its exact entry using row position rather than ordi
   await screen.findByRole('heading', { name: 'Initial history' });
   await user.click(screen.getByRole('button', { name: /^Claude Code.*Other history/ }));
   await screen.findByRole('heading', { name: 'Other history' });
-  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 1 of 10' })).toBeTruthy();
+  expect(within(screen.getByRole('navigation', { name: 'Transcript pages' })).getByText('Page 1 of 10')).toBeTruthy();
   expect(document.getElementById('entry-900')).toBeNull();
 }, 10000);
 

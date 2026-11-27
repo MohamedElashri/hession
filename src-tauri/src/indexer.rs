@@ -546,6 +546,7 @@ fn run(
     let mut coverage_scan = false;
     let mut was_suspended = false;
     let mut last_revision = library_revision::current(&conn).ok();
+    let mut codex_titles = None;
     let mut changed = BTreeSet::new();
     let mut last_emit = Instant::now();
     let mut last_probe = Instant::now();
@@ -673,6 +674,7 @@ fn run(
         if was_suspended {
             scan = true;
             was_suspended = false;
+            codex_titles = None;
         }
         // Native watches belong to inodes. Reattach after a root is replaced
         // at the same path or an existing directory symlink is retargeted.
@@ -1050,6 +1052,29 @@ fn run(
             });
         }
         if do_scan || last_probe.elapsed() >= POLL {
+            if let Some(root) = catalog.codex_root() {
+                let refreshed = importer::with_cancellation(control.cancel.clone(), || {
+                    hession_core::indexing::epoch(&conn)
+                        .map_err(|error| error.to_string())
+                        .and_then(|epoch| {
+                            importer::codex_titles::reconcile(
+                                &mut conn,
+                                root,
+                                epoch,
+                                &mut codex_titles,
+                            )
+                        })
+                });
+                match refreshed {
+                    Ok(ids) => {
+                        changed.extend(ids.into_iter().take(128usize.saturating_sub(changed.len())))
+                    }
+                    Err(error) if !control.cancel.load(Ordering::SeqCst) => {
+                        control.error(format!("Codex session names: {error}"))
+                    }
+                    Err(_) => {}
+                }
+            }
             emit(&conn, &mut last_revision, &mut changed, on_change);
             last_probe = Instant::now();
         }
@@ -1254,6 +1279,25 @@ mod tests {
         let notice = serde_json::to_value(first).unwrap();
         assert!(notice.get("entries").is_none());
         assert!(notice.get("sourceUri").is_none());
+        let external: String = conn
+            .query_row("SELECT external_id FROM session", [], |row| row.get(0))
+            .unwrap();
+        std::fs::write(
+            source_root.join(importer::codex_titles::INDEX_FILE),
+            format!(
+                "{}\n",
+                serde_json::json!({"id":external,"thread_name":"Renamed from Codex"})
+            ),
+        )
+        .unwrap();
+        wait_until(|| {
+            conn.query_row("SELECT title FROM session", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap()
+                == "Renamed from Codex"
+        });
+        assert_eq!(count(), 4);
         let mut native = std::fs::OpenOptions::new()
             .append(true)
             .open(&file)

@@ -213,12 +213,12 @@ impl Summary {
             ),
         ] {
             // Use the same parsing rules as the legacy session upsert.
-            let present = if key.ends_with("_at") {
-                first_iso(&meta, aliases)
-            } else {
-                first_str(&meta, aliases)
+            let present = match key {
+                "title" => title_text(&meta["title"]).is_some(),
+                "cwd" => first_str(&meta, aliases).is_some(),
+                _ => first_iso(&meta, aliases).is_some(),
             };
-            if present.is_none() {
+            if !present {
                 if let Some(value) = fallback {
                     meta[key] = json!(value);
                 }
@@ -226,6 +226,89 @@ impl Summary {
         }
         meta
     }
+
+    fn resolved_for_source(
+        &self,
+        conn: &Connection,
+        family: &str,
+        file: &Path,
+        source_uri: &str,
+    ) -> Result<Value, String> {
+        let mut metadata = self.resolved();
+        let title = match family {
+            "codex" => codex_titles::title(conn, file, source_uri, &metadata)?,
+            "commandcode" if title_text(&metadata["customTitle"]).is_none() => {
+                match command_code_title(file) {
+                    Ok(title) => title,
+                    // A damaged optional sidecar should not prevent a transcript import.
+                    Err(_) => conn
+                        .query_row(
+                            "SELECT title FROM session WHERE source_uri=?",
+                            [source_uri],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map(Option::flatten)
+                        .map_err(|error| error.to_string())?,
+                }
+            }
+            _ => None,
+        };
+        if let Some(title) = title {
+            metadata["title"] = json!(title);
+        }
+        Ok(metadata)
+    }
+}
+
+fn command_code_title(file: &Path) -> Result<Option<String>, String> {
+    let sidecar = command_code_metadata_path(file);
+    match fs::metadata(&sidecar) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+        Ok(_) => {}
+    }
+    let bytes = hession_core::source::read_bounded(&sidecar, 256 * 1024, &stop_requested)?;
+    let metadata: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    Ok(title_text(&metadata["title"]).map(str::to_owned))
+}
+
+fn refresh_command_code_title(
+    conn: &mut Connection,
+    file: &Path,
+    source_uri: &str,
+    id: i64,
+    summary: &Summary,
+    epoch: i64,
+    pricing: &mut ImportPricing,
+) -> Result<usize, String> {
+    let metadata = summary.resolved_for_source(conn, "commandcode", file, source_uri)?;
+    let title = recorded_title(&metadata).map(str::to_owned);
+    let saved: Option<(Option<String>, Option<String>)> = conn
+        .prepare_cached("SELECT external_id,title FROM session WHERE id=? AND source_uri=?")
+        .map_err(|error| error.to_string())?
+        .query_row(params![id, source_uri], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if let Some((external_id, previous_title)) =
+        saved.filter(|(_, previous_title)| previous_title != &title)
+    {
+        commit_session_title_updates(
+            conn,
+            epoch,
+            pricing,
+            vec![SessionTitleUpdate {
+                id,
+                source_uri: source_uri.into(),
+                external_id,
+                previous_title,
+                title,
+            }],
+        )?;
+    }
+    Ok(0)
 }
 
 fn merge_usage(conn: &Connection, session: i64, key: &str, value: &Value) -> Result<(), String> {
@@ -287,6 +370,11 @@ pub(super) fn import(
     let epoch = pricing
         .epoch
         .unwrap_or(indexing::epoch(conn).map_err(|e| e.to_string())?);
+    let parser_version = match family {
+        "claude" => PARSER_VERSION + 1,
+        "pi" | "commandcode" => PARSER_VERSION + 2,
+        _ => PARSER_VERSION,
+    };
     let previous = indexing::checkpoint(conn, source_uri).map_err(|e| e.to_string())?;
     let mut cursor = previous
         .as_ref()
@@ -329,11 +417,7 @@ pub(super) fn import(
     let mut reader = match open(
         file,
         if force { None } else { cursor.as_ref() },
-        if legacy {
-            PARSER_VERSION + 1
-        } else {
-            PARSER_VERSION
-        },
+        parser_version,
         if pricing.validate_contents {
             jsonl::Validation::Content
         } else {
@@ -344,7 +428,16 @@ pub(super) fn import(
     .map_err(|e| e.to_string())?
     {
         Some(reader) => reader,
-        None => return Ok(0),
+        None => {
+            if family == "commandcode" {
+                if let (Some((id, _, _)), Some((summary, _))) = (&previous, &previous_summary) {
+                    return refresh_command_code_title(
+                        conn, file, source_uri, *id, summary, epoch, pricing,
+                    );
+                }
+            }
+            return Ok(0);
+        }
     };
     if legacy && reader.fingerprint().size > MAX_LEGACY_BYTES {
         return Err(
@@ -445,6 +538,13 @@ pub(super) fn import(
     stage.execute_batch("COMMIT").map_err(|e| e.to_string())?;
     let next = reader.finish().map_err(|e| e.to_string())?;
     if append && cursor.as_ref() == Some(&next) {
+        if family == "commandcode" {
+            if let Some((id, _, _)) = &previous {
+                return refresh_command_code_title(
+                    conn, file, source_uri, *id, &summary, epoch, pricing,
+                );
+            }
+        }
         return Ok(0);
     }
     if !append && next.offset < next.fingerprint.size {
@@ -475,6 +575,7 @@ pub(super) fn import(
         }
         return Ok(0);
     }
+    let resolved = summary.resolved_for_source(conn, family, file, source_uri)?;
     let _writer = crate::db::background_write(conn).map_err(|e| e.to_string())?;
     indexing::check_epoch(conn, epoch)?;
     if stop_requested() {
@@ -510,7 +611,6 @@ pub(super) fn import(
         mtime: next.fingerprint.modified_secs as f64 * 1000.0
             + next.fingerprint.modified_nanos as f64 / 1_000_000.0,
     };
-    let resolved = summary.resolved();
     let id = upsert_session(&tx, family, product, root, &data, Some(&resolved))?;
     if !append {
         for table in [

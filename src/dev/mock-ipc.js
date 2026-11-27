@@ -210,8 +210,12 @@ const handlers = {
   get_session: ({ id, limit = '500', page = '1' }) => {
     const detail = fixtures.details[id];
     if (!detail) throw 'Session not found';
-    const offset = (Number(page) - 1) * Number(limit);
-    return { ...detail, entries: detail.entries.slice(offset, offset + Number(limit)), offset, limit: Number(limit) };
+    const size = Number(limit);
+    const total = detail.entries.length;
+    const lastPage = Math.max(1, Math.ceil(total / size));
+    const current = page === 'last' ? lastPage : Math.min(lastPage, Math.max(1, Number(page) || 1));
+    const offset = (current - 1) * size;
+    return { ...detail, entries: detail.entries.slice(offset, offset + size), offset, limit: size, total };
   },
   search_session_entries: ({ id, q, limit = '20', offset = '0' }) => {
     const detail = fixtures.details[id];

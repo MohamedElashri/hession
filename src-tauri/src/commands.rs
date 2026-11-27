@@ -460,11 +460,13 @@ fn get_session_if_changed(
         .trim()
         .parse()
         .map_err(|_| "Session not found".to_string())?;
-    let mut offset = page.max(1).saturating_sub(1).saturating_mul(limit);
+    // The transcript query clamps this offset against the total in the same snapshot.
+    let page = page.max(1);
+    let mut offset = page.saturating_sub(1).saturating_mul(limit);
     let mut conn = open_db(db_path)?;
     let snapshot = conn.transaction().map_err(|e| e.to_string())?;
     let token = hession_core::session_changes::token(&snapshot, session_id)
-        .map(|token| format!("{token}:reading2:page:{}:limit:{limit}", page.max(1)));
+        .map(|token| format!("{token}:reading2:page:{page}:limit:{limit}"));
     if token
         .as_deref()
         .is_some_and(|token| Some(token) == known_token)
@@ -493,7 +495,7 @@ fn get_session_if_changed(
     Ok(result)
 }
 
-/// Flat args `{ id, limit, page }` (all strings from the frontend).
+/// Flat args `{ id, limit, page }` (all strings from the frontend). Page can be "last".
 #[tauri::command]
 pub async fn get_session(
     state: State<'_, AppState>,
@@ -505,7 +507,10 @@ pub async fn get_session(
     let db_path = db_path_of(&state)?;
     let id = opt_str(&id).to_string();
     let limit = clamp_limit(limit.as_deref(), 100, 1, 500);
-    let page = parse_i64(opt_str(&page), 1).max(1);
+    let page = match opt_str(&page) {
+        "last" => i64::MAX,
+        value => parse_i64(value, 1).max(1),
+    };
     let result = tauri::async_runtime::spawn_blocking(move || {
         get_session_if_changed(&db_path, &id, limit, page, known_token.as_deref())
     })

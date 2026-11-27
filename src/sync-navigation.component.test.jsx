@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 import { api } from './api.js';
@@ -18,6 +18,7 @@ const sessions = [
   { id: 1, title: 'First session', agent: 'codex', cwd: '/work', tags: [] },
   { id: 2, title: 'Selected session', agent: 'claude', cwd: '/work', tags: [] },
 ];
+const transcriptPages = () => within(screen.getByRole('navigation', { name: 'Transcript pages' }));
 
 beforeEach(() => {
   window.history.replaceState(null, '', '/');
@@ -38,6 +39,7 @@ beforeEach(() => {
     if (command === 'search_sessions') return { sessions, total: 2 };
     if (command === 'get_session') return {
       session: sessions.find(s => String(s.id) === args.id), entries: [], total: 1000, limit: Number(args.limit),
+      offset: (Number(args.page) - 1) * Number(args.limit),
     };
     if (command === 'get_device_sync_settings') return {
       configured: true, enabled: true, deviceName: 'Test device', relayUrl: 'https://relay.example.test',
@@ -45,6 +47,43 @@ beforeEach(() => {
     };
     throw new Error(`Unexpected IPC call: ${command}`);
   });
+});
+
+test('a 126-page transcript opens either end and jumps to a numbered page with one read', async () => {
+  const user = userEvent.setup();
+  const handler = api.getMockImplementation();
+  let finishLast;
+  api.mockImplementation(async (command, args) => {
+    if (command !== 'get_session') return handler(command, args);
+    const page = args.page === 'last' ? 126 : Number(args.page);
+    if (args.page === 'last') await new Promise(resolve => { finishLast = resolve; });
+    return {
+      session: sessions.find(session => String(session.id) === args.id),
+      total: 12_501, limit: 100, offset: (page - 1) * 100,
+      entries: [{ id: page, ordinal: page * 100, kind: 'message', role: 'assistant',
+        parts: [{ kind: 'text', text: `Reply from page ${page}` }], tools: [] }],
+    };
+  });
+  render(boot.tree);
+  await screen.findByText('Reply from page 1');
+  const last = transcriptPages().getByRole('button', { name: 'Last transcript page' });
+  await user.click(last);
+  expect(document.activeElement).toBe(last);
+  expect(transcriptPages().getByRole('button', { name: 'Last transcript page' })).toBe(last);
+  expect(last.getAttribute('aria-disabled')).toBe('true');
+  await user.click(last);
+  finishLast();
+  await screen.findByText('Reply from page 126');
+  expect(transcriptPages().getByText('Page 126 of 126')).toBeTruthy();
+  await user.click(transcriptPages().getByRole('button', { name: 'Previous transcript page' }));
+  await screen.findByText('Reply from page 125');
+  await user.type(transcriptPages().getByRole('textbox', { name: 'Transcript page number' }), '73');
+  await user.click(transcriptPages().getByRole('button', { name: 'Go to transcript page' }));
+  await screen.findByText('Reply from page 73');
+  await user.click(transcriptPages().getByRole('button', { name: 'First transcript page' }));
+  await screen.findByText('Reply from page 1');
+  expect(api.mock.calls.filter(([command]) => command === 'get_session').map(([, args]) => args.page))
+    .toEqual(['1', 'last', '125', '73', '1']);
 });
 
 test('one Settings entry opens About and its updater inside the same window', async () => {
@@ -121,7 +160,7 @@ test.each(['success', 'failure'])('a sync %s preserves the selected session and 
   await user.click(await screen.findByRole('button', { name: /^Claude Code.*Selected session/ }));
   await screen.findByRole('heading', { name: 'Selected session' });
   await user.click(screen.getByRole('button', { name: 'Next transcript page' }));
-  await screen.findByRole('textbox', { name: 'Go to transcript page, current page 2 of 10' });
+  await transcriptPages().findByText('Page 2 of 10');
   await user.click(screen.getByRole('button', { name: 'Settings' }));
   await user.click(await screen.findByRole('tab', { name: 'Private sync' }));
   const callsBefore = api.mock.calls.length;
@@ -133,7 +172,7 @@ test.each(['success', 'failure'])('a sync %s preserves the selected session and 
   expect(new URL(window.location.href).searchParams.get('session')).toBe('2');
   await user.click(screen.getByRole('button', { name: 'Done' }));
   expect(screen.getByRole('heading', { name: 'Selected session' })).toBeTruthy();
-  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 2 of 10' })).toBeTruthy();
+  expect(transcriptPages().getByText('Page 2 of 10')).toBeTruthy();
 });
 
 test('keyboard commands navigate sessions and transcript without hijacking typing or dialogs', async () => {
@@ -165,7 +204,7 @@ test('keyboard commands navigate sessions and transcript without hijacking typin
   const palette = await screen.findByRole('combobox');
   await user.type(palette, 'Next transcript page');
   await user.keyboard('{Enter}');
-  await screen.findByRole('textbox', { name: 'Go to transcript page, current page 2 of 10' });
+  await transcriptPages().findByText('Page 2 of 10');
   await user.click(screen.getByRole('button', { name: 'Settings', exact: true }));
   await screen.findByRole('dialog');
   await user.keyboard('{Control>}k{/Control}');
@@ -300,7 +339,7 @@ test('file evidence opens its source session and true transcript page despite ga
   await user.click(await screen.findByRole('button', { name: 'Open session 2, event 9999' }));
   await waitFor(() => expect(api).toHaveBeenCalledWith('get_session', { id: '2', limit: '100', page: '8' }));
   await screen.findByRole('heading', { name: 'Selected session' });
-  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 8 of 10' })).toBeTruthy();
+  expect(transcriptPages().getByText('Page 8 of 10')).toBeTruthy();
   expect(new URL(window.location.href).searchParams.get('session')).toBe('2');
 }, 15000);
 
@@ -309,7 +348,7 @@ test('focus mode restores the surrounding layout and keeps the same transcript a
   render(boot.tree);
   await screen.findByRole('heading', { name: 'First session' });
   await user.click(screen.getByRole('button', { name: 'Next transcript page' }));
-  await screen.findByRole('textbox', { name: 'Go to transcript page, current page 2 of 10' });
+  await transcriptPages().findByText('Page 2 of 10');
   const transcript = screen.getByRole('region', { name: 'Transcript' });
   transcript.scrollTop = 120;
   const reads = api.mock.calls.filter(([command]) => command === 'get_session').length;
@@ -317,7 +356,7 @@ test('focus mode restores the surrounding layout and keeps the same transcript a
   expect(document.querySelector('.app-shell').classList.contains('reader-focus')).toBe(true);
   expect(screen.getByRole('region', { name: 'Transcript' })).toBe(transcript);
   expect(transcript.scrollTop).toBe(120);
-  expect(screen.getByRole('textbox', { name: 'Go to transcript page, current page 2 of 10' })).toBeTruthy();
+  expect(transcriptPages().getByText('Page 2 of 10')).toBeTruthy();
   await user.keyboard('{Escape}');
   expect(document.querySelector('.app-shell').classList.contains('reader-focus')).toBe(false);
   expect(screen.getByRole('region', { name: 'Transcript' })).toBe(transcript);
