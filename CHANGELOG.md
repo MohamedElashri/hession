@@ -25,6 +25,10 @@
 - Preserve the reader’s scroll position when a search result page refreshes.
 - Keep tool output linked to the correct call across page boundaries.
 
+### Security
+
+- Update the cookie and URL libraries to their patched versions.
+
 ## [0.5.7] - 2026-11-23
 
 ### Changed
