@@ -85,63 +85,88 @@ fn get_session_projected(
         return Err("Use a transcript limit of 1–500 and a nonnegative offset".into());
     }
     let session = get_session_metadata_projected(conn, session_id, reading)?;
-    let entry_counts = query_one(
-        conn,
-        "WITH classified AS (
-           SELECT e.role, CASE WHEN e.role='tool'
-             OR EXISTS (SELECT 1 FROM tool_invocation t WHERE t.entry_id=e.id)
-             OR EXISTS (SELECT 1 FROM content_part cp WHERE cp.entry_id=e.id
-                        AND cp.kind IN ('tool_call','tool_result'))
-             THEN 1 ELSE 0 END AS has_tool
-           FROM entry e WHERE e.session_id=?1
-         ) SELECT COUNT(*) AS \"all\",
-           COALESCE(SUM(CASE WHEN role='user' THEN 1 ELSE 0 END),0) AS user,
-           COALESCE(SUM(CASE WHEN role='assistant' THEN 1 ELSE 0 END),0) AS assistant,
-           COALESCE(SUM(has_tool),0) AS tool,
-           COALESCE(SUM(CASE WHEN role IS NOT 'user' AND role IS NOT 'assistant'
-                        AND has_tool=0 THEN 1 ELSE 0 END),0) AS event
-           FROM classified",
-        &[SqlValue::Integer(session_id)],
-    )?
-    .unwrap_or(json!({"all": 0, "user": 0, "assistant": 0, "tool": 0, "event": 0}));
-    let total = entry_counts
-        .get("all")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+    // The desktop derives its filter counts from the displayed entries. A
+    // covering index gives it the page total without classifying each entry.
+    let (total, entry_counts) = if reading {
+        let total = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entry WHERE session_id=?",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        (total, None)
+    } else {
+        let counts = query_one(
+            conn,
+            "WITH classified AS (
+               SELECT e.role, CASE WHEN e.role='tool'
+                 OR EXISTS (SELECT 1 FROM tool_invocation t WHERE t.entry_id=e.id)
+                 OR EXISTS (SELECT 1 FROM content_part cp WHERE cp.entry_id=e.id
+                            AND cp.kind IN ('tool_call','tool_result'))
+                 THEN 1 ELSE 0 END AS has_tool
+               FROM entry e WHERE e.session_id=?1
+             ) SELECT COUNT(*) AS \"all\",
+               COALESCE(SUM(CASE WHEN role='user' THEN 1 ELSE 0 END),0) AS user,
+               COALESCE(SUM(CASE WHEN role='assistant' THEN 1 ELSE 0 END),0) AS assistant,
+               COALESCE(SUM(has_tool),0) AS tool,
+               COALESCE(SUM(CASE WHEN role IS NOT 'user' AND role IS NOT 'assistant'
+                            AND has_tool=0 THEN 1 ELSE 0 END),0) AS event
+               FROM classified",
+            &[SqlValue::Integer(session_id)],
+        )?
+        .unwrap_or(json!({"all": 0, "user": 0, "assistant": 0, "tool": 0, "event": 0}));
+        (counts["all"].as_i64().unwrap_or(0), Some(counts))
+    };
     if *offset >= total && (reading || total > 0) {
         *offset = (total - 1).max(0) / limit * limit;
     }
 
     let entries = if reading {
-        let entries = query_all(
+        // Seek from the closer end of the ordinal index. Bound the reversed
+        // query to the exact number of entries in a possibly partial page.
+        let page_size = limit.min(total - *offset);
+        let reverse_offset = total - *offset - page_size;
+        let reverse = reverse_offset < *offset;
+        let order = if reverse { "DESC" } else { "ASC" };
+        let scan_offset = if reverse { reverse_offset } else { *offset };
+        let mut entries = query_all(
             conn,
-            "SELECT e.id,e.session_id,e.ordinal,e.external_entry_id,e.parent_entry_id,
+            &format!(
+                "SELECT e.id,e.session_id,e.ordinal,e.external_entry_id,e.parent_entry_id,
              e.turn_id,e.occurred_at,e.kind,e.role,NULL AS search_text,
              CASE WHEN EXISTS(SELECT 1 FROM content_part cp WHERE cp.entry_id=e.id
                      AND ((cp.kind IN ('text','tool_result') AND octet_length(cp.text)>0)
                          OR (cp.kind<>'text' AND octet_length(cp.data_json)>0)))
                OR EXISTS(SELECT 1 FROM tool_invocation t WHERE t.entry_id=e.id)
                THEN NULL ELSE e.payload_json END AS payload_json
-             FROM entry e WHERE e.session_id=? ORDER BY e.ordinal LIMIT ? OFFSET ?",
+             FROM entry e WHERE e.session_id=? ORDER BY e.ordinal {order} LIMIT ? OFFSET ?"
+            ),
             &[
                 SqlValue::Integer(session_id),
-                SqlValue::Integer(limit),
-                SqlValue::Integer(*offset),
+                SqlValue::Integer(page_size),
+                SqlValue::Integer(scan_offset),
             ],
         )?;
+        if reverse {
+            entries.reverse();
+        }
         attach_entry_details_projected(conn, entries, true)?
     } else {
         get_entries_from_conn(conn, session_id, limit, *offset)?
     };
 
-    Ok(json!({
+    let mut result = json!({
         "session": session,
         "entries": entries,
         "total": total,
-        "entryCounts": entry_counts,
         "limit": limit,
         "offset": offset,
-    }))
+    });
+    if let Some(counts) = entry_counts {
+        result["entryCounts"] = counts;
+    }
+    Ok(result)
 }
 
 /// Load only the requested transcript page, using its entry IDs for attachments.
@@ -308,6 +333,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn desktop_tail_pages_keep_sparse_entry_order_without_scanning_prior_pages() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO agent(id,family,product) VALUES(1,'codex','Codex');
+             INSERT INTO session(id,agent_id,source_uri) VALUES(1,1,'fixture://long');
+             WITH RECURSIVE numbers(n) AS (
+               VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<25013
+             )
+             INSERT INTO entry(id,session_id,ordinal,kind,role)
+               SELECT n,1,n*5,'message','assistant' FROM numbers;
+             INSERT INTO content_part(entry_id,ordinal,kind,text)
+               SELECT id,0,'text','synthetic entry' FROM entry;",
+        )
+        .unwrap();
+
+        // The storage work is a covering count plus materializing one
+        // page. Give SQLite ample headroom but catch a per-entry tool scan.
+        let mut budget = 300;
+        conn.progress_handler(
+            1000,
+            Some(move || {
+                budget -= 1;
+                budget == 0
+            }),
+        )
+        .unwrap();
+        let mut offset = i64::MAX;
+        let last = get_reading_session_from_conn(&conn, 1, 100, &mut offset).unwrap();
+        assert_eq!(last["total"], 25013);
+        assert_eq!(offset, 25000);
+        assert_eq!(last["entries"].as_array().unwrap().len(), 13);
+        assert_eq!(last["entries"][0]["ordinal"], 125005);
+        assert_eq!(last["entries"][12]["ordinal"], 125065);
+        let previous = get_reading_session_from_conn(&conn, 1, 100, &mut 24900).unwrap();
+        assert_eq!(previous["entries"].as_array().unwrap().len(), 100);
+        assert_eq!(previous["entries"][0]["id"], 24901);
+        assert_eq!(previous["entries"][99]["id"], 25000);
+    }
+
+    #[test]
     fn reading_omits_duplicate_payloads_without_losing_display_or_export_content() {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::init_schema(&conn).unwrap();
@@ -336,7 +402,7 @@ mod tests {
         let full = get_session_from_conn(&conn, 1, 500, &mut 0).unwrap();
         let reading = get_reading_session_from_conn(&conn, 1, 500, &mut 0).unwrap();
         assert_eq!(reading["total"], full["total"]);
-        assert_eq!(reading["entryCounts"], full["entryCounts"]);
+        assert!(reading.get("entryCounts").is_none());
         assert_eq!(reading["session"], full["session"]);
         let rows = reading["entries"].as_array().unwrap();
         assert!(rows[0]["search_text"].is_null());
