@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useStat
 import { createRoot } from 'react-dom/client';
 import Markdown from './components/Markdown.jsx';
 import SessionSearch from './components/SessionSearch.jsx';
+import TranscriptPagination from './components/TranscriptPagination.jsx';
 import ReadingControls, { PanelResize } from './components/ReadingControls.jsx';
 import { applyReadingWidths, createReadingLayout } from './reading-layout.js';
 import { createLibraryRefresh } from './library-refresh.js';
@@ -125,9 +126,11 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
   // 'conversation' (dialogue as turns) | 'prompts' (index of prompts) | 'log' (every entry)
   const [transcriptView,setTranscriptViewState]=useState(()=>{try{return localStorage.getItem(storageKey('transcript-view'))||'conversation';}catch{return 'conversation';}});
   const setTranscriptView=v=>{setTranscriptViewState(v);try{localStorage.setItem(storageKey('transcript-view'),v);}catch{/* preference only */}};
-  const [detailPage,setDetailPage]=useState(1); // 1-based transcript page
-  const [detailJump,setDetailJump]=useState('');
-  const [searchEntry,setSearchEntry]=useState(null);
+  const [detailPage,setDetailPage]=useState(1); // A 1-based page number or 'last'.
+  const transcriptRef=useRef(null),pageScroll=useRef(null);
+  const [searchTarget,setSearchTarget]=useState(null);
+  const searchEntry=searchTarget?.entryId??null;
+  const scrolledTarget=useRef(null);
   const [collapsedEntries,setCollapsedEntries]=useState(()=>new Set());
   const [copiedEntry,setCopiedEntry]=useState(null);
   const [settingsOpen,setSettingsOpen]=useState(false),[settingsTab,setSettingsTab]=useState('appearance');
@@ -157,7 +160,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
     setContinuationOpen(false);
     setResumeOpen(false);setResumeInfo(null);setResumeError('');setResumeCopied(false);setResumeTerminals([]);setResumeTerminal('');
     const target=sourceJump&&String(sourceJump.sessionId)===String(selected)?sourceJump:null;
-    setSearchEntry(target?.entryId??null);setCollapsedEntries(new Set());setDetailPage(target?Math.floor(target.position/DETAIL_PAGE_SIZE)+1:1);setDetailJump('');setTagDraft('');
+    setSearchTarget(target?{entryId:target.entryId}:null);setCollapsedEntries(new Set());setDetailPage(target?Math.floor(target.position/DETAIL_PAGE_SIZE)+1:1);setTagDraft('');
   }
   // Back to the first page whenever the filters change.
   const developerSearchActive=searchEngine==='developer'&&Boolean(query.trim());
@@ -177,7 +180,8 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
     // Invalidate the previous detail request before rendering the new selection.
     detailRequest.current++;
     setSourceJump(null);
-    setDetailPage(1);setDetailJump('');setDetail(null);setDetailError('');setDetailLoading(true);
+    pageScroll.current=null;
+    setDetailPage(1);setDetail(null);setDetailError('');setDetailLoading(true);
     navigate({view:'sessions',selected:sessionId,selectionExplicit:true});
     setMobileNav(false);
   },[navigate]);
@@ -190,7 +194,8 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
       const next=readNavigation();
       navigationRef.current=next;
       detailRequest.current++;
-      setDetailPage(1);setDetailJump('');setDetail(null);setDetailError('');
+      pageScroll.current=null;
+      setDetailPage(1);setDetail(null);setDetailError('');
       setNavigation(next);
       setMobileNav(false);setSortOpen(false);setSyncMenuOpen(false);
     };
@@ -313,10 +318,29 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
   useEffect(()=>{const timer=setInterval(()=>setCurrentTime(Date.now()),60000);return()=>clearInterval(timer);},[]);
   useEffect(()=>{const t=setTimeout(loadSessions,query?180:0);return()=>clearTimeout(t);},[loadSessions,query]);
   const detailCache=useRef(null);
+  const detailForeground=useRef(null);
   const loadDetail=useCallback(async({silent=false,page=detailPage}={})=>{
+    const pending=detailForeground.current;
+    if(silent&&pending?.id===detailRequest.current){
+      // The in-flight read may have opened its snapshot before this refresh.
+      // Let it finish, then conditionally reload unless navigation superseded it.
+      await pending.settled;
+      if(pending.id!==detailRequest.current)return true;
+    }
     const id=++detailRequest.current;
+    if(!silent){
+      // Release refreshes waiting for a superseded read, even if its IPC
+      // response is still pending.
+      pending?.settle();
+      detailForeground.current=null;
+    }
     if(!selected||view!=='sessions'){setDetail(null);setDetailError('');setDetailLoading(false);detailCache.current=null;return true;}
-    if(!silent){setDetailLoading(true);setDetailError('');}
+    let settle;
+    if(!silent){
+      const settled=new Promise(resolve=>{settle=resolve;});
+      detailForeground.current={id,settled,settle};
+      setDetailLoading(true);setDetailError('');
+    }
     try{
       const detailParams={id:String(selected),limit:String(DETAIL_PAGE_SIZE),page:String(page)};
       const cached=detailCache.current;
@@ -328,8 +352,12 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
       }
       return true;
     }
-    catch(e){if(id===detailRequest.current&&!silent){setDetail(null);setDetailError(e.message||'Could not load this session.');}return false;}
-    finally{if(id===detailRequest.current)setDetailLoading(false);}
+    catch(e){if(id===detailRequest.current&&!silent)setDetailError(e.message||'Could not load this session.');return false;}
+    finally{
+      if(detailForeground.current?.id===id)detailForeground.current=null;
+      if(id===detailRequest.current)setDetailLoading(false);
+      settle?.();
+    }
   },[selected,detailPage,view]);
   // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching shows a loading state
   useEffect(()=>{loadDetail();},[loadDetail]);
@@ -506,24 +534,29 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
       return true;
     });
   },[detail,entryFilter,searchEntry]);
-  useEffect(()=>{
-    if(!detailLoading&&searchEntry)document.getElementById(`entry-${searchEntry}`)?.scrollIntoView({block:'center'});
-  },[detail,detailLoading,searchEntry]);
+  useLayoutEffect(()=>{
+    if(detailLoading||!searchTarget||scrolledTarget.current===searchTarget)return;
+    const target=document.getElementById(`entry-${searchTarget.entryId}`);
+    if(target){
+      scrolledTarget.current=searchTarget;
+      target.scrollIntoView({block:'center'});
+    }
+  },[detail,detailLoading,searchTarget,transcriptView]);
   const openSearchEntry=entry=>{
-    setEntryFilter('all');setTranscriptView('log');setSearchEntry(entry.id);
+    pageScroll.current=null;
+    setEntryFilter('all');setTranscriptView('log');setSearchTarget({entryId:entry.id});
     setCollapsedEntries(previous=>{const next=new Set(previous);next.delete(entry.id);return next;});
-    setDetailPage(Math.floor(entry.position/DETAIL_PAGE_SIZE)+1);setDetailJump('');
-    requestAnimationFrame(()=>document.getElementById(`entry-${entry.id}`)?.scrollIntoView({block:'center'}));
+    setDetailPage(Math.floor(entry.position/DETAIL_PAGE_SIZE)+1);
   };
   // Shared with search and project/file sources: positions are row offsets, not ordinals.
   const openSessionSource=(sessionId,source)=>{
     selectSession(sessionId);
     if(!source||!Number.isInteger(source.entryId)||!Number.isInteger(source.position)||source.position<0)return;
+    pageScroll.current=null;
     setSourceJump({sessionId,entryId:source.entryId,position:source.position});
-    setEntryFilter('all');setTranscriptView('log');setSearchEntry(source.entryId);
+    setEntryFilter('all');setTranscriptView('log');setSearchTarget({entryId:source.entryId});
     setCollapsedEntries(previous=>{const next=new Set(previous);next.delete(source.entryId);return next;});
-    setDetailPage(Math.floor(source.position/DETAIL_PAGE_SIZE)+1);setDetailJump('');
-    requestAnimationFrame(()=>document.getElementById(`entry-${source.entryId}`)?.scrollIntoView({block:'center'}));
+    setDetailPage(Math.floor(source.position/DETAIL_PAGE_SIZE)+1);
   };
   const openDeveloperResult=result=>openSessionSource(result.sessionId,{entryId:result.entryId,position:result.position});
   const turns=useMemo(()=>buildConversation(detail?.entries),[detail?.entries]);
@@ -532,12 +565,31 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
   const detailTotal=detail?.total??detail?.entries?.length??0;
   const detailLimit=detail?.limit||DETAIL_PAGE_SIZE;
   const detailTotalPages=Math.max(1,Math.ceil(detailTotal/detailLimit));
-  const detailSafePage=Math.min(Math.max(1,detailPage),detailTotalPages);
-  const detailRangeStart=detailTotal?((detailSafePage-1)*detailLimit)+1:0;
-  const detailRangeEnd=detailTotal?Math.min(detailTotal,detailSafePage*detailLimit):0;
-  const gotoDetailPage=(p)=>{const n=Math.min(Math.max(1,Math.floor(Number(p)||1)),detailTotalPages);setDetailPage(n);setDetailJump('');};
-  const submitDetailJump=(e)=>{e?.preventDefault?.();if(detailJump.trim()==='')return;gotoDetailPage(Number(detailJump));};
-  const isDetailLoading=loading||detailLoading||(Boolean(selected)&&!detail&&!detailError);
+  const detailSafePage=Math.min(detailTotalPages,Math.floor((detail?.offset??0)/detailLimit)+1);
+  const hasSelectedDetail=Boolean(detail)&&String(detail.session.id)===String(selected);
+  const isDetailLoading=detailLoading||(!hasSelectedDetail&&!detailError&&(Boolean(selected)||loading));
+  const gotoDetailPage=page=>{
+    setSearchTarget(null);setSourceJump(null);
+    if(page===detailPage){
+      if(detailError)loadDetail();
+      else if(transcriptRef.current)transcriptRef.current.scrollTop=page==='last'?transcriptRef.current.scrollHeight:0;
+      return;
+    }
+    detailRequest.current++;
+    pageScroll.current={sessionId:String(selected),page};
+    setDetailLoading(true);
+    setDetailError('');
+    setDetailPage(page);
+  };
+  useLayoutEffect(()=>{
+    const pending=pageScroll.current;
+    if(!pending||!hasSelectedDetail||isDetailLoading||detailError||!transcriptRef.current)return;
+    pageScroll.current=null;
+    if(pending.sessionId===String(selected)&&pending.page===detailPage){
+      const transcript=transcriptRef.current;
+      transcript.scrollTop=detailPage==='last'?transcript.scrollHeight:0;
+    }
+  },[hasSelectedDetail,isDetailLoading,detailError,detailPage,selected]);
   const matchingProjects=projects.filter(p=>`${p.display_name||''} ${p.path||''}`.toLowerCase().includes(workspaceQuery.trim().toLowerCase()));
   const shownProjects=matchingProjects.slice(0,workspaceQuery||allWorkspaces?matchingProjects.length:9);
   const latestSync=syncCheckpoints.reduce((latest,item)=>{
@@ -563,7 +615,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
   ].filter(Boolean);
   const navCount=n=><span className="nav-count">{Number(n||0).toLocaleString()}</span>;
 
-  const sessionUnavailable=()=>view!=='sessions'||!detail||isDetailLoading?'Open a loaded session first.':null;
+  const sessionUnavailable=()=>view!=='sessions'||!hasSelectedDetail||isDetailLoading?'Open a loaded session first.':null;
   const keyboardContext=useMemo(()=>({mac:isMacPlatform(),view}),[view]);
   // Feature views add definitions here: the palette, shortcut dispatch and help
   // consume this same registry. Disabled predicates return a visible reason.
@@ -597,8 +649,10 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
       run:context=>moveRegionFocus(context.sessionList,SESSION_ITEM_SELECTOR,direction),
     })),
     {id:'list.open',title:'Open focused session',scope:'Session list',shortcuts:['Enter'],hidden:true,when:context=>context.onSessionCard,run:context=>context.target.click()},
+    {id:'transcript.first',title:'First transcript page',disabled:()=>sessionUnavailable()||(detailSafePage<=1?'Already on the first page.':null),run:()=>gotoDetailPage(1)},
     {id:'transcript.previous',title:'Previous transcript page',disabled:()=>sessionUnavailable()||(detailSafePage<=1?'Already on the first page.':null),run:()=>gotoDetailPage(detailSafePage-1)},
     {id:'transcript.next',title:'Next transcript page',disabled:()=>sessionUnavailable()||(detailSafePage>=detailTotalPages?'Already on the last page.':null),run:()=>gotoDetailPage(detailSafePage+1)},
+    {id:'transcript.last',title:'Last transcript page',disabled:()=>sessionUnavailable()||(detailTotalPages===1?'This transcript has one page.':null),run:()=>gotoDetailPage('last')},
     {id:'session.star',title:detail?.session.starred?'Unstar selected session':'Star selected session',disabled:()=>sessionUnavailable()||(starPending.has(detail?.session.id)?'Saving bookmark…':null),run:()=>toggleSessionStar(detail.session)},
     {id:'export.open',title:'Export sessions',disabled:()=>exportBusy?'An export is already running.':null,run:()=>setExportOpen(true)},
     {id:'session.resume',title:'Resume selected session',disabled:sessionUnavailable,run:openResume},
@@ -762,11 +816,11 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
 
             <PanelResize layout={readingLayout} setting="listWidth" label="Session list width" className="list-resize"/>
             <section className="detail-column" aria-label="Session" tabIndex={-1}>
-              <ReadingControls layout={readingLayout} canFocus={Boolean(selected)} title={detail?.session.title||'Conversation'} onSearch={selected?()=>{readingLayout.update({searchVisible:true});focusAfterRender('[aria-label="Search this session"]');}:null}
+              <ReadingControls layout={readingLayout} canFocus={Boolean(selected)} title={(hasSelectedDetail&&detail.session.title)||'Conversation'} onSearch={selected?()=>{readingLayout.update({searchVisible:true});focusAfterRender('[aria-label="Search this session"]');}:null}
                 onBrowse={()=>{readingLayout.update({focusMode:false,listHidden:false});navigate({selected:null,selectionExplicit:true});}}/>
 
-              {detail&&<SessionSearch key={detail.session.id} sessionId={detail.session.id} onOpen={openSearchEntry}/>}
-              {detail&&!isDetailLoading?<>
+              {hasSelectedDetail&&<SessionSearch key={detail.session.id} sessionId={detail.session.id} onOpen={openSearchEntry}/>}
+              {hasSelectedDetail?<>
                 <div className="detail-header">
                   <div className="detail-agent-line"><span className={`agent-dot ${agentColors[detail.session.agent]||'gray'}`}/><span>{detail.session.product||familyLabel(detail.session.agent)}</span>{detail.session.host&&<span className="host-chip"><Server size={11}/>{detail.session.host}</span>}<span className="detail-sep">·</span><span>{relativeDate(detail.session.last_event_at||detail.session.started_at)}</span></div>
                   <div className="detail-title-row">
@@ -789,13 +843,13 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
                   {transcriptView==='log'&&<div className="transcript-filters segmented" role="group" aria-label="Filter transcript entries">
                     {[['all','All',null],['user','You',<User size={12} key="u"/>],['assistant','Agent',<Bot size={12} key="a"/>],['tool','Tools',<Terminal size={12} key="t"/>],['event','Events',<Layers3 size={12} key="e"/>]].map(([key,label,icon])=><button key={key} className={`transcript-toggle ${entryFilter===key?'active':''}`} aria-pressed={entryFilter===key} onClick={()=>setEntryFilter(c=>key==='all'||c===key?'all':key)}>{icon}{label}<b>{entryCounts[key]}</b></button>)}
                   </div>}
-                  {detailTotalPages>1&&<nav className="transcript-pagination pagination-controls" aria-label="Transcript pages">
-                    <button aria-label="Previous transcript page" disabled={detailSafePage<=1||isDetailLoading} onClick={()=>gotoDetailPage(detailSafePage-1)}><ChevronLeft size={14}/></button>
-                    <form className="pagination-jump" onSubmit={submitDetailJump}><span aria-live="polite">{detailRangeStart}–{detailRangeEnd} of {detailTotal.toLocaleString()} · page <input value={detailJump} onChange={e=>setDetailJump(e.target.value.replace(/[^0-9]/g,''))} placeholder={String(detailSafePage)} aria-label={`Go to transcript page, current page ${detailSafePage} of ${detailTotalPages}`} inputMode="numeric" disabled={isDetailLoading}/> of {detailTotalPages}</span></form>
-                    <button aria-label="Next transcript page" disabled={detailSafePage>=detailTotalPages||isDetailLoading} onClick={()=>gotoDetailPage(detailSafePage+1)}><ChevronRight size={14}/></button>
-                  </nav>}
                 </div>
-                <div className={`transcript-scroll transcript-${transcriptView}`} tabIndex={0} role="region" aria-label="Transcript">
+                {detailTotalPages>1&&<TranscriptPagination key={detail.session.id} page={detailSafePage} totalPages={detailTotalPages}
+                  busy={isDetailLoading} onPageChange={gotoDetailPage}/>}
+                <div className={`transcript-scroll transcript-${transcriptView}`} ref={transcriptRef} tabIndex={0} role="region" aria-label="Transcript" aria-busy={isDetailLoading}>
+                  {isDetailLoading?<div className="transcript-empty" role="status"><LoaderCircle className="spin" size={18}/><strong>Loading transcript page…</strong></div>
+                  :detailError?<div className="transcript-empty" role="alert"><strong>{detailError}</strong><button type="button" className="btn" onClick={()=>loadDetail()}>Retry</button></div>
+                  :<>
                   {transcriptView==='conversation'&&(turns.length?<Conversation turns={turns} agentName={detail.session.product||familyLabel(detail.session.agent)} agentColor={agentColors[detail.session.agent]||'gray'}/>:<div className="transcript-empty"><div className="empty-orb"><MessageSquareText size={20}/></div><strong>No conversation on this page</strong><span>Open the full log to see this page&apos;s events.</span></div>)}
                   {transcriptView==='prompts'&&(turns.some(t=>t.prompt)?<PromptIndex turns={turns} onOpen={openTurn}/>:<div className="transcript-empty"><div className="empty-orb"><User size={20}/></div><strong>No prompts on this page</strong><span>The agent continued without a new prompt here.</span></div>)}
                   {transcriptView==='log'&&detailEntries.map(e=>{
@@ -826,6 +880,7 @@ function App({indexingObserver=null,onOpenFiles=null}={}){
                   })}
                   {transcriptView==='log'&&!detailEntries.length&&<div className="transcript-empty"><div className="empty-orb"><FileCode2 size={20}/></div><strong>No {entryFilter==='all'?'displayable':entryFilter==='assistant'?'agent':entryFilter} entries on this page</strong><span>{entryFilter!=='all'?'Show all entries to see the rest.':'Session details are still shown above.'}</span></div>}
                   <div className="transcript-end">{detailSafePage>=detailTotalPages?'End of session':`Page ${detailSafePage} of ${detailTotalPages}`}</div>
+                  </>}
                 </div>
               </>:isDetailLoading?<div className="detail-loading" role="status" aria-live="polite"><LoaderCircle className="spin" size={18}/><span>Loading session…</span></div>:<div className="detail-placeholder"><div className="empty-orb"><MessageSquareText size={22}/></div><h2>{detailError?'Could not load this session':'No session selected'}</h2><p>{detailError||'Pick a session from the list to read the full conversation.'}</p></div>}
             </section>

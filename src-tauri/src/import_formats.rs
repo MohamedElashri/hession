@@ -2,7 +2,7 @@
 
 use super::{
     first_str, iso_time, normalize_record_fields, normalize_record_owned, stop_requested,
-    NormalizedRecord,
+    title_text, NormalizedRecord,
 };
 use rusqlite::{params, types::ValueRef, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
@@ -683,10 +683,39 @@ pub(super) fn session_data(
         } else if let Some(id) = value.get("sessionId").or_else(|| value.get("session_id")) {
             incoming.insert("id".into(), id.clone());
         }
-        if value["type"] == "ai-title" {
-            if let Some(title) = value.get("aiTitle") {
-                incoming.insert("title".into(), title.clone());
+        let record_type = value["type"].as_str();
+        let session_title = match (family, record_type) {
+            ("claude", Some("custom-title" | "ai-title")) => {
+                let owner = file
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .and_then(|stem| uuid::Uuid::parse_str(stem).ok());
+                let recorded = value["sessionId"]
+                    .as_str()
+                    .or_else(|| value["session_id"].as_str());
+                // Claude can copy title records from the parent into forks.
+                if owner.is_some_and(|owner| {
+                    recorded.is_some_and(|id| uuid::Uuid::parse_str(id).ok() != Some(owner))
+                }) {
+                    incoming.remove("id");
+                    None
+                } else if record_type == Some("custom-title") {
+                    title_text(&value["customTitle"]).map(|title| ("customTitle", title))
+                } else {
+                    title_text(&value["aiTitle"]).map(|title| ("title", title))
+                }
             }
+            ("pi" | "commandcode", Some("session_info")) => value["name"]
+                .as_str()
+                .map(|name| ("customTitle", name.trim())),
+            ("muse", _) if value["payload_type"] == "session.name.changed" => {
+                title_text(&value["payload"]["new_name"]).map(|title| ("title", title))
+            }
+            (_, Some("ai-title")) => title_text(&value["aiTitle"]).map(|title| ("title", title)),
+            _ => None,
+        };
+        if let Some((key, title)) = session_title {
+            incoming.insert(key.into(), json!(title));
         }
         merge_session_metadata(family, &mut metadata, &incoming);
         let record =

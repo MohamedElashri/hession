@@ -18,6 +18,8 @@ use serde_json::Value;
 
 #[path = "import_cline.rs"]
 mod cline;
+#[path = "import_codex_titles.rs"]
+pub(crate) mod codex_titles;
 #[path = "import_formats.rs"]
 mod formats;
 #[path = "import_incremental.rs"]
@@ -434,6 +436,12 @@ pub(crate) struct LocalCatalog(Vec<Source>);
 pub(crate) type SourceFingerprint = Vec<Option<hession_core::jsonl::Fingerprint>>;
 
 impl LocalCatalog {
+    pub(crate) fn codex_root(&self) -> Option<&Path> {
+        self.0
+            .iter()
+            .find(|source| source.family == "codex")
+            .map(|source| source.root.as_path())
+    }
     #[cfg(test)]
     pub(crate) fn fixture(root: PathBuf) -> Self {
         Self(vec![Source {
@@ -475,7 +483,12 @@ impl LocalCatalog {
                     .or_insert(depth);
             };
             match source.kind {
-                SourceKind::Jsonl | SourceKind::Cline => add(source.root.join(source.sub), 24),
+                SourceKind::Jsonl | SourceKind::Cline => {
+                    add(source.root.join(source.sub), 24);
+                    if source.family == "codex" {
+                        add(source.root.clone(), 0);
+                    }
+                }
                 SourceKind::OpenCodeDb => add(source.root.clone(), 0),
                 SourceKind::Hermes => {
                     add(source.root.clone(), 0);
@@ -593,6 +606,13 @@ impl LocalCatalog {
             }
             summary.files_done += 1;
         }
+        if !summary.cancelled {
+            if let Some(root) = self.codex_root() {
+                if let Err(error) = codex_titles::reconcile(conn, root, epoch, &mut None) {
+                    push_error(&mut summary, "Codex session names", error);
+                }
+            }
+        }
         summary
     }
 
@@ -629,6 +649,8 @@ pub(crate) fn source_paths(family: &str, file: &Path) -> Vec<PathBuf> {
         paths.retain(|path| path != file);
         paths.insert(0, file.into());
         paths
+    } else if family == "commandcode" {
+        vec![file.into(), command_code_metadata_path(file)]
     } else if is_database_file(file) {
         database_paths(file)
     } else if family == "antigravity" {
@@ -640,6 +662,16 @@ pub(crate) fn source_paths(family: &str, file: &Path) -> Vec<PathBuf> {
     } else {
         vec![file.into()]
     }
+}
+
+fn command_code_metadata_path(file: &Path) -> PathBuf {
+    let sidecar = file.with_extension("meta.json");
+    if !sidecar.exists() && fs::symlink_metadata(file).is_ok_and(|metadata| metadata.is_symlink()) {
+        return file
+            .canonicalize()
+            .map_or(sidecar, |target| target.with_extension("meta.json"));
+    }
+    sidecar
 }
 
 /// Resolve aliases only within a local family and the complete dependency set.
@@ -891,6 +923,76 @@ fn first_str(obj: &serde_json::Value, keys: &[&str]) -> Option<String> {
         }
     }
     None
+}
+
+fn title_text(value: &Value) -> Option<&str> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+}
+
+fn recorded_title(metadata: &Value) -> Option<&str> {
+    title_text(&metadata["customTitle"]).or_else(|| title_text(&metadata["title"]))
+}
+
+struct SessionTitleUpdate {
+    id: i64,
+    source_uri: String,
+    external_id: Option<String>,
+    previous_title: Option<String>,
+    title: Option<String>,
+}
+
+fn commit_session_title_updates(
+    conn: &mut Connection,
+    epoch: i64,
+    pricing: &mut ImportPricing,
+    updates: Vec<SessionTitleUpdate>,
+) -> Result<Vec<i64>, String> {
+    if updates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let _writer = crate::db::background_write(conn).map_err(|error| error.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    hession_core::indexing::check_epoch(&tx, epoch)?;
+    pricing.refresh(&tx)?;
+    let mut changed = Vec::new();
+    {
+        let mut stmt = tx
+            .prepare_cached(
+                "UPDATE session SET title=?1 WHERE id=?2 AND source_uri=?3
+             AND external_id IS ?4 AND title IS ?5",
+            )
+            .map_err(|error| error.to_string())?;
+        for update in updates {
+            if stop_requested() {
+                return Err("Import stopped".into());
+            }
+            if stmt
+                .execute(params![
+                    update.title,
+                    update.id,
+                    update.source_uri,
+                    update.external_id,
+                    update.previous_title
+                ])
+                .map_err(|error| error.to_string())?
+                > 0
+            {
+                // Updating the session row invalidates its cached analytics.
+                crate::analytics::process_session(&tx, &pricing.state, update.id)?;
+                changed.push(update.id);
+            }
+        }
+    }
+    tx.commit().map_err(|error| error.to_string())?;
+    if !changed.is_empty() {
+        crate::analytics::shared_state().clear_cache();
+    }
+    Ok(changed)
 }
 
 fn first_iso(obj: &serde_json::Value, keys: &[&str]) -> Option<String> {
@@ -1577,7 +1679,10 @@ fn import_file_with_conn(
         );
     }
     let paths = source_paths(family, &file);
-    let capability = format!("{family}:{FULL_SOURCE_VERSION}");
+    let capability = match family {
+        "cline" | "muse" => format!("{family}:full-source-v2"),
+        _ => format!("{family}:{FULL_SOURCE_VERSION}"),
+    };
     let previous = hession_core::indexing::full_source(conn, source_uri, &capability)
         .map_err(|e| e.to_string())?;
     if previous.is_none() {
@@ -1770,7 +1875,7 @@ fn upsert_session(
         }
         (None, _) => None,
     };
-    let title = first_str(metadata, &["title"]).or_else(|| {
+    let title = recorded_title(metadata).map(str::to_owned).or_else(|| {
         data.records
             .iter()
             .filter(|r| r.role.as_deref() == Some("user"))
@@ -1923,13 +2028,14 @@ pub fn sync_all_with_progress(
     };
     let mut pricing = ImportPricing::new();
     pricing.validate_contents = force;
-    pricing.epoch = match hession_core::indexing::epoch(&conn) {
-        Ok(epoch) => Some(epoch),
+    let epoch = match hession_core::indexing::epoch(&conn) {
+        Ok(epoch) => epoch,
         Err(e) => {
             push_error(&mut summary, "sync", e.to_string());
             return summary;
         }
     };
+    pricing.epoch = Some(epoch);
 
     let local = LocalCatalog::capture(agent_filter.filter(|f| !f.is_empty()));
     let mut families: Vec<String> = local.0.iter().map(|s| s.family.to_string()).collect();
@@ -1956,6 +2062,14 @@ pub fn sync_all_with_progress(
         &mut failed,
         progress,
     );
+    if !stop_requested() {
+        if let Some(root) = local.codex_root() {
+            if let Err(error) = codex_titles::reconcile(&mut conn, root, epoch, &mut None) {
+                failed.insert("codex".into());
+                push_error(&mut summary, "Codex session names", error);
+            }
+        }
+    }
     if stop_requested() {
         summary.cancelled = true;
         return summary;
@@ -1996,6 +2110,23 @@ pub fn sync_all_with_progress(
         &mut failed,
         progress,
     );
+    for source in sources.iter().filter(|source| {
+        families.iter().any(|family| family == "codex")
+            && source.family == "codex"
+            && crate::remote::from_mirror(&source.root).is_some()
+    }) {
+        if stop_requested() {
+            break;
+        }
+        if let Err(error) = codex_titles::reconcile(&mut conn, &source.root, epoch, &mut None) {
+            failed.insert("codex".into());
+            push_error(
+                &mut summary,
+                &source.root.join(codex_titles::INDEX_FILE).to_string_lossy(),
+                error,
+            );
+        }
+    }
 
     summary.cancelled |= stop_requested();
     if !summary.cancelled {

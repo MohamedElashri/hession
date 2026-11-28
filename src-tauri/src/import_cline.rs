@@ -308,8 +308,8 @@ pub(super) fn session_data(
             .max()
             .map(Value::String)
             .unwrap_or(Value::Null);
-        if let Some(title) = first_str(&metadata, &["prompt"]) {
-            metadata["title"] = json!(title);
+        if super::title_text(&metadata["title"]).is_none() {
+            metadata["title"] = metadata["prompt"].clone();
         }
     } else {
         id = dir
@@ -359,7 +359,9 @@ pub(super) fn session_data(
                 metadata["provider"] = model["model_provider_id"].clone();
             }
         }
-        metadata["title"] = metadata.get("task").cloned().unwrap_or(Value::Null);
+        if super::title_text(&metadata["title"]).is_none() {
+            metadata["title"] = metadata["task"].clone();
+        }
         metadata["cwd"] = metadata
             .get("cwdOnTaskInitialization")
             .cloned()

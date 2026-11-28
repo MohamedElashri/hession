@@ -205,8 +205,16 @@
 .transcript-toggle b { font: 400 var(--text-xs)/1 var(--font-mono); color: var(--text-3); }
 .transcript-toggle:hover { color: var(--text); }
 .transcript-toggle.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px #0000001f; }
-.pagination-jump { font-size: var(--text-xs); color: var(--text-3); }
-.pagination-jump input { width: 36px; height: 22px; padding: 0 4px; text-align: center; font-size: var(--text-xs); }
+.transcript-pagination {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 6px 14px; padding: 8px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.transcript-page-buttons, .pagination-jump { display: flex; align-items: center; gap: 5px; }
+.transcript-pagination .btn { min-height: 26px; height: auto; padding: 2px 7px; font-size: var(--text-xs); }
+.transcript-pagination .btn[aria-disabled="true"] { opacity: .5; cursor: default; background: var(--surface); border-color: var(--border); }
+.pagination-jump { color: var(--text-2); font-size: var(--text-xs); }
+.pagination-jump span { margin-right: 3px; white-space: nowrap; }
+.pagination-jump input { width: 54px; height: 26px; padding: 0 4px; text-align: center; font-size: var(--text-xs); }
 
 .transcript-scroll { flex: 1; overflow-y: auto; padding: 16px 24px 32px; }
 .transcript-entry { max-width: 920px; margin: 0 auto 10px; border-radius: var(--radius-lg); }
@@ -352,6 +360,7 @@
 
 @media (max-width: 1000px) {
   .transcript-scroll { padding-right: 14px; padding-left: 14px; }
+  .transcript-pagination { padding-right: 14px; padding-left: 14px; }
   .reply { padding-left: 10px; }
   .reply-text { padding-left: 0; }
   .reply > .thinking, .reply > .tool-list, .reply > .context-row { margin-left: 0; }

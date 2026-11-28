@@ -82,7 +82,11 @@ history stays available while a host is offline or removes its original files.
   uncolored; large blocks and unusually long lines use plain text to keep reading
   responsive. Highlighting runs locally and preserves the exact text used by Copy.
 - **Prompts** lists prompts on the current page. **Full log** includes events
-  and role filters. Long histories use pages of 100 entries.
+  and role filters. Long histories use pages of 100 entries. Use **First** or
+  **Last** to jump to either end, or enter a page number and choose **Go**.
+- Hession uses the title recorded by the agent when one is available. For
+  sessions without a recorded title, it uses the first prompt. Codex histories
+  from SSH hosts use names from the mirrored session index.
 - Star sessions or add tags above the transcript. Multiple selected tags require
   every tag. **Export** saves a session, filtered results, or the whole library
   as Markdown or JSON, optionally with statistics. Filtered transcript exports
