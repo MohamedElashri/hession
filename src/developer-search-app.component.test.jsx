@@ -54,6 +54,51 @@ test('developer result opens its exact entry using row position rather than ordi
   expect(document.getElementById('entry-900')).toBeNull();
 }, 10000);
 
+test('refreshing a search result page keeps the reader at their scroll position', async () => {
+  const user = userEvent.setup();
+  const handler = api.getMockImplementation();
+  let refreshed = false;
+  api.mockImplementation(async (command, args) => {
+    if (command === 'get_device_sync_settings') {
+      return { configured: true, enabled: true, deviceName: 'Fixture', relayUrl: 'https://relay.example.test',
+        workspaces: [], scope: [], status: { running: false } };
+    }
+    if (command === 'run_device_sync') {
+      refreshed = true;
+      return { status: { downloaded: 1 } };
+    }
+    const data = await handler(command, args);
+    if (command === 'get_session' && args.page === '6' && refreshed) {
+      return { ...data, entries: [...data.entries, { id: 901, ordinal: 9002, role: 'assistant',
+        parts: [{ kind: 'text', text: 'A newly indexed reply' }], tools: [] }] };
+    }
+    return data;
+  });
+  const scrollsToHit = () => Element.prototype.scrollIntoView.mock.contexts.filter(node => node?.id === 'entry-900');
+  render(boot.tree);
+  await screen.findByRole('heading', { name: 'Initial history' });
+  await user.type(screen.getByRole('textbox', { name: 'Search sessions', exact: true }), 'alpha beta');
+  const hit = await screen.findByRole('button', { name: /Matching passage.*Open matching entry 502 in full log/ });
+  await user.click(hit);
+  await screen.findByText('Target matching passage');
+  await new Promise(resolve => requestAnimationFrame(resolve));
+  const scrollsOnOpen = scrollsToHit().length;
+  expect(scrollsOnOpen).toBeGreaterThan(0);
+
+  await user.click(screen.getByRole('button', { name: 'Settings' }));
+  await user.click(await screen.findByRole('tab', { name: 'Private sync' }));
+  await user.click(await screen.findByRole('button', { name: 'Sync now' }));
+  await screen.findByText('A newly indexed reply');
+  expect(scrollsToHit()).toHaveLength(scrollsOnOpen);
+  const done = screen.getByRole('button', { name: 'Done' });
+  await waitFor(() => expect(done.disabled).toBe(false));
+  await user.click(done);
+  const refreshedHit = await screen.findByRole('button', { name: /Matching passage.*Open matching entry 502 in full log/ });
+  await waitFor(() => expect(refreshedHit.getAttribute('aria-disabled')).toBe('false'));
+  await user.click(refreshedHit);
+  expect(scrollsToHit()).toHaveLength(scrollsOnOpen + 1);
+});
+
 test('legacy search remains accessible and independent starred filter is retained', async () => {
   const user = userEvent.setup(); render(boot.tree);
   await screen.findByRole('heading', { name: 'Initial history' });
